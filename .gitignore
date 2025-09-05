@@ -1,0 +1,10 @@
+.vscode/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Grosse Daten nicht versionieren
+*.hdf5
+data/
+outputs/
