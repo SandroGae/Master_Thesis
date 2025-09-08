@@ -1,0 +1,8 @@
+repos:
+- repo: local
+  hooks:
+  - id: jupytext-sync
+    name: jupytext sync ipynb -> py
+    entry: jupytext --to py:percent
+    language: system
+    files: \.ipynb$
