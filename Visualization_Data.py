@@ -14,6 +14,7 @@
 
 # %%
 import h5py
+from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -47,16 +48,19 @@ def show_pair(high_img, low_img, idx, p_low=1, p_high=99, share_scale=False):
 
     plt.tight_layout(); plt.show()
 
-def load_all(path):
+# Ordner mit den HDF5-Dateien
+DATA_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
+
+def load_all(path: Path):
     with h5py.File(path, "r") as f:
-        high = f["/high_count/data"][:]      # (192,240,N)
-        low  = f["/low_count/data"][:]       # (192,240,N)
-    return high.transpose(2,0,1), low.transpose(2,0,1)
+        high = f["/high_count/data"][:]      # (H,W,N)
+        low  = f["/low_count/data"][:]       # (H,W,N)
+    return high.transpose(2,0,1), low.transpose(2,0,1)  # -> (N,H,W)
 
 paths = {
-    "train": "training_data.hdf5",
-    "test": "test_data.hdf5",
-    "val": "validation_data.hdf5",
+    "train": DATA_DIR / "training_data.hdf5",
+    "test":  DATA_DIR / "test_data.hdf5",
+    "val":   DATA_DIR / "validation_data.hdf5",
 }
 
 data = {name: load_all(p) for name, p in paths.items()}
@@ -69,8 +73,7 @@ for split in ["train", "test", "val"]:
     print(f"===== {split.upper()} =====")
     for idx in indices:
         print(f"{split.upper()} -> Bild {idx}")
-        show_pair(high[idx], low[idx], idx)
-
+        show_pair(high[idx], low[idx], idx)   # ensure show_pair ist definiert
 
 # %%
 import os

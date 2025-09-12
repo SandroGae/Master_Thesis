@@ -1,22 +1,21 @@
-# Virtuelle Umgebungen
+# --- Virtuelle Umgebungen ---
 .venv/
 env/
 venv/
 
-# Python-Caches
+# --- Python Cache ---
 __pycache__/
 *.pyc
 
-# Jupyter Notebook Checkpoints
+# --- Jupyter Notebook Checkpoints ---
 .ipynb_checkpoints/
-*.ipynb
 
-# Logs & Output
+# --- Logs & Output ---
 logs/
 *.out
 *.err
 
-# Grosse Datenformate (ML / Physik / Datenanalyse)
+# --- Grosse Datenformate (werden NICHT ins Repo geladen) ---
 *.hdf5
 *.h5
 *.npy
@@ -30,22 +29,7 @@ logs/
 *.joblib
 *.mat
 
-# Bilder & Multimedia (falls nicht unbedingt benötigt)
-*.png
-*.jpg
-*.jpeg
-*.tif
-*.tiff
-*.bmp
-*.gif
-*.mp4
-*.avi
-*.mov
-*.mkv
-*.wav
-*.mp3
-
-# Komprimierte Archive
+# --- Komprimierte Archive ---
 *.zip
 *.tar
 *.tar.gz
@@ -54,8 +38,6 @@ logs/
 *.xz
 *.7z
 
-# Sonstiges
+# --- Sonstiges ---
 .DS_Store
 Thumbs.db
-
-
