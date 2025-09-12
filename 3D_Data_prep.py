@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.17.3
+#       jupytext_version: 1.17.2
 #   kernelspec:
 #     display_name: dl
 #     language: python
@@ -20,12 +20,13 @@ Note: This requires more memory and computiational power
 
 # %%
 import h5py
+from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import gc
 from numpy.lib.format import open_memmap
-from pathlib import Path
+from numpy.lib.format import read_magic, read_array_header_1_0, read_array_header_2_0
 
 # ====== Reading in data ===
 def load_split(file_path):
@@ -46,7 +47,9 @@ data = {
 # %%
 # ================= Normalising Data =================
 def anscombe_vst(x):
-    # Negative values get yeeted to zero (counts should not be negative)
+    """
+    Negative values get yeeted to zero (counts should not be negative)
+    """
     x = np.maximum(x, 0)
     return 2.0 * np.sqrt(x + 3.0/8.0)
 
@@ -111,9 +114,10 @@ def build_sequential_dataset(low_data, high_data, size, group_len, dtype=np.floa
     X = np.stack(X_list, axis=0).astype(dtype)   # (B, size, H, W)
     Y = np.stack(Y_list, axis=0).astype(dtype)   # (B, size, H, W)
     # Adding Channel-Dimension since PyTorch expects (B,C,D,H,W) with C=1
-    X = X[:, None, ...]  # (B, 1, size, H, W)
-    Y = Y[:, None, ...]  # (B, 1, size, H, W)
+    X = X[..., None]  # (B, size, H, W, 1)
+    Y = Y[..., None]  # (B, size, H, W, 1)
     return X, Y
+
 
 # ===== Applying on (N,H,W) data =====
 size = 5 # Adjust window size to find best value (e.g. 3,5,7)
@@ -123,18 +127,19 @@ group_len = 41
 USE_VST = True
 PCT = 99.9
 
-# Speicherort direkt im Projektordner
-print("Das aktuelle Arbeitsverzeichnis ist:", os.getcwd())
-outdir = os.path.join(os.getcwd(), "data_3D_U-net")
+# Saving directory
+outdir = os.path.join(os.getcwd(), "data", "data_3D_U-net")
 os.makedirs(outdir, exist_ok=True)
 
 
-
-def build_and_save_windows_streaming(low_n, high_n, split_name, outdir,
-                                     size=5, group_len=41, dtype=np.float32):
+def build_and_save_windows_streaming(low_n, high_n, split_name, outdir, size=5, group_len=41, dtype=np.float32):
+    """
+    Writes small 3D volumes directly to the dataset using open_memmap
+    Prevents RAM issues when building large datasets
+    """
     assert low_n.shape == high_n.shape
     N, H, W = low_n.shape
-    assert N % group_len == 0, f"N={N} kein Vielfaches von {group_len}"
+    assert N % group_len == 0, f"N={N} no multiple of {group_len}"
     assert size % 2 == 1 and size >= 1
 
     outdir = os.path.normpath(outdir)
@@ -147,7 +152,7 @@ def build_and_save_windows_streaming(low_n, high_n, split_name, outdir,
     X_path = os.path.join(outdir, f"X_{split_name}.npy")
     Y_path = os.path.join(outdir, f"Y_{split_name}.npy")
 
-    # alte Dateien entfernen (falls noch da)
+    # Remove old files (if existing)
     for p in (X_path, Y_path):
         if os.path.exists(p):
             try:
@@ -157,40 +162,40 @@ def build_and_save_windows_streaming(low_n, high_n, split_name, outdir,
 
     print("create:", repr(X_path), "and", repr(Y_path))
 
-    X_mm = open_memmap(X_path, mode="w+", dtype=dtype, shape=(B, 1, size, H, W))
-    Y_mm = open_memmap(Y_path, mode="w+", dtype=dtype, shape=(B, 1, size, H, W))
+    X_mm = open_memmap(X_path, mode="w+", dtype=dtype, shape=(B, size, H, W, 1))
+    Y_mm = open_memmap(Y_path, mode="w+", dtype=dtype, shape=(B, size, H, W, 1))
 
     write_idx = 0
     for g in range(num_groups):
         s = g * group_len
         e = s + group_len
-        low_blk  = low_n[s:e]
-        high_blk = high_n[s:e]
+        low_blk  = low_n[s:e]   # (group_len, H, W)
+        high_blk = high_n[s:e]  # (group_len, H, W)
         for n in range(win_per_group):
-            X_mm[write_idx, 0] = low_blk[n:n+size]
-            Y_mm[write_idx, 0] = high_blk[n:n+size]
+            # low_blk[n:n+size] -> (size, H, W)
+            X_mm[write_idx, ..., 0] = low_blk[n:n+size]
+            Y_mm[write_idx, ..., 0] = high_blk[n:n+size]
             write_idx += 1
         del low_blk, high_blk
         gc.collect()
 
     del X_mm, Y_mm
     gc.collect()
-    print(f"[{split_name}] saved -> shape=({B}, 1, {size}, {H}, {W}), dtype={dtype}")
-
+    print(f"[{split_name}] saved -> shape=({B}, {size}, {H}, {W}, 1), dtype={dtype}")
 
 results = {}
 
 high_train, low_train = data["train"]  # (high, low)
 clip_val_train = compute_clip_from_high(high_train, percentile=PCT, use_vst=USE_VST)
 
-# ---------- 1) Bauen & Speichern ----------
-DTYPE_OUT = np.float32  # bei Platznot: np.float16
+# Build and save datasets for each split
+DTYPE_OUT = np.float32  # TODO: Check if this is really necessary? Maybe use float 16 
 
-# globaler Clip einmal aus TRAIN
+# Global clipping on the test set
 high_train, low_train = data["train"]
 clip_val_train = compute_clip_from_high(high_train, percentile=PCT, use_vst=USE_VST)
 
-# evt. offene Memmaps schliessen, bevor wir schreiben
+# Close open memmaps (if there are any)
 try:
     del X_vis, Y_vis
 except NameError:
@@ -209,19 +214,18 @@ for split in ["train", "test", "val"]:
     del low_n, high_n
     gc.collect()
 
-# ---------- 2) Report (existiert? dann Groesse anzeigen) ----------
+# Test if files were created
 for split in ["train","test","val"]:
     for name in [f"X_{split}.npy", f"Y_{split}.npy"]:
         p = os.path.join(outdir, name)
         if os.path.exists(p):
             print(f"{name:12} exists=True  size={os.path.getsize(p)//(1024*1024)} MB")
         else:
-            print(f"{name:12} exists=False size=0 MB (noch nicht erzeugt)")
+            print(f"{name:12} exists=False size=0 MB (not yet generated)")
 
 
 # %%
-from numpy.lib.format import read_magic, read_array_header_1_0, read_array_header_2_0
-
+# =========== Show size of generated dataset =======
 def npy_info(path):
     with open(path, "rb") as f:
         ver = read_magic(f)
@@ -231,7 +235,7 @@ def npy_info(path):
             shape, fortran_order, dtype = read_array_header_2_0(f)
     return shape, dtype
 
-print("\n=== Uebersicht der gespeicherten Dateien ===")
+print("\n=== Overview for saved data fles ===")
 for split in ["train", "test", "val"]:
     for name in [f"X_{split}.npy", f"Y_{split}.npy"]:
         p = os.path.join(outdir, name)
@@ -295,10 +299,11 @@ def show_window_pair_3d(X, Y, sample_idx, size=5, group_len=41, share_scale=Fals
     plt.tight_layout()
     plt.show()
 
-# === Visualization from saved files ===
+# Visualization from saved files
 X_vis = np.load(os.path.join(outdir, "X_train.npy"), mmap_mode="r")
 Y_vis = np.load(os.path.join(outdir, "Y_train.npy"), mmap_mode="r")
 
+# Show some samples
 for idx in range(3):
     show_window_pair_3d(X_vis, Y_vis, sample_idx=idx, size=size, group_len=group_len)
 
