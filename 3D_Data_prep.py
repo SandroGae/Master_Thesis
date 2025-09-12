@@ -25,6 +25,7 @@ import numpy as np
 import os
 import gc
 from numpy.lib.format import open_memmap
+from pathlib import Path
 
 # ====== Reading in data ===
 def load_split(file_path):
@@ -33,10 +34,12 @@ def load_split(file_path):
         low  = f["/low_count/data"][:].transpose(2, 0, 1)
     return high, low
 
+DATA_DIR = Path("data") / "original_data"
+
 data = {
-    "train": load_split("training_data.hdf5"),
-    "test":  load_split("test_data.hdf5"),
-    "val":   load_split("validation_data.hdf5"),
+    "train": load_split(DATA_DIR / "training_data.hdf5"),
+    "test":  load_split(DATA_DIR / "test_data.hdf5"),
+    "val":   load_split(DATA_DIR / "validation_data.hdf5"),
 }
 
 
@@ -73,8 +76,6 @@ def preprocess_counts(x, clip_val, use_vst=True, dtype=np.float32):
 
 
 # %%
-import os, gc
-from numpy.lib.format import open_memmap
 
 # ================= Build 3D Datasets =================
 def build_sequential_dataset(low_data, high_data, size, group_len, dtype=np.float32):

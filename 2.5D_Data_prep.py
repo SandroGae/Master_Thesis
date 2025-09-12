@@ -22,8 +22,9 @@ Or it could be used to train a CNN model with 3D inputs and 2D outputs / 2D grou
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+from pathlib import Path
 
-file_path = "test_data.hdf5"
+file_path = Path("data") / "original_data" / "test_data.hdf5"
 
 with h5py.File(file_path, "r") as f:
     high_data = f["/high_count/data"][:]   # (192, 240, 3034)
