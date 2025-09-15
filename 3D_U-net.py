@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.17.2
+#       jupytext_version: 1.17.3
 #   kernelspec:
 #     display_name: dl
 #     language: python
@@ -20,81 +20,162 @@ import numpy as np
 
 
 # %%
-def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
-    x = layers.Conv3D(filters, kernel_size, padding=padding)(x)
+def convolutional_block(input_tensor, number_of_filters, kernel_size=(3, 3, 3), padding_mode="same", activation_function="relu"):
+    """Two convolutions with BatchNorm"""
+    x = layers.Conv3D(filters=number_of_filters, kernel_size=kernel_size, padding=padding_mode)(input_tensor)
     x = layers.BatchNormalization()(x)
-    x = layers.Activation(activation)(x)
-    x = layers.Conv3D(filters, kernel_size, padding=padding)(x)
+    x = layers.Activation(activation_function)(x)
+
+    x = layers.Conv3D(filters=number_of_filters, kernel_size=kernel_size, padding=padding_mode)(x)
     x = layers.BatchNormalization()(x)
-    x = layers.Activation(activation)(x)
+    x = layers.Activation(activation_function)(x)
     return x
 
-def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
-    inputs = layers.Input(shape=input_shape)
+def build_unet3d(input_shape=(5, 192, 240, 1), base_number_of_filters=32):
+    """3D U-Net for sequences of 2D pictures (Pooling only in height and width)."""
+    input_layer = layers.Input(shape=input_shape)
 
-    # Encoder (pool only over H,W)
-    c1 = conv_block(inputs, base_filters)
-    p1 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c1)
+    # Encoder
+    encoder_block1 = convolutional_block(input_layer, base_number_of_filters)
+    downsampled1   = layers.MaxPooling3D(pool_size=(1, 2, 2), strides=(1, 2, 2))(encoder_block1)
 
-    c2 = conv_block(p1, base_filters*2)
-    p2 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c2)
+    encoder_block2 = convolutional_block(downsampled1, base_number_of_filters * 2)
+    downsampled2   = layers.MaxPooling3D(pool_size=(1, 2, 2), strides=(1, 2, 2))(encoder_block2)
 
-    c3 = conv_block(p2, base_filters*4)
-    p3 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c3)
+    encoder_block3 = convolutional_block(downsampled2, base_number_of_filters * 4)
+    downsampled3   = layers.MaxPooling3D(pool_size=(1, 2, 2), strides=(1, 2, 2))(encoder_block3)
 
     # Bottleneck
-    bn = conv_block(p3, base_filters*8)
+    bottleneck = convolutional_block(downsampled3, base_number_of_filters * 8)
 
-    # Decoder (upsample only over H,W)
-    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
-    u3 = layers.concatenate([u3, c3])
-    c4 = conv_block(u3, base_filters*4)
+    # Decoder
+    upsampled3 = layers.Conv3DTranspose(filters=base_number_of_filters * 4, kernel_size=(1, 2, 2), strides=(1, 2, 2), padding="same")(bottleneck)
+    merged3    = layers.concatenate([upsampled3, encoder_block3])
+    decoder_block3 = convolutional_block(merged3, base_number_of_filters * 4)
 
-    u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c4)
-    u2 = layers.concatenate([u2, c2])
-    c5 = conv_block(u2, base_filters*2)
+    upsampled2 = layers.Conv3DTranspose(filters=base_number_of_filters * 2, kernel_size=(1, 2, 2), strides=(1, 2, 2), padding="same")(decoder_block3)
+    merged2    = layers.concatenate([upsampled2, encoder_block2])
+    decoder_block2 = convolutional_block(merged2, base_number_of_filters * 2)
 
-    u1 = layers.Conv3DTranspose(base_filters, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c5)
-    u1 = layers.concatenate([u1, c1])
-    c6 = conv_block(u1, base_filters)
+    upsampled1 = layers.Conv3DTranspose(filters=base_number_of_filters, kernel_size=(1, 2, 2), strides=(1, 2, 2), padding="same")(decoder_block2)
+    merged1    = layers.concatenate([upsampled1, encoder_block1])
+    decoder_block1 = convolutional_block(merged1, base_number_of_filters)
 
-    outputs = layers.Conv3D(1, (1,1,1), activation="linear")(c6)
-    return models.Model(inputs, outputs, name="3D_U-Net")
+    # Output
+    output_layer = layers.Conv3D(filters=1, kernel_size=(1, 1, 1), activation="linear")(decoder_block1)
 
+    return models.Model(inputs=input_layer, outputs=output_layer, name="3D_U-Net")
 
 
 # %%
-# Pfade
-DATA_DIR   = os.path.join(os.getcwd(), "data", "data_3D_U-net")  # Ordner mit X_*.npy / Y_*.npy
-INPUT_SHAPE = (5, 192, 240, 1)   # NDHWC
-BATCH_SIZE  = 4
-EPOCHS      = 100
-AUTO        = tf.data.AUTOTUNE
+# === Loading Data ===
 
-# GPU Memory Growth (optional)
-for g in tf.config.list_physical_devices('GPU'):
+# Define Parameters
+INPUT_SHAPE = (5, 192, 240, 1)
+BATCH_SIZE  = 4
+EPOCHS      = 50
+CKPT_DIR    = os.path.join(os.getcwd(), "checkpoints_3d_unet")
+
+DATA_DIR = os.path.join(os.getcwd(), "data", "data_3D_U-net")  # <— Data FOlder
+CKPT_DIR  = os.path.join(os.getcwd(), "checkpoints_3d_unet")   # <— best.keras gets saved here
+os.makedirs(CKPT_DIR, exist_ok=True)
+
+AUTO = tf.data.AUTOTUNE
+
+# GPU Memory Growth
+for g in tf.config.list_physical_devices("GPU"):
     try: tf.config.experimental.set_memory_growth(g, True)
     except: pass
 
-# NPY memmap laden (keine Kopie in RAM)
 def load_split(split):
-    x = np.load(os.path.join(DATA_DIR, f"X_{split}.npy"), mmap_mode="r")
-    y = np.load(os.path.join(DATA_DIR, f"Y_{split}.npy"), mmap_mode="r")
-    assert x.shape[1:] == INPUT_SHAPE and y.shape[1:] == INPUT_SHAPE
-    return x, y
+    X = np.load(os.path.join(DATA_DIR, f"X_{split}.npy"), mmap_mode="r")
+    Y = np.load(os.path.join(DATA_DIR, f"Y_{split}.npy"), mmap_mode="r")
+    assert X.shape[1:] == INPUT_SHAPE and Y.shape[1:] == INPUT_SHAPE
+    return X, Y
+
+def make_ds(X, Y, shuffle=True):
+    n = X.shape[0]
+    idx = np.arange(n)
+    def _fetch(i):
+        i = int(i);  return X[i], Y[i]
+    def tf_fetch(i):
+        x, y = tf.numpy_function(_fetch, [i], [tf.float32, tf.float32])
+        x.set_shape(INPUT_SHAPE); y.set_shape(INPUT_SHAPE)
+        return x, y
+    ds = tf.data.Dataset.from_tensor_slices(idx)
+    if shuffle: ds = ds.shuffle(min(8000, n), reshuffle_each_iteration=True)
+    return ds.map(tf_fetch, num_parallel_calls=AUTO).batch(BATCH_SIZE).prefetch(AUTO)
 
 X_train, Y_train = load_split("train")
 X_val,   Y_val   = load_split("val")
 X_test,  Y_test  = load_split("test")
 
-# tf.data Pipeline (Index -> numpy_function -> Batch)
-def make_ds(X_mm, Y_mm, shuffle=True):
+train_ds = make_ds(X_train, Y_train, True)
+val_ds   = make_ds(X_val,   Y_val,   False)
+test_ds  = make_ds(X_test,  Y_test,  False)
+
+
+# %%
+# === Training the Model ===
+
+# Define Model
+model = build_unet3d(input_shape=INPUT_SHAPE, base_number_of_filters=32)
+model.compile(optimizer=tf.keras.optimizers.Adam(1e-3),loss="mse",metrics=["mae"])
+model.summary()
+
+# Callbacks
+cbs = [
+    callbacks.ModelCheckpoint(
+        filepath=os.path.join(CKPT_DIR, "best.keras_V2"), # Saving the best model
+        monitor="val_loss",
+        save_best_only=True,
+        verbose=1
+    ),
+    callbacks.EarlyStopping(
+        monitor="val_loss",
+        patience=5,
+        restore_best_weights=True,
+        verbose=1
+    ),
+    callbacks.ReduceLROnPlateau(
+        monitor="val_loss",
+        factor=0.5,
+        patience=3,
+        min_lr=1e-6,
+        verbose=1
+    )
+]
+
+# Training Model
+history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=cbs, verbose=1)
+
+# %%
+import os
+import numpy as np
+import tensorflow as tf
+from sklearn.metrics import r2_score
+
+
+# Loading test data (again to make this snippet independent)
+BASE_DIR   = os.getcwd()
+DATA_DIR   = os.path.join(BASE_DIR, "data", "data_3D_U-net")
+CKPT_PATH  = os.path.join(BASE_DIR, "checkpoints_3d_unet", "best.keras")
+BATCH_SIZE = 4
+AUTO       = tf.data.AUTOTUNE
+
+X_test = np.load(os.path.join(DATA_DIR, "X_test.npy"), mmap_mode="r")
+Y_test = np.load(os.path.join(DATA_DIR, "Y_test.npy"), mmap_mode="r")
+INPUT_SHAPE = X_test.shape[1:]  # (5,192,240,1)
+print("X_test shape:", X_test.shape, "| per-sample shape:", INPUT_SHAPE)
+print("Y_test shape:", Y_test.shape)
+
+def make_ds_from_memmap(X_mm, Y_mm, batch_size=4, shuffle=False):
     n = X_mm.shape[0]
     idx = np.arange(n)
 
     def _fetch(i):
         i = int(i)
-        return X_mm[i], Y_mm[i]  # je (5,192,240,1) float32
+        return X_mm[i], Y_mm[i]
 
     def tf_fetch(i):
         x, y = tf.numpy_function(_fetch, [i], [tf.float32, tf.float32])
@@ -102,47 +183,32 @@ def make_ds(X_mm, Y_mm, shuffle=True):
         return x, y
 
     ds = tf.data.Dataset.from_tensor_slices(idx)
-    if shuffle: ds = ds.shuffle(min(8000, n), reshuffle_each_iteration=True)
+    if shuffle: ds = ds.shuffle(min(8000, n), reshuffle_each_iteration=False)
     ds = ds.map(tf_fetch, num_parallel_calls=AUTO)
-    ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
+    ds = ds.batch(batch_size).prefetch(AUTO)
     return ds
 
-train_ds = make_ds(X_train, Y_train, shuffle=True)
-val_ds   = make_ds(X_val,   Y_val,   shuffle=False)
-test_ds  = make_ds(X_test,  Y_test,  shuffle=False)
+test_ds = make_ds_from_memmap(X_test, Y_test, batch_size=BATCH_SIZE, shuffle=False)
 
-# === dein Modell wiederverwenden ===
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
-model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"])
+# ----------------------------
+# 2) Modell laden (kein Training)
+#    -> optional mit kombinierter Loss/Metric kompilieren
+# ----------------------------
+model = tf.keras.models.load_model(
+    CKPT_PATH,
+    compile=False,                 # wir kompilieren gleich neu für die Auswertung
+)
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(1e-3),
+    loss="mse",                    # Standard: MSE
+    metrics=["mae"]                # Standard: MAE
+)
+print("Loaded model from:", CKPT_PATH)
 model.summary()
 
-# Callbacks
-ckpt_dir = os.path.join(os.getcwd(), "checkpoints_3d_unet"); os.makedirs(ckpt_dir, exist_ok=True)
-cbs = [
-    callbacks.ModelCheckpoint(os.path.join(ckpt_dir, "best.keras"),
-                              monitor="val_loss", save_best_only=True, verbose=1),
-    callbacks.EarlyStopping(monitor="val_loss", patience=4, restore_best_weights=True, verbose=1),
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1),
-]
-
-# Train
-history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=cbs, verbose=1)
-
-# Test
-res = model.evaluate(test_ds, verbose=1)
-print(dict(zip(model.metrics_names, res)))
-
-# Kurzcheck Prediction-Shape
-for xb, yb in test_ds.take(1):
-    yhat = model.predict(xb, verbose=0)
-    print("xb:", xb.shape, "yb:", yb.shape, "yhat:", yhat.shape)
-
-# %%
-from sklearn.metrics import r2_score
-import numpy as np
-import tensorflow as tf
-
-# Hilfsfunktion, um Vorhersagen & Targets als Numpy-Arrays zu holen
+# ----------------------------
+# 3) Vorhersagen sammeln
+# ----------------------------
 def collect_preds_and_targets(model, dataset, max_batches=None):
     y_true, y_pred = [], []
     for b, (xb, yb) in enumerate(dataset):
@@ -155,35 +221,35 @@ def collect_preds_and_targets(model, dataset, max_batches=None):
     y_pred = np.concatenate(y_pred, axis=0)
     return y_true, y_pred
 
-# Vorhersagen einsammeln
 Y_true, Y_pred = collect_preds_and_targets(model, test_ds)
 
-# Flatten -> 1D-Vektoren (für Metriken wie R² oder SSIM pro Pixel)
+# ----------------------------
+# 4) Metriken & kombinierte Loss reporten
+# ----------------------------
+max_val = 1.0  # falls deine Daten 0..1 skaliert sind
+
 yt = Y_true.ravel()
 yp = Y_pred.ravel()
-
-# 1) Klassische Fehler-Metriken
 mse  = np.mean((yt - yp) ** 2)
 mae  = np.mean(np.abs(yt - yp))
 rmse = np.sqrt(mse)
+r2   = r2_score(yt, yp)
 
-# 2) R² Score
-r2 = r2_score(yt, yp)
+# 2D-Stack für PSNR/SSIM/MS-SSIM
+N, D, H, W, C = Y_true.shape
+Y_true_2d = Y_true.reshape(N * D, H, W, C).astype(np.float32)
+Y_pred_2d = Y_pred.reshape(N * D, H, W, C).astype(np.float32)
 
-# 3) PSNR (Peak Signal-to-Noise Ratio)
-psnr = tf.image.psnr(Y_true, Y_pred, max_val=1.0).numpy().mean()
+psnr    = tf.image.psnr(Y_true_2d, Y_pred_2d, max_val=max_val).numpy().mean()
+ssim    = tf.image.ssim(Y_true_2d, Y_pred_2d, max_val=max_val).numpy().mean()
+ms_ssim = tf.image.ssim_multiscale(Y_true_2d, Y_pred_2d, max_val=max_val).numpy().mean()
 
-# 4) SSIM (Structural Similarity Index)
-# Achtung: SSIM ist für 2D-Bilder – hier wenden wir es sliceweise an
-Y_true_2d = Y_true[:, 2, :, :, :]   # mittlerer Slice aus dem 5er-Block
-Y_pred_2d = Y_pred[:, 2, :, :, :]
-ssim = tf.image.ssim(Y_true_2d, Y_pred_2d, max_val=1.0).numpy().mean()
-
-print("=== Evaluation on Test Set ===")
-print(f"MSE   : {mse:.6f}")
-print(f"MAE   : {mae:.6f}")
-print(f"RMSE  : {rmse:.6f}")
-print(f"R²    : {r2:.6f}")
-print(f"PSNR  : {psnr:.2f} dB")
-print(f"SSIM  : {ssim:.4f}")
+print("=== Evaluation on Test Set (loaded model) ===")
+print(f"MSE       : {mse:.6f}")
+print(f"MAE       : {mae:.6f}")
+print(f"RMSE      : {rmse:.6f}")
+print(f"R²        : {r2:.6f}")
+print(f"PSNR      : {psnr:.2f} dB")
+print(f"SSIM      : {ssim:.4f}")
+print(f"MS-SSIM   : {ms_ssim:.4f}")
 
