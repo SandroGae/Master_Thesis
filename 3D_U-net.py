@@ -32,7 +32,54 @@ AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depend
 # %%
 # ======== Reading in data + setting parameters =======
 
-DATA_DIR = os.path.join(os.getcwd(), "data", "data_3D_U-net")  # X_*.npy / Y_*.npy
+def resolve_data_dir() -> str:
+    """
+    Search for data in sensible order:
+    Sucht die Daten in sinnvoller Reihenfolge:
+    1) Enviromental variable DATA_DIR (set by SLURM for example)
+    2) ./data/data_3D_U-net (projectfolder on local machine)
+    3) ~/data/data_3D_U-net (symlink on /data/sgaell)
+    4) /data/sgaell/data_3D_U-net (if direct path)
+    Returns the first matching path
+    """
+    candidates = []
+
+    # 1) From job
+    env_dir = os.environ.get("DATA_DIR")
+    if env_dir:
+        candidates.append(env_dir)
+
+    # 2) Project standard
+    proj_dir = os.path.join(os.getcwd(), "data", "data_3D_U-net")
+    candidates.append(proj_dir)
+
+    # 3) $HOME/data/...
+    home_dir = os.path.join(os.path.expanduser("~"), "data", "data_3D_U-net")
+    candidates.append(home_dir)
+
+    # 4) /data/USERNAME/...
+    user = os.environ.get("USER") or os.path.basename(os.path.expanduser("~"))
+    direct_dir = os.path.join("/data", user, "data_3D_U-net")
+    candidates.append(direct_dir)
+
+    # Taking first path that exists
+    for d in candidates:
+        if d and os.path.isfile(os.path.join(d, "X_train.npy")):
+            print(f"[INFO] DATA_DIR -> {d}")
+            return d
+
+    # Error message if no path was found
+    msg = (
+        "[FATAL] No data found. Gepruefte Orte:\n  - "
+        + "\n  - ".join(candidates)
+        + "\n\nFix-Optionen:\n"
+          "  A) Slurm: export DATA_DIR=\"$HOME/data/data_3D_U-net\"\n"
+          "  B) Symlink: ln -sfn $HOME/data/data_3D_U-net ./data/data_3D_U-net\n"
+          "  C) DATA_DIR direkt im Code auf den korrekten Ordner setzen\n"
+    )
+    raise FileNotFoundError(msg)
+
+DATA_DIR = resolve_data_dir()
 
 probe = np.load(os.path.join(DATA_DIR, "X_train.npy"), mmap_mode="r")
 print("Probe shape:", probe.shape)  # should be (B, 5, 192, 240, 1)
