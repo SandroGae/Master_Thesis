@@ -13,6 +13,13 @@
 # ---
 
 # %%
+import os
+import numpy as np
+import tensorflow as tf
+from sklearn.metrics import r2_score
+
+
+# %%
 # ======== Load Test Data ========
 
 DATA_DIR = os.path.join(os.getcwd(), "data", "data_3D_U-net")
@@ -61,11 +68,6 @@ test_ds = make_ds(X_test, Y_test, shuffle=False)
 
 # %%
 # ======== Load best saved model & evaluate on test ========
-
-import os
-import numpy as np
-import tensorflow as tf
-from sklearn.metrics import r2_score
 
 # Open Model that should be evaluated
 ckpt_dir = os.path.join(os.getcwd(), "checkpoints_3d_unet")
