@@ -106,8 +106,8 @@ def load_split(split):
     """
     Loads data directly from Mmemap
     """
-    x = np.load(os.path.join(DATA_DIR, f"X_{split}.npy"), mmap_mode="r")
-    y = np.load(os.path.join(DATA_DIR, f"Y_{split}.npy"), mmap_mode="r")
+    x = np.load(os.path.join(DATA_DIR, f"X_{split}.npy"))
+    y = np.load(os.path.join(DATA_DIR, f"Y_{split}.npy"))
     # Sanity check for shape
     if x.shape[1:] != INPUT_SHAPE or y.shape[1:] != INPUT_SHAPE:
         raise RuntimeError(f"{split}: Datei-Shape {x.shape[1:]} passt nicht zu INPUT_SHAPE {INPUT_SHAPE}")
@@ -148,7 +148,7 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     bn = conv_block(p3, base_filters*8)
 
     # Decoder (upsample only over H,W)
-    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
+    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn) # bottleneck
     u3 = layers.concatenate([u3, c3])
     c4 = conv_block(u3, base_filters*4)
 
@@ -160,7 +160,7 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     u1 = layers.concatenate([u1, c1])
     c6 = conv_block(u1, base_filters)
 
-    outputs = layers.Conv3D(1, (1,1,1), activation="linear")(c6)
+    outputs = layers.Conv3D(1, (1,1,1), activation="sigmoid")(c6)
     return models.Model(inputs, outputs, name="3D_U-Net")
 
 
@@ -172,7 +172,7 @@ ALPHA = 0.7  # Weight for MS-SSIM
 
 def _flatten_depth(x):
     """
-    Making for every depth slice a 2D-image and then evaluate alls slices
+    Making for every depth slice a 2D-image and then evaluate all slices
     (B,D,H,W,C) -> (B*D, H, W, C)
     """
     shape = tf.shape(x)
@@ -185,8 +185,8 @@ def ms_ssim_loss(y_true, y_pred, max_val=1.0):
     Defining MS-SSIM for the loss function equivalently as in the paper
     Ensures that values sligthly out of [0,1] are clipped
     """
-    y_true_2d = _flatten_depth(tf.clip_by_value(y_true, 0.0, 1.0))
-    y_pred_2d = _flatten_depth(tf.clip_by_value(y_pred, 0.0, 1.0))
+    y_true_2d = _flatten_depth(y_true)
+    y_pred_2d = _flatten_depth(y_pred)
     ms = tf.image.ssim_multiscale(y_true_2d, y_pred_2d, max_val=max_val)
     return 1.0 - tf.reduce_mean(ms)
 
@@ -194,8 +194,8 @@ def ms_ssim_metric(y_true, y_pred):
     """
     Showing MS-SSIM metric during training
     """
-    y_true_2d = _flatten_depth(tf.clip_by_value(y_true, 0.0, 1.0))
-    y_pred_2d = _flatten_depth(tf.clip_by_value(y_pred, 0.0, 1.0))
+    y_true_2d = _flatten_depth(y_true)
+    y_pred_2d = _flatten_depth(y_pred)
     return tf.reduce_mean(tf.image.ssim_multiscale(y_true_2d, y_pred_2d, max_val=1.0))
 
 def combined_loss(y_true, y_pred):
@@ -205,7 +205,7 @@ def combined_loss(y_true, y_pred):
     MS-SSIM focuses on structure --> CDW satellite signals
     """
     l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    l_ms  = ms_ssim_loss(y_true, y_pred, max_val=1.0)  # Data is normalized to [0,1]
+    l_ms  = ms_ssim_loss(y_true, y_pred, max_val=1.0)
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
 
 
@@ -213,50 +213,19 @@ def combined_loss(y_true, y_pred):
 # %%
 # ======== tf.data input pipeline =======
 
-def make_ds(X_mm, Y_mm, shuffle=True):
+def make_ds(X, Y, shuffle=True):
     """
-    Build a performant tf.data.Dataset pipeline:
-    1. Start from indices [0,...,N-1]
-    2. Shuffle indices
-    3. Map indices -> actual samples via tf_fetch()
-    4. Batch samples together
-    5. Prefetch to overlap CPU/GPU work
-    Result: Dataset yielding batches of (x,y) with shape (B,D,H,W,C)
+    Builds tensorflow dataset from two numpy arrays (X,Y)
     """
-    n = X_mm.shape[0]
-    idx = np.arange(n, dtype=np.int64)
-
-    def _fetch(i):
-        """
-        Load one sample (X[i], Y[i]) directly from the Numpy memmap on disky
-        Input:  index i
-        Output: (D,H,W,C) arrays for x and y
-        """
-        i = int(i)
-        return X_mm[i], Y_mm[i]  # (D,H,W,1), float32
-
-    def tf_fetch(i):
-        """
-        Ensures data is returned as Tensors with fixed shape INPUT_SHAPE.
-        Input:  index i
-        Output: (x,y) tensors of shape (D,H,W,C)
-        """
-        x, y = tf.numpy_function(_fetch, [i], [tf.float32, tf.float32])
-        x.set_shape(INPUT_SHAPE)
-        y.set_shape(INPUT_SHAPE)
-        return x, y
-
-    ds = tf.data.Dataset.from_tensor_slices(idx)
-    if shuffle == True:
-        ds = ds.shuffle(min(8000, n), reshuffle_each_iteration=True) # Shuffles the data to randomize batches (8000 is buffer size)
-    ds = ds.map(tf_fetch, num_parallel_calls=AUTO)
+    ds = tf.data.Dataset.from_tensor_slices((X, Y))  # gives (x,y)-pairs
+    if shuffle:
+        ds = ds.shuffle(buffer_size=(X.shape[0]))
     ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
     return ds
 
 train_ds = make_ds(X_train, Y_train, shuffle=True)
-val_ds   = make_ds(X_val,   Y_val,   shuffle=False) # Not shuffling the validation data for reproducable results
-test_ds  = make_ds(X_test,  Y_test,  shuffle=False) # Not shuffling the test data for reproducable results
-
+val_ds   = make_ds(X_val,   Y_val,   shuffle=False) # Not shuffling
+test_ds  = make_ds(X_test,  Y_test,  shuffle=False) # Not shuffling
 
 # %%
 # ======== Compile model =======
@@ -269,12 +238,11 @@ model.summary()
 # %%
 # ======== Callbacks =======
 
-ckpt_dir = os.path.join(os.getcwd(), "checkpoints_3d_unet")
+ckpt_dir = os.path.expanduser("~/data/checkpoints_3d_unet")
 os.makedirs(ckpt_dir, exist_ok=True)
 
 cbs = [
-    callbacks.ModelCheckpoint(os.path.join(ckpt_dir, "best_V2.keras"),
-                              monitor="val_loss", save_best_only=True, verbose=1),
+    callbacks.ModelCheckpoint(os.path.join(ckpt_dir, "best_V2.keras"), monitor="val_loss", save_best_only=True, verbose=1),
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=1),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1),
 ]
