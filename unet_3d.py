@@ -34,6 +34,7 @@ AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depend
 # %%
 # ===== Loading Data in RAM =====
 
+print(">>> Phase 1: Starte Datenvorbereitung auf der CPU...")
 # function from 3d_unet_data.py
 (results, size) = prepare_in_memory_5to5(
     data_dir=Path.home() / "data" / "original_data",
@@ -42,9 +43,12 @@ AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depend
     group_len=41,
     dtype=np.float32,
 )
+print(">>> Datenvorbereitung abgeschlossen. Alle Daten sind im RAM.")
+
 X_train, Y_train = results["train"]
 X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
+
 
 INPUT_SHAPE = X_train.shape[1:]  # (5, H, W, 1)
 
@@ -66,9 +70,11 @@ def make_ds(X, Y, shuffle=True):
     ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
     return ds
 
+print(">>> Phase 2: Erstelle Tensorflow Datasets...")
 train_ds = make_ds(X_train, Y_train, True)
 val_ds   = make_ds(X_val,   Y_val,   False)
 test_ds  = make_ds(X_test,  Y_test,  False)
+print(">>> Datasets erstellt.")
 
 
 # %%
@@ -177,9 +183,11 @@ def ms_ssim_metric(y_true, y_pred):
 # %%
 # ======== Compile model =======
 
+print(">>> Phase 3: Starte GPU-Training jetzt!") # HIER sollte die GPU-Auslastung steigen
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=32)
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss=combined_loss, metrics=["mae", ms_ssim_metric])
 model.summary()
+print(">>> Training beendet.")
 
 
 # %%
