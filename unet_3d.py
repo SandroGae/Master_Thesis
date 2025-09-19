@@ -183,11 +183,9 @@ def ms_ssim_metric(y_true, y_pred):
 # %%
 # ======== Compile model =======
 
-print(">>> Phase 3: Starte GPU-Training jetzt!") # HIER sollte die GPU-Auslastung steigen
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=32)
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss=combined_loss, metrics=["mae", ms_ssim_metric])
 model.summary()
-print(">>> Training beendet.")
 
 
 # %%
@@ -198,18 +196,19 @@ os.makedirs(ckpt_dir, exist_ok=True)
 
 cbs = [
     callbacks.ModelCheckpoint(os.path.join(ckpt_dir, "best_V2.keras"), monitor="val_loss", save_best_only=True, verbose=1),
-    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=2),
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
+    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=1),
+    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1),
 ]
 
 
 # %%
 # ======== Train =======
+print(">>> Phase 3: Starte GPU-Training jetzt!") # HIER sollte die GPU-Auslastung steigen
 history = model.fit(
     train_ds,
     validation_data=val_ds,
     epochs=EPOCHS,
     callbacks=cbs,
-    verbose=2
+    verbose=1
 )
-
+print(">>> Training beendet.")
