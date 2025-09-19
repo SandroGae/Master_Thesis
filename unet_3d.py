@@ -13,13 +13,15 @@
 # ---
 
 # %%
-# ======== Imports + GPU memory growth =======
+# ======== Imports =======
 import os
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
+from unet_3d_data import prepare_in_memory_5to5
 
-# Allocate GPU memory dynamically as needed
+# %%
+# ======== Allocate GPU memory dynamically as needed =======
 for g in tf.config.list_physical_devices('GPU'):
     try:
         tf.config.experimental.set_memory_growth(g, True)
@@ -28,95 +30,36 @@ for g in tf.config.list_physical_devices('GPU'):
 
 AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depending on hardware
 
+# %%
+# ===== Loading Data in RAM =====
+(results, size) = prepare_in_memory_5to5()  # function from 3d_unet_data.py
+X_train, Y_train = results["train"]
+X_val,   Y_val   = results["val"]
+X_test,  Y_test  = results["test"]
+
+INPUT_SHAPE = X_train.shape[1:]  # (5, H, W, 1)
 
 # %%
-# ======== Reading in data + setting parameters =======
+# ======== Making Tensorflow dataset =======
 
-def resolve_data_dir() -> str:
-    """
-    Search for data in sensible order:
-    Sucht die Daten in sinnvoller Reihenfolge:
-    1) Enviromental variable DATA_DIR (set by SLURM for example)
-    2) ./data/data_3D_U-net (projectfolder on local machine)
-    3) ~/data/data_3D_U-net (symlink on /data/sgaell)
-    4) /data/sgaell/data_3D_U-net (if direct path)
-    Returns the first matching path
-    """
-    candidates = []
+BATCH_SIZE = 16
+EPOCHS     = 1
 
-    # 1) From job
-    env_dir = os.environ.get("DATA_DIR")
-    if env_dir:
-        candidates.append(env_dir)
-
-    # 2) Project standard
-    proj_dir = os.path.join(os.getcwd(), "data", "data_3D_U-net")
-    candidates.append(proj_dir)
-
-    # 3) $HOME/data/...
-    home_dir = os.path.join(os.path.expanduser("~"), "data", "data_3D_U-net")
-    candidates.append(home_dir)
-
-    # 4) /data/USERNAME/...
-    user = os.environ.get("USER") or os.path.basename(os.path.expanduser("~"))
-    direct_dir = os.path.join("/data", user, "data_3D_U-net")
-    candidates.append(direct_dir)
-
-    # Taking first path that exists
-    for d in candidates:
-        if d and os.path.isfile(os.path.join(d, "X_train.npy")):
-            print(f"[INFO] DATA_DIR -> {d}")
-            return d
-
-    # Error message if no path was found
-    msg = (
-        "[FATAL] No data found. Gepruefte Orte:\n  - "
-        + "\n  - ".join(candidates)
-        + "\n\nFix-Optionen:\n"
-          "  A) Slurm: export DATA_DIR=\"$HOME/data/data_3D_U-net\"\n"
-          "  B) Symlink: ln -sfn $HOME/data/data_3D_U-net ./data/data_3D_U-net\n"
-          "  C) DATA_DIR direkt im Code auf den korrekten Ordner setzen\n"
-    )
-    raise FileNotFoundError(msg)
-
-DATA_DIR = resolve_data_dir()
-
-probe = np.load(os.path.join(DATA_DIR, "X_train.npy"), mmap_mode="r")
-print("Probe shape:", probe.shape)  # should be (B, 5, 192, 240, 1)
-
-# Sanity check for shape
-if probe.ndim != 5:
-    raise RuntimeError(f"Expected 5D-Array, have {probe.ndim}Dimension: {probe.shape}")
-if probe.shape[-1] != 1:
-    raise RuntimeError(f"Expected channel C=1, instead {probe.shape[-1]} in {probe.shape}")
-INPUT_SHAPE = tuple(probe.shape[1:])  # -> (5, 192, 240, 1)
-del probe
-
-# Define parameters
-BATCH_SIZE = 4
-EPOCHS     = 100
-
-# check shape for three times (1,2,2)-pooling
-D, H, W, C = INPUT_SHAPE
+# Sanity check for INPUT_SHAPE
+D,H,W,C = INPUT_SHAPE
 if (H % 8) or (W % 8):
-    print(f"[WARN] H={H} or W={W} not divisible by 8; doesn't fit with 3x (1,2,2)-Pooling")
+    print(f"[WARN] H={H} oder W={W} nicht durch 8 teilbar (3x (1,2,2)-Pooling)")
 
-    
-def load_split(split):
-    """
-    Loads data directly from Mmemap
-    """
-    x = np.load(os.path.join(DATA_DIR, f"X_{split}.npy"))
-    y = np.load(os.path.join(DATA_DIR, f"Y_{split}.npy"))
-    # Sanity check for shape
-    if x.shape[1:] != INPUT_SHAPE or y.shape[1:] != INPUT_SHAPE:
-        raise RuntimeError(f"{split}: Datei-Shape {x.shape[1:]} passt nicht zu INPUT_SHAPE {INPUT_SHAPE}")
-    return x, y
+def make_ds(X, Y, shuffle=True):
+    ds = tf.data.Dataset.from_tensor_slices((X, Y))
+    if shuffle:
+        ds = ds.shuffle(buffer_size=X.shape[0])
+    ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
+    return ds
 
-X_train, Y_train = load_split("train")
-X_val,   Y_val   = load_split("val")
-X_test,  Y_test  = load_split("test")
-
+train_ds = make_ds(X_train, Y_train, True)
+val_ds   = make_ds(X_val,   Y_val,   False)
+test_ds  = make_ds(X_test,  Y_test,  False)
 
 
 # %%
@@ -223,23 +166,6 @@ def ms_ssim_metric(y_true, y_pred):
 
 
 # %%
-# ======== tf.data input pipeline =======
-
-def make_ds(X, Y, shuffle=True):
-    """
-    Builds tensorflow dataset from two numpy arrays (X,Y)
-    """
-    ds = tf.data.Dataset.from_tensor_slices((X, Y))  # gives (x,y)-pairs
-    if shuffle:
-        ds = ds.shuffle(buffer_size=(X.shape[0]))
-    ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
-    return ds
-
-train_ds = make_ds(X_train, Y_train, shuffle=True)
-val_ds   = make_ds(X_val,   Y_val,   shuffle=False) # Not shuffling
-test_ds  = make_ds(X_test,  Y_test,  shuffle=False) # Not shuffling
-
-# %%
 # ======== Compile model =======
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=32)
@@ -255,8 +181,8 @@ os.makedirs(ckpt_dir, exist_ok=True)
 
 cbs = [
     callbacks.ModelCheckpoint(os.path.join(ckpt_dir, "best_V2.keras"), monitor="val_loss", save_best_only=True, verbose=1),
-    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=1),
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1),
+    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=2),
+    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
 ]
 
 
@@ -267,6 +193,6 @@ history = model.fit(
     validation_data=val_ds,
     epochs=EPOCHS,
     callbacks=cbs,
-    verbose=1  # 1:progress bar
+    verbose=2
 )
 

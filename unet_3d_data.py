@@ -57,8 +57,8 @@ def compute_clip_from_high(high_data, percentile=99.9, use_vst=True, max_samples
     rng = np.random.default_rng() if rng is None else rng
     arr = high_data.ravel()
     sample = arr if arr.size <= max_samples else arr[rng.choice(arr.size, size=max_samples, replace=False)]
-    if use_vst:
-        sample = anscombe_vst(sample)
+    #if use_vst:
+        #sample = anscombe_vst(sample)
     clip_val = np.percentile(sample, percentile)
     if not np.isfinite(clip_val) or clip_val <= 0:
         clip_val = float(np.max(sample))
@@ -68,7 +68,7 @@ def preprocess_counts(x, clip_val, use_vst=True, dtype=np.float32):
     """
     Normalization: optional VST -> clip -> /clip -> [0,1]
     """
-    x = anscombe_vst(x) if use_vst else x
+    # x = anscombe_vst(x) if use_vst else x
     x = np.clip(x, 0, clip_val) / clip_val
     return x.astype(dtype)
 
