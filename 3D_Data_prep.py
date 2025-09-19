@@ -13,12 +13,6 @@
 # ---
 
 # %%
-"""
-This dataset could be used to train a 3D CNN with 3D inputs and 3D outputs / 3D ground truth
-Note: This requires more memory and computiational power
-"""
-
-# %%
 import h5py
 from pathlib import Path
 import matplotlib.pyplot as plt
