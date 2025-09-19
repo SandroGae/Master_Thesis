@@ -19,6 +19,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
 from unet_3d_data import prepare_in_memory_5to5
+from pathlib import Path
 
 # %%
 # ======== Allocate GPU memory dynamically as needed =======
@@ -32,7 +33,15 @@ AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depend
 
 # %%
 # ===== Loading Data in RAM =====
-(results, size) = prepare_in_memory_5to5()  # function from 3d_unet_data.py
+
+# function from 3d_unet_data.py
+(results, size) = prepare_in_memory_5to5(
+    data_dir=Path.home() / "data" / "original_data",
+    use_vst=False,          # Anscombe aus
+    size=5,
+    group_len=41,
+    dtype=np.float32,
+)
 X_train, Y_train = results["train"]
 X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]

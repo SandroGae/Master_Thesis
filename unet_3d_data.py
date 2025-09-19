@@ -17,26 +17,9 @@
 import h5py
 from pathlib import Path
 import numpy as np
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import gc
 import os
-
-
-# %%
-# ====== Reading in data ===
-def load_split(file_path):
-    with h5py.File(file_path, "r") as f:
-        high = f["/high_count/data"][:].transpose(2, 0, 1)  # (N,H,W)
-        low  = f["/low_count/data"][:].transpose(2, 0, 1)
-    return high, low
-
-DATA_DIR = Path("data") / "original_data"
-
-data = {
-    "train": load_split(DATA_DIR / "training_data.hdf5"),
-    "test":  load_split(DATA_DIR / "test_data.hdf5"),
-    "val":   load_split(DATA_DIR / "validation_data.hdf5"),
-}
 
 
 # %%
@@ -57,8 +40,8 @@ def compute_clip_from_high(high_data, percentile=99.9, use_vst=True, max_samples
     rng = np.random.default_rng() if rng is None else rng
     arr = high_data.ravel()
     sample = arr if arr.size <= max_samples else arr[rng.choice(arr.size, size=max_samples, replace=False)]
-    #if use_vst:
-        #sample = anscombe_vst(sample)
+    if use_vst:
+        sample = anscombe_vst(sample)
     clip_val = np.percentile(sample, percentile)
     if not np.isfinite(clip_val) or clip_val <= 0:
         clip_val = float(np.max(sample))
@@ -68,7 +51,8 @@ def preprocess_counts(x, clip_val, use_vst=True, dtype=np.float32):
     """
     Normalization: optional VST -> clip -> /clip -> [0,1]
     """
-    # x = anscombe_vst(x) if use_vst else x
+    if use_vst:
+        x = anscombe_vst(x)
     x = np.clip(x, 0, clip_val) / clip_val
     return x.astype(dtype)
 
@@ -115,46 +99,11 @@ def build_sequential_dataset(low_data, high_data, size, group_len, dtype=np.floa
 
 
 # %%
-# ======== Normalizing data ========
-
-# Applying on (N,H,W) data
-size = 5
-group_len = 41
-
-# Normalzing Data
-USE_VST = True
-PCT = 99.9
-DTYPE_OUT = np.float32
-
-results = {}
-
-# Clip value from training set only
-high_train, low_train = data["train"]  # (high, low)
-clip_val_train = compute_clip_from_high(high_train, percentile=PCT, use_vst=USE_VST)
-
-# Normalizing per split and build window
-for split in ["train", "test", "val"]:
-    high_split, low_split = data[split]  # (high, low)
-    low_n  = preprocess_counts(low_split,  clip_val_train, use_vst=USE_VST, dtype=DTYPE_OUT)
-    high_n = preprocess_counts(high_split, clip_val_train, use_vst=USE_VST, dtype=DTYPE_OUT)
-    X, Y = build_sequential_dataset(low_n, high_n, size=size, group_len=group_len, dtype=DTYPE_OUT)
-
-    results[split] = (X, Y)  # everything in RAM
-    del low_n, high_n
-    gc.collect()
-
-# Overview
-for split in ["train","test","val"]:
-    X, Y = results[split]
-    print(f"{split:5s}: X{X.shape}, Y{Y.shape}, dtype={X.dtype}")
-
-
-# %%
 def prepare_in_memory_5to5(
     data_dir=Path("data") / "original_data",
     size=5,
     group_len=41,
-    use_vst=True,
+    use_vst=False, # Activates / Deactivates Anscombe transform
     percentile=99.9,
     dtype=np.float32,
 ):
