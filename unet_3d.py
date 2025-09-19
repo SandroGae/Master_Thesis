@@ -161,7 +161,7 @@ def ms_ssim_metric(y_true, y_pred):
     Showing MS-SSIM metric during training
     """
     yt2 = tf.reshape(y_true, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape[y_pred)[4]))
+    yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
 
 
