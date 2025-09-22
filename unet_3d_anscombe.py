@@ -202,18 +202,25 @@ class BestFinalizeCallback(callbacks.Callback):
             self.best_psnr = float(psnr) if psnr is not None else None
 
     def on_train_end(self, logs=None):
-        # 1) TEMP -> NEW_* mit Metriken
+        # 1) TEMP -> NEW_*
         vloss_str = f"{self.best_val_loss:.3e}" if np.isfinite(self.best_val_loss) else "nan"
         psnr_part = f"_PSNR_{self.best_psnr:.3g}" if (self.best_psnr is not None and np.isfinite(self.best_psnr)) else ""
         new_model = self.root / f"NEW_valloss_{vloss_str}{psnr_part}.keras"
         if self.tmp_path.exists():
             os.replace(self.tmp_path, new_model)
 
-        # 2) JSON fuer dieses neu entstandene Modell schreiben (mit Datum)
+        # 2) JSON schreiben
         self._write_json_for_model(new_model)
 
-        # 3) Globales Ranking aller Modelle im Ordner: V1, V2, ...
+        # 3) Ranking machen
         self._rank_all_models()
+
+        # 4) NEW_* entfernen, falls noch da
+        if new_model.exists():
+            new_model.unlink()
+            json_path = new_model.with_suffix(".json")
+            if json_path.exists():
+                json_path.unlink()
 
     # ---------- JSON ----------
     def _write_json_for_model(self, model_path: Path):
