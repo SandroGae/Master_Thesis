@@ -20,6 +20,8 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
 from unet_3d_data import prepare_in_memory_5to5
 from pathlib import Path
+
+# %%
 # ======== Allocate GPU memory dynamically as needed =======
 for g in tf.config.list_physical_devices('GPU'):
     try:
@@ -28,6 +30,8 @@ for g in tf.config.list_physical_devices('GPU'):
         pass
 
 AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depending on hardware
+
+# %%
 # ===== Loading Data in RAM =====
 
 print(">>> Phase 1: Starting data prep on CPU...")
@@ -46,6 +50,8 @@ X_test,  Y_test  = results["test"]
 
 
 INPUT_SHAPE = X_train.shape[1:]  # (5, H, W, 1)
+
+# %%
 # ======== Making Tensorflow dataset =======
 
 BATCH_SIZE = 16
@@ -71,6 +77,9 @@ train_ds = make_ds(X_train, Y_train, True)
 val_ds   = make_ds(X_val,   Y_val,   False)
 test_ds  = make_ds(X_test,  Y_test,  False)
 print(">>> Datasets created")
+
+
+# %%
 # ========= Defining 3D-U-Net Architecture ========
 
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
@@ -114,6 +123,8 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     outputs = layers.Conv3D(1, (1,1,1), dtype="float32", activation=None)(c6)  # linear activation
     return models.Model(inputs, outputs, name="3D_U-Net")
 
+
+# %%
 # =========== Defining Metrics for training ========
 
 def inv_anscombe(z):
@@ -136,7 +147,7 @@ def ms_ssim_orig_metric(y_true_vst, y_pred_vst):
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
 
 
-
+# %%
 # ======== Callbacks =======
 
 ckpt_dir = os.path.expanduser("~/data/checkpoints_3d_unet")
@@ -147,6 +158,8 @@ cbs = [
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
 ]
+
+# %%
 # ======== Train =======
 
 print(">>> Phase 3: GPU training starts now!")
@@ -168,4 +181,3 @@ history = model.fit(
     verbose=2
 )
 print(">>> Training complete")
-

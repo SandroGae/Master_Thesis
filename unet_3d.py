@@ -190,120 +190,63 @@ def psnr_metric(y_true, y_pred):
 
 # %%
 # ======== Naming files and making callbacks =======
-
-def parse_filename_simple(name: str):
+class BestFinalizeCallback(callbacks.Callback):
     """
-    Expects names like:
-      - TMP_<uuid>_valloss_0.0123_PSNR_32.1.keras
-      - V1_valloss_0.0119_PSNR_32.5.keras
-      - V2_valloss_0.013.keras_PSNR_31.4.keras
+    Speichert waehrend des Trainings nur in EINE feste TEMP-Datei.
+    Am Ende wird diese Datei genau EINMAL in den finalen Namen umbenannt:
+    V1_valloss_{:.3g}_PSNR_{:.3g}.keras
     """
-    if not name.endswith(".keras"):
-        return None
-
-    base = name[:-6]                   # remove ".keras"
-    parts = base.split("_")
-
-    # Assert that valloss is present
-    if "valloss" not in parts:
-        return None
-
-    val_loss = None
-    psnr = None
-    for i, p in enumerate(parts):
-        if p == "valloss" and i + 1 < len(parts):
-            try:
-                val_loss = float(parts[i + 1])
-            except ValueError:
-                return None
-        if p == "PSNR" and i + 1 < len(parts):
-            try:
-                psnr = float(parts[i + 1])
-            except ValueError:
-                psnr = None
-
-    if val_loss is None:
-        return None
-    return {"val_loss": val_loss, "psnr": psnr}
-
-
-def rank_and_rename(root: Path):
-    """
-    Reads all .keras files in folder and sorts them according to val_loss
-    Renames them suchn that V1 has the lowest val_loss, V2 the second lowest, etc.
-    Finale names: V{rank}_valloss_{:.3g}[_PSNR_{:.3g}].keras
-    """
-    root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-
-    items = []
-    for p in root.iterdir():
-        if p.is_file() and p.suffix == ".keras":
-            m = parse_filename_simple(p.name)
-            if m is not None:
-                items.append((p, m["val_loss"], m["psnr"]))
-
-    if not items:
-        return
-    
-    # Smallest val_loss first
-    items.sort(key=lambda x: x[1])
-
-    # Avoiding collisions: two-step renaming(first temp, then final)
-    temp_paths = []
-    for path, vloss, psnr in items:
-        tmp = root / f".tmp_{uuid.uuid4().hex}.keras"
-        os.replace(path, tmp)
-        temp_paths.append((tmp, vloss, psnr))
-
-    # Final naming
-    for rank, (tmp, vloss, psnr) in enumerate(temp_paths, start=1):
-        vloss_str = f"{vloss:.3g}"
-        psnr_part = f"_PSNR_{psnr:.3g}" if (psnr is not None) else ""
-        final = root / f"V{rank}_valloss_{vloss_str}{psnr_part}.keras"
-        os.replace(tmp, final)
-
-
-class RankRenameCallback(callbacks.Callback):
-    """Fuehrt am Trainingsende das globale Ranking & Umbenennen aus."""
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, tmp_name: str = None):
         super().__init__()
         self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.tmp_path = self.root / (tmp_name or f"TEMP_{uuid.uuid4().hex}.keras")
+        self.best_val_loss = np.inf
+        self.best_psnr = None
+
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is None or "val_loss" not in logs:
+            return
+        vloss = float(logs["val_loss"])
+        if vloss < self.best_val_loss:
+            self.best_val_loss = vloss
+            # PSNR Metrik heisst bei dir psnr_metric
+            psnr = logs.get("psnr_metric")
+            self.best_psnr = float(psnr) if psnr is not None else None
 
     def on_train_end(self, logs=None):
-        rank_and_rename(self.root)
+        # Finalen Dateinamen bauen (3 signifikante Ziffern)
+        vloss_str = f"{self.best_val_loss:.3g}" if np.isfinite(self.best_val_loss) else "nan"
+        psnr_part = f"_PSNR_{self.best_psnr:.3g}" if (self.best_psnr is not None and np.isfinite(self.best_psnr)) else ""
+        final = self.root / f"V1_valloss_{vloss_str}{psnr_part}.keras"
 
+        # Zuerst alle alten V*-Dateien loeschen (nur beste behalten)
+        for p in self.root.glob("V*.keras"):
+            try: p.unlink()
+            except: pass
 
-def file_names(root: Path):
+        # TEMP -> final
+        if self.tmp_path.exists():
+            os.replace(self.tmp_path, final)
+
+def make_callbacks_with_single_best(root: Path):
     """
-    Liefert (ckpt_best, rank_cb).
-
-    - ckpt_best speichert waehrend des Runs genau EINE Datei (save_best_only=True)
-      mit temporaerem Namen:
-        TMP_<uuid>_valloss_{val_loss:.3g}_PSNR_{psnr_metric:.3g}.keras
-    - rank_cb sortiert am Ende alle .keras Dateien im Ordner und
-      vergibt finale Namen:
-        V1_valloss_{:.3g}_PSNR_{:.3g}.keras, V2_..., V3_...
+    Liefert zwei Callbacks:
+      1) ModelCheckpoint: schreibt waehrend des Runs IMMER nur in dieselbe TEMP-Datei.
+      2) BestFinalizeCallback: merkt sich beste Metriken und benennt am Ende in V1_* um.
     """
     root = Path(root)
-    root.mkdir(parents=True, exist_ok=True)
-
-    # WICHTIG: Platzhalter muss zur Metrik in model.compile passen -> psnr_metric
-    tmp_name = (
-        f"TMP_{uuid.uuid4().hex}_valloss_" + "{val_loss:.3g}" +
-        "_PSNR_" + "{psnr_metric:.3g}.keras"
-    )
-    filepath = root / tmp_name
-
+    bf = BestFinalizeCallback(root)
     ckpt_best = callbacks.ModelCheckpoint(
-        filepath=str(filepath),
+        filepath=str(bf.tmp_path),   # feste TEMP-Datei, KEINE Platzhalter!
         monitor="val_loss",
         mode="min",
-        save_best_only=True,
+        save_best_only=True,         # ueberschreibt TEMP nur bei Verbesserung
         save_weights_only=False,
         verbose=1,
     )
-    return ckpt_best, RankRenameCallback(root)
+    return [ckpt_best, bf]
+
 
 
 # %%
@@ -321,13 +264,10 @@ model.compile(
 # model.summary()
 
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
-ckpt_cb, rank_cb = file_names(ckpt_root)
-
 cbs = [
-    ckpt_cb,  # speichert das beste Modell dieses Runs (temp. Name)
+    *make_callbacks_with_single_best(ckpt_root),  # TEMP + finale renaming
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
-    rank_cb,  # benennt am Ende alles in V1/V2/... um
 ]
 
 
