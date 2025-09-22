@@ -13,32 +13,20 @@
 # ---
 
 # %%
-# Evaluation.py
 import os
 import sys
 import re
 import json
+from typing import Optional
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
-
-# --- R^2 with sklearn (fallback if not installed) ---
-try:
-    from sklearn.metrics import r2_score as _sk_r2
-    def r2_score(y_true, y_pred):
-        return _sk_r2(y_true, y_pred)
-except Exception:
-    def r2_score(y_true, y_pred):
-        y_true = np.asarray(y_true)
-        y_pred = np.asarray(y_pred)
-        ss_res = np.sum((y_true - y_pred) ** 2)
-        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-        return 1.0 - ss_res / (ss_tot + 1e-12)
 
 # --- your data pipeline ---
 from unet_3d_data import prepare_in_memory_5to5
 
 DATA_ROOT = Path.home() / "data"
+EVAL_ROOT = DATA_ROOT  # Zielbasis fuer Ausgaben: ~/data
 
 # ===== Anscombe utils (for original-domain metrics) =====
 def inv_anscombe_tf(z, eps=1e-6):
@@ -59,8 +47,18 @@ def stable_psnr(y_true, y_pred, eps=1e-12):
     psnr = -10.0 * tf.math.log(mse + eps) / tf.math.log(tf.constant(10.0, dtype=mse.dtype))
     return tf.reduce_mean(psnr)
 
+def compute_ms_ssim(Y_true, Y_pred):
+    # (B, D, H, W, C) -> zu (B*D, H, W, C)
+    yt2 = tf.reshape(Y_true, (-1, tf.shape(Y_true)[2], tf.shape(Y_true)[3], tf.shape(Y_true)[4]))
+    yp2 = tf.reshape(Y_pred, (-1, tf.shape(Y_pred)[2], tf.shape(Y_pred)[3], tf.shape(Y_pred)[4]))
+    return float(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0).numpy().mean())
+
 # ===== Selection helpers =====
 def pick_checkpoint_dir():
+    # sucht unter ~/data nach Verzeichnissen "checkpoints_*"
+    if not DATA_ROOT.exists():
+        print(f"{DATA_ROOT} existiert nicht.")
+        sys.exit(1)
     cand = sorted([p for p in DATA_ROOT.iterdir()
                    if p.is_dir() and p.name.startswith("checkpoints_")])
     if not cand:
@@ -71,8 +69,10 @@ def pick_checkpoint_dir():
         print(f"  [{i}] {p.name}")
     while True:
         s = input("Nummer: ").strip()
-        if s.isdigit() and 1 <= int(s) <= len(cand):
-            return cand[int(s) - 1]
+        if s.isdigit():
+            idx = int(s)
+            if 1 <= idx <= len(cand):
+                return cand[idx - 1]
 
 def pick_version(ckpt_dir: Path):
     models = []
@@ -90,8 +90,10 @@ def pick_version(ckpt_dir: Path):
         print(f"  [{i}] {p.name}")
     while True:
         s = input("Nummer: ").strip()
-        if s.isdigit() and 1 <= int(s) <= len(models):
-            return models[int(s) - 1]
+        if s.isdigit():
+            idx = int(s)
+            if 1 <= idx <= len(models):
+                return models[idx - 1]
 
 # ===== Determine use_vst (from JSON; fallback: folder name) =====
 def detect_use_vst(model_path: Path) -> bool:
@@ -133,13 +135,73 @@ def collect_preds_and_targets(model, dataset, max_batches=None):
     y_pred = np.concatenate(y_pred, axis=0)
     return y_true, y_pred
 
+# ===== val_loss helpers fuer Dateinamen =====
+def _read_val_loss_from_meta(model_path: Path) -> Optional[float]:
+    """Versucht val_loss aus einer nebenliegenden JSON-Meta zu lesen."""
+    meta_path = model_path.with_suffix(".json")
+    if not meta_path.exists():
+        return None
+    try:
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+        if isinstance(meta, dict):
+            if "val_loss" in meta:
+                return float(meta["val_loss"])
+            if "best_val_loss" in meta:
+                return float(meta["best_val_loss"])
+            hist = meta.get("history", {})
+            if isinstance(hist, dict) and "val_loss" in hist and hist["val_loss"]:
+                try:
+                    return float(np.min(hist["val_loss"]))
+                except Exception:
+                    try:
+                        return float(hist["val_loss"][-1])
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return None
+
+def _read_val_loss_from_name(model_path: Path) -> Optional[float]:
+    """Extrahiert val_loss aus dem Dateinamen (unterstuetzt 'val_loss=' oder 'valloss=')."""
+    stem = model_path.stem.lower()
+    m = re.search(r"(?:val[_-]?loss|valloss)\s*=\s*([0-9]*\.?[0-9]+)", stem)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            return None
+    return None
+
+def _build_eval_filename(model_path: Path, psnr_value: float, val_loss_value: Optional[float]) -> str:
+    """
+    Baut einen sprechenden JSON-Dateinamen:
+    <modellstem>_val<loss>_psnr<db>.json
+    Wenn val_loss nicht bekannt ist, entfaellt der val-Teil.
+    """
+    stem = model_path.stem
+    if val_loss_value is not None:
+        return f"{stem}_val{val_loss_value:.6f}_psnr{psnr_value:.2f}.json"
+    else:
+        return f"{stem}_psnr{psnr_value:.2f}.json"
+
 # ====== Ergebnisse speichern ======
 def save_results(model_path, results: dict):
-    out_dir = Path("model_evaluations")
-    out_dir.mkdir(parents=True, exist_ok=True)  # Ordner anlegen falls nicht da
+    # Zielordner: ~/data/model_evaluations
+    out_dir = EVAL_ROOT / "model_evaluations"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # gleicher Grundname wie Modell, aber .json statt .keras
-    out_path = out_dir / (model_path.stem + "_evaluation.json")
+    # val_loss beschaffen (Meta -> Name -> None)
+    val_loss = _read_val_loss_from_meta(model_path)
+    if val_loss is None:
+        val_loss = _read_val_loss_from_name(model_path)
+
+    # PSNR fuer den Dateinamen
+    psnr_value = float(results.get("psnr", 0.0))
+
+    # Dateiname bauen
+    out_name = _build_eval_filename(model_path, psnr_value, val_loss)
+    out_path = out_dir / out_name
 
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
@@ -178,12 +240,12 @@ def main():
     mse  = float(np.mean((yt - yp) ** 2))
     mae  = float(np.mean(np.abs(yt - yp)))
     rmse = float(np.sqrt(mse))
-    r2   = float(r2_score(yt, yp))
 
     psnr = float(tf.image.psnr(Y_true_m, Y_pred_m, max_val=1.0).numpy().mean())
+    # Mittel-Slice vorbereitet (optional nutzbar)
     Y_true_2d = Y_true_m[:, Y_true_m.shape[1] // 2, :, :, :]
     Y_pred_2d = Y_pred_m[:, Y_pred_m.shape[1] // 2, :, :, :]
-    ssim = float(tf.image.ssim(Y_true_2d, Y_pred_2d, max_val=1.0).numpy().mean())
+    ms_ssim = compute_ms_ssim(Y_true_m, Y_pred_m)
 
     print("\n=== Evaluation auf Test Set (Originalraum) ===")
     print(f"Modell       : {model_path.name}")
@@ -192,9 +254,8 @@ def main():
     print(f"MSE          : {mse:.6f}")
     print(f"MAE          : {mae:.6f}")
     print(f"RMSE         : {rmse:.6f}")
-    print(f"R2           : {r2:.6f}")
     print(f"PSNR         : {psnr:.2f} dB")
-    print(f"SSIM (mid-Z) : {ssim:.4f}")
+    print(f"MS-SSIM      : {ms_ssim:.4f}")
 
     # ---- Ergebnisse abspeichern ----
     results = {
@@ -204,17 +265,14 @@ def main():
         "mse": mse,
         "mae": mae,
         "rmse": rmse,
-        "r2": r2,
         "psnr": psnr,
-        "ssim_midZ": ssim,
+        "ms_ssim": ms_ssim,
     }
     save_results(model_path, results)
-
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
         print("\nAbgebrochen.")
-
 
