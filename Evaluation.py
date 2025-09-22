@@ -13,75 +13,75 @@
 # ---
 
 # %%
-import os
+import os, re, sys
 import numpy as np
 import tensorflow as tf
+from pathlib import Path
 from sklearn.metrics import r2_score
 
+# === Import deiner Daten-Pipeline ===
+from unet_3d_data import prepare_in_memory_5to5
 
-# %%
-# ======== Load Test Data ========
+# ====== Utils: Anscombe (nur fuer Metriken im Originalraum) ======
+def inv_anscombe_tf(z):
+    z = tf.maximum(z, 1e-3)
+    z2 = z / 2.0
+    y = z2**2 - 1.0/8.0 + 1.0/(4.0*z**2) - 11.0/(8.0*z**4)
+    return tf.nn.relu(y)
 
-DATA_DIR = os.path.join(os.getcwd(), "data", "data_3D_U-net")
+# ====== Auswahl: Checkpoint-Ordner + Modellversion ======
+DATA_ROOT = Path.home() / "data"
 
-# Shape check from one file
-probe = np.load(os.path.join(DATA_DIR, "X_test.npy"), mmap_mode="r")
-INPUT_SHAPE = tuple(probe.shape[1:])  # (D,H,W,C)
-print("Detected INPUT_SHAPE:", INPUT_SHAPE)
-del probe
+def pick_checkpoint_dir():
+    cand = sorted([p for p in DATA_ROOT.iterdir()
+                   if p.is_dir() and p.name.startswith("checkpoints_")])
+    if not cand:
+        print("Keine Checkpoint-Ordner gefunden unter ~/data (checkpoints_*)")
+        sys.exit(1)
+    print("Waehle Checkpoint-Ordner:")
+    for i, p in enumerate(cand, 1):
+        print(f"  [{i}] {p.name}")
+    while True:
+        s = input("Nummer: ").strip()
+        if s.isdigit() and 1 <= int(s) <= len(cand):
+            return cand[int(s)-1]
 
-BATCH_SIZE = 4
-AUTO = tf.data.AUTOTUNE
+def pick_version(ckpt_dir: Path):
+    models = []
+    pat = re.compile(r"^V(\d+)_.*\.keras$")
+    for p in ckpt_dir.iterdir():
+        if p.is_file() and p.suffix == ".keras" and pat.match(p.name):
+            models.append(p)
+    if not models:
+        print(f"Keine V*-Modelle in {ckpt_dir} gefunden.")
+        sys.exit(1)
+    # Nach V-Nummer sortieren
+    models.sort(key=lambda p: int(p.stem.split('_')[0][1:]))  # V{n}_...
+    print(f"Waehle Modell in {ckpt_dir.name}:")
+    for i, p in enumerate(models, 1):
+        print(f"  [{i}] {p.name}")
+    while True:
+        s = input("Nummer: ").strip()
+        if s.isdigit() and 1 <= int(s) <= len(models):
+            return models[int(s)-1]
 
-def load_split(split):
-    x = np.load(os.path.join(DATA_DIR, f"X_{split}.npy"), mmap_mode="r")
-    y = np.load(os.path.join(DATA_DIR, f"Y_{split}.npy"), mmap_mode="r")
-    if x.shape[1:] != INPUT_SHAPE or y.shape[1:] != INPUT_SHAPE:
-        raise RuntimeError(f"{split} shape mismatch: {x.shape[1:]} vs {INPUT_SHAPE}")
-    return x, y
+# ====== Test-Dataset bauen (identisch zur Trainings-Pipeline) ======
+def build_test_dataset(use_vst: bool, size=5, group_len=41, dtype=np.float32, batch_size=4):
+    results, _ = prepare_in_memory_5to5(
+        data_dir=Path.home() / "data" / "original_data",
+        size=size,
+        group_len=group_len,
+        use_vst=use_vst,
+        dtype=dtype,
+    )
+    X_test, Y_test = results["test"]
 
-X_test, Y_test = load_split("test")
+    AUTO = tf.data.AUTOTUNE
+    ds = tf.data.Dataset.from_tensor_slices((X_test, Y_test))
+    ds = ds.batch(batch_size).prefetch(AUTO)
+    return ds, X_test.shape[1:]
 
-def make_ds(X_mm, Y_mm, shuffle=False):
-    n = X_mm.shape[0]
-    idx = np.arange(n, dtype=np.int64)
-
-    def _fetch(i):
-        i = int(i)
-        return X_mm[i], Y_mm[i]
-
-    def tf_fetch(i):
-        x, y = tf.numpy_function(_fetch, [i], [tf.float32, tf.float32])
-        x.set_shape(INPUT_SHAPE)
-        y.set_shape(INPUT_SHAPE)
-        return x, y
-
-    ds = tf.data.Dataset.from_tensor_slices(idx)
-    if shuffle:
-        ds = ds.shuffle(min(8000, n), reshuffle_each_iteration=True)
-    ds = ds.map(tf_fetch, num_parallel_calls=AUTO)
-    ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
-    return ds
-
-# Build dataset for evaluation
-test_ds = make_ds(X_test, Y_test, shuffle=False)
-
-# %%
-# ======== Load best saved model & evaluate on test ========
-
-# Open Model that should be evaluated
-ckpt_dir = os.path.join(os.getcwd(), "checkpoints_3d_unet")
-best_path = os.path.join(ckpt_dir, "best.keras") # Pick model to evaluate
-
-print(f"Load Model: {best_path}")
-best_model = tf.keras.models.load_model(best_path, custom_objects={
-        "combined_loss": globals().get("combined_loss"),
-        "ms_ssim_loss": globals().get("ms_ssim_loss"),
-        "ms_ssim_metric": globals().get("ms_ssim_metric"),
-    }
-)
-
-# Collect all predictions and targets from the test dataset
+# ====== Predictions einsammeln ======
 def collect_preds_and_targets(model, dataset, max_batches=None):
     y_true, y_pred = [], []
     for b, (xb, yb) in enumerate(dataset):
@@ -94,33 +94,74 @@ def collect_preds_and_targets(model, dataset, max_batches=None):
     y_pred = np.concatenate(y_pred, axis=0)
     return y_true, y_pred
 
-# Optional: testing less batches, e.g.. MAX_BATCHES = 50
-MAX_BATCHES = None
+# ====== Hauptlogik ======
+def main():
+    ckpt_dir = pick_checkpoint_dir()
+    model_path = pick_version(ckpt_dir)
 
-# Evaluation
-Y_true, Y_pred = collect_preds_and_targets(best_model, test_ds, max_batches=MAX_BATCHES)
+    # Heuristik: wenn Ordnername "anscombe" enthaelt -> use_vst=True
+    use_vst = ("anscombe" in ckpt_dir.name.lower())
 
-yt = Y_true.ravel()
-yp = Y_pred.ravel()
+    print(f"\n>> Lade Modell: {model_path}")
+    # Robust laden: erklaere evtl. Custom-Objekte (egal was beim Training genutzt wurde)
+    def dummy(*args, **kwargs):  # falls nicht gebraucht
+        return None
+    custom_objects = {
+        "combined_loss": globals().get("combined_loss", dummy),
+        "ms_ssim_loss": globals().get("ms_ssim_loss", dummy),
+        "ms_ssim_metric": globals().get("ms_ssim_metric", dummy),
+        "psnr_metric": globals().get("psnr_metric", dummy),
+        "psnr_orig_metric": globals().get("psnr_orig_metric", dummy),
+        "ms_ssim_orig_metric": globals().get("ms_ssim_orig_metric", dummy),
+    }
+    model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
 
-mse  = np.mean((yt - yp) ** 2)
-mae  = np.mean(np.abs(yt - yp))
-rmse = np.sqrt(mse)
-r2   = r2_score(yt, yp)
+    print(">> Baue Test-Dataset… (use_vst =", use_vst, ")")
+    test_ds, input_shape = build_test_dataset(
+        use_vst=use_vst, size=5, group_len=41, dtype=np.float32, batch_size=4
+    )
 
-# PSNR over 3D-Volume (Data in [0,1])
-psnr = tf.image.psnr(Y_true, Y_pred, max_val=1.0).numpy().mean()
+    # Vorhersagen
+    Y_true, Y_pred = collect_preds_and_targets(model, test_ds, max_batches=None)
 
-# SSIM slice wise (mittlerer Slice entlang D)
-Y_true_2d = Y_true[:, Y_true.shape[1] // 2, :, :, :]
-Y_pred_2d = Y_pred[:, Y_pred.shape[1] // 2, :, :, :]
-ssim = tf.image.ssim(Y_true_2d, Y_pred_2d, max_val=1.0).numpy().mean()
+    # Basis-Fehler (im Trainingsraum)
+    yt = Y_true.ravel()
+    yp = Y_pred.ravel()
+    mse  = float(np.mean((yt - yp) ** 2))
+    mae  = float(np.mean(np.abs(yt - yp)))
+    rmse = float(np.sqrt(mse))
+    r2   = float(r2_score(yt, yp))
 
-print("=== Evaluation on Test Set (loaded best checkpoint) ===")
-print(f"MSE   : {mse:.6f}")
-print(f"MAE   : {mae:.6f}")
-print(f"RMSE  : {rmse:.6f}")
-print(f"R2    : {r2:.6f}")
-print(f"PSNR  : {psnr:.2f} dB")
-print(f"SSIM  : {ssim:.4f}")
+    # PSNR / SSIM: je nach use_vst im Originalraum
+    if use_vst:
+        Y_true_o = inv_anscombe_tf(tf.convert_to_tensor(Y_true))
+        Y_pred_o = inv_anscombe_tf(tf.convert_to_tensor(Y_pred))
+        # clamp in [0,1] fuer diese Metriken, wie in deinen Trainingsmetriken
+        Y_true_o = tf.clip_by_value(Y_true_o, 0.0, 1.0)
+        Y_pred_o = tf.clip_by_value(Y_pred_o, 0.0, 1.0)
+
+        psnr = float(tf.image.psnr(Y_true_o, Y_pred_o, max_val=1.0).numpy().mean())
+
+        Y_true_2d = Y_true_o[:, Y_true_o.shape[1] // 2, :, :, :]
+        Y_pred_2d = Y_pred_o[:, Y_pred_o.shape[1] // 2, :, :, :]
+        ssim = float(tf.image.ssim(Y_true_2d, Y_pred_2d, max_val=1.0).numpy().mean())
+    else:
+        psnr = float(tf.image.psnr(Y_true, Y_pred, max_val=1.0).numpy().mean())
+        Y_true_2d = Y_true[:, Y_true.shape[1] // 2, :, :, :]
+        Y_pred_2d = Y_pred[:, Y_pred.shape[1] // 2, :, :, :]
+        ssim = float(tf.image.ssim(Y_true_2d, Y_pred_2d, max_val=1.0).numpy().mean())
+
+    print("\n=== Evaluation auf Test Set ===")
+    print(f"Modell       : {model_path.name}")
+    print(f"INPUT_SHAPE  : {input_shape}")
+    print(f"use_vst      : {use_vst}")
+    print(f"MSE          : {mse:.6f}")
+    print(f"MAE          : {mae:.6f}")
+    print(f"RMSE         : {rmse:.6f}")
+    print(f"R2           : {r2:.6f}")
+    print(f"PSNR         : {psnr:.2f} dB")
+    print(f"SSIM (mid-Z) : {ssim:.4f}")
+
+if __name__ == "__main__":
+    main()
 

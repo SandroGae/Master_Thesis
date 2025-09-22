@@ -136,10 +136,21 @@ def inv_anscombe(z):
     y = z2**2 - 1.0/8.0 + 1.0/(4.0*z**2) - 11.0/(8.0*z**4)
     return tf.nn.relu(y)
 
-def psnr_orig_metric(y_true_vst, y_pred_vst):
+def psnr_orig_metric(y_true_vst, y_pred_vst, eps=1e-12):
+    # zurueck in den Originalraum
     y_true = tf.clip_by_value(inv_anscombe(y_true_vst), 0.0, 1.0)
     y_pred = tf.clip_by_value(inv_anscombe(y_pred_vst), 0.0, 1.0)
-    return tf.image.psnr(y_true, y_pred, max_val=1.0)
+
+    # MSE pro Sample (ueber alle Dimensionen H,W,D,C mitteln)
+    # Form ist (B, D, H, W, C)
+    err2 = tf.square(y_true - y_pred)
+    # Mittel ueber alle ausser der Batch-Dimension:
+    axes = tf.range(1, tf.rank(err2))
+    mse = tf.reduce_mean(err2, axis=axes)
+
+    # PSNR stabil: 20*log10(MAX) - 10*log10(mse+eps); MAX=1
+    psnr = -10.0 * tf.math.log(mse + eps) / tf.math.log(tf.constant(10.0, dtype=mse.dtype))
+    return tf.reduce_mean(psnr)
 
 def ms_ssim_orig_metric(y_true_vst, y_pred_vst):
     yt = inv_anscombe(y_true_vst)
