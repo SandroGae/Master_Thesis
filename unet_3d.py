@@ -15,6 +15,10 @@
 # %%
 # ======== Imports =======
 import os
+
+from tensorflow.keras import mixed_precision
+mixed_precision.set_global_policy("mixed_float16") # Increases performance without loss of quality (calculations still done with float_32 precision)
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
@@ -34,16 +38,15 @@ AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depend
 # %%
 # ===== Loading Data in RAM =====
 
-print(">>> Phase 1: Starte Datenvorbereitung auf der CPU...")
-# function from 3d_unet_data.py
+print(">>> Phase 1: Starting data prep on CPU...")
 (results, size) = prepare_in_memory_5to5(
     data_dir=Path.home() / "data" / "original_data",
-    use_vst=False,          # Anscombe aus
+    use_vst=False, # No anscombe transform
     size=5,
     group_len=41,
     dtype=np.float32,
 )
-print(">>> Datenvorbereitung abgeschlossen. Alle Daten sind im RAM.")
+print(">>> Data preperation finished, all data in RAM")
 
 X_train, Y_train = results["train"]
 X_val,   Y_val   = results["val"]
@@ -56,7 +59,7 @@ INPUT_SHAPE = X_train.shape[1:]  # (5, H, W, 1)
 # ======== Making Tensorflow dataset =======
 
 BATCH_SIZE = 16
-EPOCHS     = 1
+EPOCHS     = 400
 
 # Sanity check for INPUT_SHAPE
 D,H,W,C = INPUT_SHAPE
@@ -64,17 +67,20 @@ if (H % 8) or (W % 8):
     print(f"[WARN] H={H} oder W={W} nicht durch 8 teilbar (3x (1,2,2)-Pooling)")
 
 def make_ds(X, Y, shuffle=True):
+    """
+    Creates a tensorflow dataset
+    """
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
     if shuffle:
         ds = ds.shuffle(buffer_size=X.shape[0])
     ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
     return ds
 
-print(">>> Phase 2: Erstelle Tensorflow Datasets...")
+print(">>> Phase 2: Create Tensorflow Datasets...")
 train_ds = make_ds(X_train, Y_train, True)
 val_ds   = make_ds(X_val,   Y_val,   False)
 test_ds  = make_ds(X_test,  Y_test,  False)
-print(">>> Datasets erstellt.")
+print(">>> Datasets created")
 
 
 # %%
@@ -118,7 +124,7 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     u1 = layers.concatenate([u1, c1])
     c6 = conv_block(u1, base_filters)
 
-    outputs = layers.Conv3D(1, (1,1,1), activation="sigmoid")(c6)
+    outputs = layers.Conv3D(1, (1,1,1), dtype="float32", activation="sigmoid")(c6)
     return models.Model(inputs, outputs, name="3D_U-Net")
 
 
@@ -128,20 +134,12 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
 
 ALPHA = 0.7  # Weight for MS-SSIM
 
-def _flatten_depth(x):
-    """
-    Making for every depth slice a 2D-image and then evaluate all slices
-    (B,D,H,W,C) -> (B*D, H, W, C)
-    """
-    shape = tf.shape(x)
-    b, d = shape[0], shape[1]
-    h, w, c = x.shape[2], x.shape[3], x.shape[4]
-    return tf.reshape(x, (b*d, h, w, c))
-
 def _sample_depth_indices(batch_size, depth, k=1, seed=42):
-    # ohne Ersatz: k <= depth
-    rnd = tf.random.stateless_uniform([batch_size, depth], seed=[seed, 0])
-    topk = tf.math.top_k(rnd, k=k).indices  # (B,k)
+    """
+    Generates deterministic matrix and samples indices using highest values per row
+    """
+    rnd = tf.random.stateless_uniform([batch_size, depth], seed=[seed, 0]) # (B,D) matrix with random values
+    topk = tf.math.top_k(rnd, k=k).indices                                 # Search for 2 highest values per row
     return topk
 
 def ms_ssim_loss_sampled(y_true, y_pred, k=1):
@@ -149,26 +147,26 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=1):
     Defining MS-SSIM for the loss function equivalently as in the paper
     """
     # y: (B, D, H, W, C)
-    b = tf.shape(y_true)[0]
-    d = tf.shape(y_true)[1]
-    idx = _sample_depth_indices(b, d, k=k)                    # (B,k)
-    # sammle ausgewählte Slices
-    yt = tf.gather(y_true, idx, batch_dims=1)                 # (B,k,H,W,C)
-    yp = tf.gather(y_pred, idx, batch_dims=1)                 # (B,k,H,W,C)
-    # zu 2D-Bildern flatten
-    yt2 = tf.reshape(yt, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    yp2 = tf.reshape(yp, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
-    ms  = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)     # (B*k,)
+    batch_size = tf.shape(y_true)[0]
+    depth = tf.shape(y_true)[1]                               # Number of 2D slices
+    idx = _sample_depth_indices(batch_size, depth, k=k)       # (B,k)
+    # gathering chosen slices
+    y_groundtruth = tf.gather(y_true, idx, batch_dims=1)      # (B,k,H,W,C)
+    y_model = tf.gather(y_pred, idx, batch_dims=1)            # (B,k,H,W,C)
+    # flatten to 2D pictures
+    y_groundtruth_2 = tf.reshape(y_groundtruth, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
+    y_model_2 = tf.reshape(y_model, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
+    ms  = tf.image.ssim_multiscale(y_groundtruth_2, y_model_2, max_val=1.0)     # (B*k,)
     return 1.0 - tf.reduce_mean(ms)
 
 def combined_loss(y_true, y_pred, k_slices=1):
     """
     Combining the loss composite of MAE and MS-SSIM
-    MAE stable and useful for strong signals --> Bragg peaks
-    MS-SSIM focuses on structure --> CDW satellite signals
+    (MAE stable and useful for strong signals --> Bragg peaks)
+    (MS-SSIM focuses on structure --> CDW satellite signals)
     """
     l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)  # k=1 oder 2 ist meist ausreichend
+    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)  # K=1
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
 
 def ms_ssim_metric(y_true, y_pred):
@@ -179,13 +177,12 @@ def ms_ssim_metric(y_true, y_pred):
     yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
 
+def psnr_metric(y_true, y_pred):
+    """
+    Showing PSNR metric during training
+    """
+    return tf.image.psnr(y_true, y_pred, max_val=1.0)
 
-# %%
-# ======== Compile model =======
-
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=32)
-model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss=combined_loss, metrics=["mae", ms_ssim_metric])
-model.summary()
 
 
 # %%
@@ -196,19 +193,30 @@ os.makedirs(ckpt_dir, exist_ok=True)
 
 cbs = [
     callbacks.ModelCheckpoint(os.path.join(ckpt_dir, "best_V2.keras"), monitor="val_loss", save_best_only=True, verbose=1),
-    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=1),
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1),
+    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
+    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
 ]
-
 
 # %%
 # ======== Train =======
-print(">>> Phase 3: Starte GPU-Training jetzt!") # HIER sollte die GPU-Auslastung steigen
+
+print(">>> Phase 3: GPU training starts now!")
+
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(1e-3),
+    loss=combined_loss,
+    metrics=["mae", "mse", psnr_metric, ms_ssim_metric],
+    jit_compile=False # Would be false per default, but just to be sure
+)
+# model.summary()
+
 history = model.fit(
     train_ds,
     validation_data=val_ds,
     epochs=EPOCHS,
     callbacks=cbs,
-    verbose=1
+    verbose=2
 )
-print(">>> Training beendet.")
+print(">>> Training complete")
+
