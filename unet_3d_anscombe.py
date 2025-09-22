@@ -206,40 +206,40 @@ class BestFinalizeCallback(callbacks.Callback):
 
     # ---------- JSON ----------
     def _write_json_for_model(self, model_path: Path):
-    # JSON direkt mit gleichem Basenamen wie das Modell (ohne Zeit im Namen)
-    json_path = model_path.with_suffix(".json")
-    ts = _timestamp()  # nur im Inhalt, nicht im Dateinamen
+        # JSON direkt mit gleichem Basenamen wie das Modell (ohne Zeit im Namen)
+        json_path = model_path.with_suffix(".json")
+        ts = _timestamp()  # nur im Inhalt, nicht im Dateinamen
 
-    meta = {
-        "timestamp": ts,
-        "user": getpass.getuser(),
-        "host": socket.gethostname(),
-        "platform": platform.platform(),
-        "git_commit": _safe_git_commit(),
+        meta = {
+            "timestamp": ts,
+            "user": getpass.getuser(),
+            "host": socket.gethostname(),
+            "platform": platform.platform(),
+            "git_commit": _safe_git_commit(),
 
-        # Trainings-Hparam aus run_meta
-        "batch_size": self.run_meta.get("batch_size"),
-        "epochs_planned": self.run_meta.get("epochs"),
-        "early_stopping": self.run_meta.get("early_stopping"),
-        "data_prep": self.run_meta.get("data_prep"),
-        "alpha_ms_ssim": self.run_meta.get("ALPHA"),
+            # Trainings-Hparam aus run_meta
+            "batch_size": self.run_meta.get("batch_size"),
+            "epochs_planned": self.run_meta.get("epochs"),
+            "early_stopping": self.run_meta.get("early_stopping"),
+            "data_prep": self.run_meta.get("data_prep"),
+            "alpha_ms_ssim": self.run_meta.get("ALPHA"),
 
-        # Beste Metriken dieses Runs
-        "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
-        "best_psnr_metric": self.best_psnr,
+            # Beste Metriken dieses Runs
+            "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
+            "best_psnr_metric": self.best_psnr,
 
-        # Modell/Compile-Zustand
-        "input_shape": tuple(int(x) for x in (self.model.input_shape or []) if isinstance(x, (int,np.integer))),
-        "loss": getattr(self.model.loss, "__name__", str(self.model.loss)),
-        "metrics": [getattr(m, "__name__", str(m)) for m in (self.model.metrics or [])],
-        "optimizer": _serialize_optimizer(self.model.optimizer),
-        "mixed_precision_policy": mixed_precision.global_policy().name if mixed_precision.global_policy() else None,
-    }
-    try:
-        with open(json_path, "w") as f:
-            json.dump(meta, f, indent=2)
-    except Exception as e:
-        print(f"[WARN] Konnte JSON nicht schreiben: {e}")
+            # Modell/Compile-Zustand
+            "input_shape": tuple(int(x) for x in (self.model.input_shape or []) if isinstance(x, (int,np.integer))),
+            "loss": getattr(self.model.loss, "__name__", str(self.model.loss)),
+            "metrics": [getattr(m, "__name__", str(m)) for m in (self.model.metrics or [])],
+            "optimizer": _serialize_optimizer(self.model.optimizer),
+            "mixed_precision_policy": mixed_precision.global_policy().name if mixed_precision.global_policy() else None,
+        }
+        try:
+            with open(json_path, "w") as f:
+                json.dump(meta, f, indent=2)
+        except Exception as e:
+            print(f"[WARN] Konnte JSON nicht schreiben: {e}")
 
     # ---------- Ranking & Umbenennen ----------
     @staticmethod
