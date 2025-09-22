@@ -231,7 +231,7 @@ class BestFinalizeCallback(callbacks.Callback):
 
     def on_train_end(self, logs=None):
         # 1) TEMP -> NEW_* mit Metriken
-        vloss_str = f"{self.best_val_loss:.3g}" if np.isfinite(self.best_val_loss) else "nan"
+        vloss_str = f"{self.best_val_loss:.3e}" if np.isfinite(self.best_val_loss) else "nan"
         psnr_part = f"_PSNR_{self.best_psnr:.3g}" if (self.best_psnr is not None and np.isfinite(self.best_psnr)) else ""
         new_model = self.root / f"NEW_valloss_{vloss_str}{psnr_part}.keras"
         if self.tmp_path.exists():
@@ -245,9 +245,7 @@ class BestFinalizeCallback(callbacks.Callback):
 
     # ---------- JSON ----------
     def _write_json_for_model(self, model_path: Path):
-        ts = _timestamp()
-        json_path = model_path.with_suffix("")  # ohne .keras
-        json_path = Path(str(json_path) + f"_{ts}.json")
+        json_path = model_path.with_suffix(".json")
 
         meta = {
             "timestamp": ts,
@@ -330,7 +328,7 @@ class BestFinalizeCallback(callbacks.Callback):
             temps.append((t_model, tmp_jsons, vloss, psnr))
 
         for rank, (t_model, tmp_jsons, vloss, psnr) in enumerate(temps, start=1):
-            v = f"{vloss:.3g}"
+            v = f"{vloss:.3e}"
             ps = f"_PSNR_{psnr:.3g}" if psnr is not None else ""
             final_model = self.root / f"V{rank}_valloss_{v}{ps}.keras"
             os.replace(t_model, final_model)
