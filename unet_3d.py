@@ -25,7 +25,7 @@ from tensorflow.keras import layers, models, callbacks
 from unet_3d_data import prepare_in_memory_5to5
 from pathlib import Path
 
-import uuid # for naming files and callbacks
+import json, socket, getpass, platform, subprocess, time, uuid # for naming files and callbacks
 
 
 # %%
@@ -190,62 +190,159 @@ def psnr_metric(y_true, y_pred):
 
 # %%
 # ======== Naming files and making callbacks =======
+
+def _safe_git_commit():
+    try:
+        return subprocess.check_output(["git","rev-parse","--short","HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return None
+
+def _serialize_optimizer(opt):
+    try:
+        return tf.keras.optimizers.serialize(opt)
+    except Exception:
+        return None
+
+def _timestamp():
+    # Dateiname-sicher (kein ":" unter Windows)
+    return time.strftime("%Y-%m-%dT%H-%M-%S")
+
 class BestFinalizeCallback(callbacks.Callback):
     """
-    Speichert waehrend des Trainings nur in EINE feste TEMP-Datei.
-    Am Ende wird diese Datei genau EINMAL in den finalen Namen umbenannt:
-    V1_valloss_{:.3g}_PSNR_{:.3g}.keras
+    Speichert waehrend des Runs nur in eine TEMP-Datei (save_best_only=True).
+    Am Ende: legt neue Datei mit Metriken an (NEW_...), ranked alle Modelle zu V1,V2,...
+    und schreibt daneben eine JSON: <Modellname_ohne_Ext>_<Datum>.json
     """
-    def __init__(self, root: Path, tmp_name: str = None):
+    def __init__(self, root: Path, run_meta: dict = None, tmp_name: str = None):
         super().__init__()
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = Path(root); self.root.mkdir(parents=True, exist_ok=True)
         self.tmp_path = self.root / (tmp_name or f"TEMP_{uuid.uuid4().hex}.keras")
         self.best_val_loss = np.inf
         self.best_psnr = None
+        self.run_meta = run_meta or {}
 
     def on_epoch_end(self, epoch, logs=None):
-        if logs is None or "val_loss" not in logs:
-            return
+        if not logs or "val_loss" not in logs: return
         vloss = float(logs["val_loss"])
         if vloss < self.best_val_loss:
             self.best_val_loss = vloss
-            # PSNR Metrik heisst bei dir psnr_metric
             psnr = logs.get("psnr_metric")
             self.best_psnr = float(psnr) if psnr is not None else None
 
     def on_train_end(self, logs=None):
-        # Finalen Dateinamen bauen (3 signifikante Ziffern)
+        # 1) TEMP -> NEW_* mit Metriken
         vloss_str = f"{self.best_val_loss:.3g}" if np.isfinite(self.best_val_loss) else "nan"
         psnr_part = f"_PSNR_{self.best_psnr:.3g}" if (self.best_psnr is not None and np.isfinite(self.best_psnr)) else ""
-        final = self.root / f"V1_valloss_{vloss_str}{psnr_part}.keras"
-
-        # Zuerst alle alten V*-Dateien loeschen (nur beste behalten)
-        for p in self.root.glob("V*.keras"):
-            try: p.unlink()
-            except: pass
-
-        # TEMP -> final
+        new_model = self.root / f"NEW_valloss_{vloss_str}{psnr_part}.keras"
         if self.tmp_path.exists():
-            os.replace(self.tmp_path, final)
+            os.replace(self.tmp_path, new_model)
 
-def make_callbacks_with_single_best(root: Path):
-    """
-    Liefert zwei Callbacks:
-      1) ModelCheckpoint: schreibt waehrend des Runs IMMER nur in dieselbe TEMP-Datei.
-      2) BestFinalizeCallback: merkt sich beste Metriken und benennt am Ende in V1_* um.
-    """
-    root = Path(root)
-    bf = BestFinalizeCallback(root)
-    ckpt_best = callbacks.ModelCheckpoint(
-        filepath=str(bf.tmp_path),   # feste TEMP-Datei, KEINE Platzhalter!
-        monitor="val_loss",
-        mode="min",
-        save_best_only=True,         # ueberschreibt TEMP nur bei Verbesserung
-        save_weights_only=False,
-        verbose=1,
-    )
-    return [ckpt_best, bf]
+        # 2) JSON fuer dieses neu entstandene Modell schreiben (mit Datum)
+        self._write_json_for_model(new_model)
+
+        # 3) Globales Ranking aller Modelle im Ordner: V1, V2, ...
+        self._rank_all_models()
+
+    # ---------- JSON ----------
+    def _write_json_for_model(self, model_path: Path):
+        ts = _timestamp()
+        json_path = model_path.with_suffix("")  # ohne .keras
+        json_path = Path(str(json_path) + f"_{ts}.json")
+
+        meta = {
+            "timestamp": ts,
+            "user": getpass.getuser(),
+            "host": socket.gethostname(),
+            "platform": platform.platform(),
+            "git_commit": _safe_git_commit(),
+
+            # Trainings-Hparam aus run_meta
+            "batch_size": self.run_meta.get("batch_size"),
+            "epochs_planned": self.run_meta.get("epochs"),
+            "early_stopping": self.run_meta.get("early_stopping"),
+            "data_prep": self.run_meta.get("data_prep"),
+            "alpha_ms_ssim": self.run_meta.get("ALPHA"),
+
+            # Beste Metriken dieses Runs
+            "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
+            "best_psnr_metric": self.best_psnr,
+
+            # Modell/Compile-Zustand
+            "input_shape": tuple(int(x) for x in (self.model.input_shape or []) if isinstance(x, (int,np.integer))),
+            "loss": getattr(self.model.loss, "__name__", str(self.model.loss)),
+            "metrics": [getattr(m, "__name__", str(m)) for m in (self.model.metrics or [])],
+            "optimizer": _serialize_optimizer(self.model.optimizer),
+            "mixed_precision_policy": mixed_precision.global_policy().name if mixed_precision.global_policy() else None,
+        }
+        try:
+            with open(json_path, "w") as f:
+                json.dump(meta, f, indent=2)
+        except Exception as e:
+            print(f"[WARN] Konnte JSON nicht schreiben: {e}")
+
+    # ---------- Ranking & Umbenennen ----------
+    @staticmethod
+    def _parse_filename_simple(name: str):
+        if not name.endswith(".keras"): return None
+        base = name[:-6]; parts = base.split("_")
+        if "valloss" not in parts: return None
+        val_loss = None; psnr = None
+        for i,p in enumerate(parts):
+            if p=="valloss" and i+1<len(parts):
+                try: val_loss = float(parts[i+1])
+                except: return None
+            if p=="PSNR" and i+1<len(parts):
+                try: psnr = float(parts[i+1])
+                except: psnr = None
+        if val_loss is None: return None
+        return {"val_loss": val_loss, "psnr": psnr}
+
+    def _rank_all_models(self):
+        items = []
+        for p in self.root.iterdir():
+            if p.is_file() and p.suffix == ".keras":
+                m = self._parse_filename_simple(p.name)
+                if m:
+                    items.append((p, m["val_loss"], m["psnr"]))
+        if not items:
+            return
+
+        items.sort(key=lambda x: (x[1], x[0].stat().st_mtime))
+
+        temps = []
+        for path, vloss, psnr in items:
+            # alle JSONs finden, die zu diesem Modell gehoeren (mit Timestamp)
+            base_stem = path.with_suffix("").name  # ohne .keras
+            jsons = list(self.root.glob(base_stem + "_*.json"))
+
+            t_model = self.root / f".tmp_{uuid.uuid4().hex}.keras"
+            os.replace(path, t_model)
+
+            # zugehoerige JSONs -> passende tmp-Namen mit gleicher Timestamp
+            tmp_jsons = []
+            for j in jsons:
+                ts_suffix = j.name[len(base_stem):]  # z.B. "_2025-09-22T12-05-31.json"
+                t_json = t_model.with_suffix("")  # .tmp_<id>
+                t_json = t_json.parent / (t_json.name + ts_suffix)  # .tmp_<id>_TIMESTAMP.json
+                os.replace(j, t_json)
+                tmp_jsons.append((t_json, ts_suffix))
+
+            temps.append((t_model, tmp_jsons, vloss, psnr))
+
+        for rank, (t_model, tmp_jsons, vloss, psnr) in enumerate(temps, start=1):
+            v = f"{vloss:.3g}"
+            ps = f"_PSNR_{psnr:.3g}" if psnr is not None else ""
+            final_model = self.root / f"V{rank}_valloss_{v}{ps}.keras"
+            os.replace(t_model, final_model)
+
+            # JSONs zum finalen Basenamen + unveraendertem Timestamp umbenennen
+            final_stem = final_model.with_suffix("").name
+            for t_json, ts_suffix in tmp_jsons:
+                if t_json.exists():
+                    final_json = final_model.with_suffix("")  # ohne .keras
+                    final_json = final_json.parent / (final_stem + ts_suffix)  # V{rank}_..._TIMESTAMP.json
+                    os.replace(t_json, final_json)
+
 
 
 
@@ -264,8 +361,25 @@ model.compile(
 # model.summary()
 
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
+run_meta = {
+    "batch_size": BATCH_SIZE,
+    "epochs": EPOCHS,
+    "early_stopping": {"monitor":"val_loss","patience":10},
+    "data_prep": {"use_vst": False, "size": 5, "group_len": 41, "dtype": "float32"},
+    "ALPHA": ALPHA,
+}
+
+bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta)
+ckpt_best = callbacks.ModelCheckpoint(
+    filepath=str(bf.tmp_path),   # feste TEMP-Datei
+    monitor="val_loss",
+    mode="min",
+    save_best_only=True,
+    verbose=1,
+)
+
 cbs = [
-    *make_callbacks_with_single_best(ckpt_root),  # TEMP + finale renaming
+    ckpt_best, bf,
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
 ]
