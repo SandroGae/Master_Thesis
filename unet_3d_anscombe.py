@@ -279,42 +279,34 @@ class BestFinalizeCallback(callbacks.Callback):
         if not items:
             return
 
+        # Kleinste val_loss zuerst, bei Gleichstand aeltere zuerst
         items.sort(key=lambda x: (x[1], x[0].stat().st_mtime))
 
         temps = []
         for path, vloss, psnr in items:
-            # JSON mit gleichem Basenamen (ohne Zeit im Namen)
-            base_json = path.with_suffix(".json")
-            jsons = [base_json] if base_json.exists() else []
-
-
+            # passendes JSON (gleicher Basename, Endung .json)
+            src_json = path.with_suffix(".json")
             t_model = self.root / f".tmp_{uuid.uuid4().hex}.keras"
             os.replace(path, t_model)
 
-            # zugehoerige JSONs -> passende tmp-Namen mit gleicher Timestamp
-            tmp_jsons = []
-            for j in jsons:
-                ts_suffix = j.name[len(base_stem):]  # z.B. "_2025-09-22T12-05-31.json"
-                t_json = t_model.with_suffix("")  # .tmp_<id>
-                t_json = t_json.parent / (t_json.name + ts_suffix)  # .tmp_<id>_TIMESTAMP.json
-                os.replace(j, t_json)
-                tmp_jsons.append((t_json, ts_suffix))
+            t_json = None
+            if src_json.exists():
+                t_json = t_model.with_suffix(".json")
+                os.replace(src_json, t_json)
 
-            temps.append((t_model, tmp_jsons, vloss, psnr))
+            temps.append((t_model, t_json, vloss, psnr))
 
-        for rank, (t_model, tmp_jsons, vloss, psnr) in enumerate(temps, start=1):
-            v = f"{vloss:.3e}"
+        # Final benennen (Model + JSON)
+        for rank, (t_model, t_json, vloss, psnr) in enumerate(temps, start=1):
+            v = f"{vloss:.3e}"          # gleiche Formatierung wie oben
             ps = f"_PSNR_{psnr:.3g}" if psnr is not None else ""
             final_model = self.root / f"V{rank}_valloss_{v}{ps}.keras"
             os.replace(t_model, final_model)
 
-            # JSONs zum finalen Basenamen + unveraendertem Timestamp umbenennen
-            final_stem = final_model.with_suffix("").name
-            for t_json, ts_suffix in tmp_jsons:
-                if t_json.exists():
-                    final_json = final_model.with_suffix("")  # ohne .keras
-                    final_json = final_json.parent / (final_stem + ts_suffix)  # V{rank}_..._TIMESTAMP.json
-                    os.replace(t_json, final_json)
+            if t_json and t_json.exists():
+                os.replace(t_json, final_model.with_suffix(".json"))
+
+
 
 # %%
 # ======== Train =======
