@@ -25,6 +25,9 @@ from tensorflow.keras import layers, models, callbacks
 from unet_3d_data import prepare_in_memory_5to5
 from pathlib import Path
 
+import uuid # for naming files and callbacks
+
+
 # %%
 # ======== Allocate GPU memory dynamically as needed =======
 for g in tf.config.list_physical_devices('GPU'):
@@ -186,16 +189,122 @@ def psnr_metric(y_true, y_pred):
 
 
 # %%
-# ======== Callbacks =======
+# ======== Naming files and making callbacks =======
 
-ckpt_dir = os.path.expanduser("~/data/checkpoints_3d_unet")
-os.makedirs(ckpt_dir, exist_ok=True)
+def parse_filename_simple(name: str):
+    """
+    Expects names like:
+      - TMP_<uuid>_valloss_0.0123_PSNR_32.1.keras
+      - V1_valloss_0.0119_PSNR_32.5.keras
+      - V2_valloss_0.013.keras_PSNR_31.4.keras
+    """
+    if not name.endswith(".keras"):
+        return None
 
-cbs = [
-    callbacks.ModelCheckpoint(os.path.join(ckpt_dir, "best_V2.keras"), monitor="val_loss", save_best_only=True, verbose=1),
-    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
-]
+    base = name[:-6]                   # remove ".keras"
+    parts = base.split("_")
+
+    # Assert that valloss is present
+    if "valloss" not in parts:
+        return None
+
+    val_loss = None
+    psnr = None
+    for i, p in enumerate(parts):
+        if p == "valloss" and i + 1 < len(parts):
+            try:
+                val_loss = float(parts[i + 1])
+            except ValueError:
+                return None
+        if p == "PSNR" and i + 1 < len(parts):
+            try:
+                psnr = float(parts[i + 1])
+            except ValueError:
+                psnr = None
+
+    if val_loss is None:
+        return None
+    return {"val_loss": val_loss, "psnr": psnr}
+
+
+def rank_and_rename(root: Path):
+    """
+    Reads all .keras files in folder and sorts them according to val_loss
+    Renames them suchn that V1 has the lowest val_loss, V2 the second lowest, etc.
+    Finale names: V{rank}_valloss_{:.3g}[_PSNR_{:.3g}].keras
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    items = []
+    for p in root.iterdir():
+        if p.is_file() and p.suffix == ".keras":
+            m = parse_filename_simple(p.name)
+            if m is not None:
+                items.append((p, m["val_loss"], m["psnr"]))
+
+    if not items:
+        return
+    
+    # Smallest val_loss first
+    items.sort(key=lambda x: x[1])
+
+    # Avoiding collisions: two-step renaming(first temp, then final)
+    temp_paths = []
+    for path, vloss, psnr in items:
+        tmp = root / f".tmp_{uuid.uuid4().hex}.keras"
+        os.replace(path, tmp)
+        temp_paths.append((tmp, vloss, psnr))
+
+    # Final naming
+    for rank, (tmp, vloss, psnr) in enumerate(temp_paths, start=1):
+        vloss_str = f"{vloss:.3g}"
+        psnr_part = f"_PSNR_{psnr:.3g}" if (psnr is not None) else ""
+        final = root / f"V{rank}_valloss_{vloss_str}{psnr_part}.keras"
+        os.replace(tmp, final)
+
+
+class RankRenameCallback(callbacks.Callback):
+    """Fuehrt am Trainingsende das globale Ranking & Umbenennen aus."""
+    def __init__(self, root: Path):
+        super().__init__()
+        self.root = Path(root)
+
+    def on_train_end(self, logs=None):
+        rank_and_rename(self.root)
+
+
+def file_names(root: Path):
+    """
+    Liefert (ckpt_best, rank_cb).
+
+    - ckpt_best speichert waehrend des Runs genau EINE Datei (save_best_only=True)
+      mit temporaerem Namen:
+        TMP_<uuid>_valloss_{val_loss:.3g}_PSNR_{psnr_metric:.3g}.keras
+    - rank_cb sortiert am Ende alle .keras Dateien im Ordner und
+      vergibt finale Namen:
+        V1_valloss_{:.3g}_PSNR_{:.3g}.keras, V2_..., V3_...
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    # WICHTIG: Platzhalter muss zur Metrik in model.compile passen -> psnr_metric
+    tmp_name = (
+        f"TMP_{uuid.uuid4().hex}_valloss_" + "{val_loss:.3g}" +
+        "_PSNR_" + "{psnr_metric:.3g}.keras"
+    )
+    filepath = root / tmp_name
+
+    ckpt_best = callbacks.ModelCheckpoint(
+        filepath=str(filepath),
+        monitor="val_loss",
+        mode="min",
+        save_best_only=True,
+        save_weights_only=False,
+        verbose=1,
+    )
+    return ckpt_best, RankRenameCallback(root)
+
 
 # %%
 # ======== Train =======
@@ -210,6 +319,17 @@ model.compile(
     jit_compile=False # Would be false per default, but just to be sure
 )
 # model.summary()
+
+ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
+ckpt_cb, rank_cb = file_names(ckpt_root)
+
+cbs = [
+    ckpt_cb,  # speichert das beste Modell dieses Runs (temp. Name)
+    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
+    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
+    rank_cb,  # benennt am Ende alles in V1/V2/... um
+]
+
 
 history = model.fit(
     train_ds,
