@@ -13,24 +13,53 @@
 # ---
 
 # %%
-import os, re, sys, json
+# Evaluation.py
+import os
+import sys
+import re
+import json
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
-from sklearn.metrics import r2_score
 
+# --- R^2 with sklearn (fallback if not installed) ---
+try:
+    from sklearn.metrics import r2_score as _sk_r2
+    def r2_score(y_true, y_pred):
+        return _sk_r2(y_true, y_pred)
+except Exception:
+    def r2_score(y_true, y_pred):
+        y_true = np.asarray(y_true)
+        y_pred = np.asarray(y_pred)
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+        return 1.0 - ss_res / (ss_tot + 1e-12)
+
+# --- your data pipeline ---
 from unet_3d_data import prepare_in_memory_5to5
 
-# ====== Utils: Anscombe (nur fuer Metriken im Originalraum) ======
+DATA_ROOT = Path.home() / "data"
+
+# ===== Anscombe utils (for original-domain metrics) =====
 def inv_anscombe_tf(z, eps=1e-6):
+    """Approximate unbiased inverse of Anscombe; clamp small z for stability."""
     z = tf.maximum(z, eps)
     z2 = z / 2.0
     y = z2**2 - 1.0/8.0 + 1.0/(4.0*z**2) - 11.0/(8.0*z**4)
     return tf.nn.relu(y)
 
-DATA_ROOT = Path.home() / "data"
+def stable_psnr(y_true, y_pred, eps=1e-12):
+    """
+    PSNR computed from per-sample MSE with epsilon for stability.
+    y_*: Tensor [B, D, H, W, C] (or similar), values expected in [0,1].
+    """
+    err2 = tf.square(y_true - y_pred)
+    axes = tf.range(1, tf.rank(err2))                     # mean over all but batch
+    mse = tf.reduce_mean(err2, axis=axes)
+    psnr = -10.0 * tf.math.log(mse + eps) / tf.math.log(tf.constant(10.0, dtype=mse.dtype))
+    return tf.reduce_mean(psnr)
 
-# ---------- Auswahl ----------
+# ===== Selection helpers =====
 def pick_checkpoint_dir():
     cand = sorted([p for p in DATA_ROOT.iterdir()
                    if p.is_dir() and p.name.startswith("checkpoints_")])
@@ -43,7 +72,7 @@ def pick_checkpoint_dir():
     while True:
         s = input("Nummer: ").strip()
         if s.isdigit() and 1 <= int(s) <= len(cand):
-            return cand[int(s)-1]
+            return cand[int(s) - 1]
 
 def pick_version(ckpt_dir: Path):
     models = []
@@ -54,16 +83,17 @@ def pick_version(ckpt_dir: Path):
     if not models:
         print(f"Keine V*-Modelle in {ckpt_dir} gefunden.")
         sys.exit(1)
-    models.sort(key=lambda p: int(p.stem.split('_')[0][1:]))  # nach V-Nummer
+    # sort by V number
+    models.sort(key=lambda p: int(p.stem.split('_')[0][1:]))
     print(f"Waehle Modell in {ckpt_dir.name}:")
     for i, p in enumerate(models, 1):
         print(f"  [{i}] {p.name}")
     while True:
         s = input("Nummer: ").strip()
         if s.isdigit() and 1 <= int(s) <= len(models):
-            return models[int(s)-1]
+            return models[int(s) - 1]
 
-# ---------- use_vst aus JSON lesen (Fallback: Ordnername) ----------
+# ===== Determine use_vst (from JSON; fallback: folder name) =====
 def detect_use_vst(model_path: Path) -> bool:
     meta_path = model_path.with_suffix(".json")
     if meta_path.exists():
@@ -73,10 +103,9 @@ def detect_use_vst(model_path: Path) -> bool:
             return bool(meta.get("data_prep", {}).get("use_vst", False))
         except Exception:
             pass
-    # Fallback, falls keine JSON existiert:
     return ("anscombe" in model_path.parent.name.lower())
 
-# ---------- Test-Dataset ----------
+# ===== Test dataset =====
 def build_test_dataset(use_vst: bool, size=5, group_len=41, dtype=np.float32, batch_size=4):
     results, _ = prepare_in_memory_5to5(
         data_dir=Path.home() / "data" / "original_data",
@@ -91,7 +120,7 @@ def build_test_dataset(use_vst: bool, size=5, group_len=41, dtype=np.float32, ba
     ds = ds.batch(batch_size).prefetch(AUTO)
     return ds, X_test.shape[1:]
 
-# ---------- Preds sammeln ----------
+# ===== Collect predictions =====
 def collect_preds_and_targets(model, dataset, max_batches=None):
     y_true, y_pred = [], []
     for b, (xb, yb) in enumerate(dataset):
@@ -104,15 +133,26 @@ def collect_preds_and_targets(model, dataset, max_batches=None):
     y_pred = np.concatenate(y_pred, axis=0)
     return y_true, y_pred
 
-# ---------- Main ----------
+# ====== Ergebnisse speichern ======
+def save_results(model_path, results: dict):
+    out_dir = Path("model_evaluations")
+    out_dir.mkdir(parents=True, exist_ok=True)  # Ordner anlegen falls nicht da
+
+    # gleicher Grundname wie Modell, aber .json statt .keras
+    out_path = out_dir / (model_path.stem + "_evaluation.json")
+
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2)
+
+    print(f"\n>> Ergebnisse gespeichert unter: {out_path}")
+
+# ===== Main =====
 def main():
     ckpt_dir = pick_checkpoint_dir()
     model_path = pick_version(ckpt_dir)
 
-    # use_vst aus JSON (fairer und eindeutig)
     use_vst = detect_use_vst(model_path)
     print(f"\n>> Lade Modell: {model_path}")
-    # Kompilation nicht noetig fuer Inferenz -> keine custom_objects-Placebos noetig
     model = tf.keras.models.load_model(model_path, compile=False)
 
     print(">> Baue Test-Dataset… (use_vst =", use_vst, ")")
@@ -120,10 +160,8 @@ def main():
         use_vst=use_vst, size=5, group_len=41, dtype=np.float32, batch_size=4
     )
 
-    # Vorhersagen im jeweiligen Modellraum
     Y_true, Y_pred = collect_preds_and_targets(model, test_ds, max_batches=None)
 
-    # Fuer FAIRNESS: Metriken im Originalraum
     if use_vst:
         Y_true_o = inv_anscombe_tf(tf.convert_to_tensor(Y_true))
         Y_pred_o = inv_anscombe_tf(tf.convert_to_tensor(Y_pred))
@@ -135,7 +173,6 @@ def main():
         Y_true_m = Y_true
         Y_pred_m = Y_pred
 
-    # Metriken (alle im Originalraum)
     yt = Y_true_m.ravel()
     yp = Y_pred_m.ravel()
     mse  = float(np.mean((yt - yp) ** 2))
@@ -159,6 +196,25 @@ def main():
     print(f"PSNR         : {psnr:.2f} dB")
     print(f"SSIM (mid-Z) : {ssim:.4f}")
 
+    # ---- Ergebnisse abspeichern ----
+    results = {
+        "model": model_path.name,
+        "input_shape": tuple(int(x) for x in input_shape),
+        "use_vst": use_vst,
+        "mse": mse,
+        "mae": mae,
+        "rmse": rmse,
+        "r2": r2,
+        "psnr": psnr,
+        "ssim_midZ": ssim,
+    }
+    save_results(model_path, results)
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nAbgebrochen.")
+
 
