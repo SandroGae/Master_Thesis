@@ -132,7 +132,7 @@ def prepare_in_memory_5to5(
         del low_n, high_n
         gc.collect()
 
-    return results, size
+    return results, {"size": size, "clip_val": clip_val_train}
 
 
 # %%

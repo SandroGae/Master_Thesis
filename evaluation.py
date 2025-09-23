@@ -108,8 +108,9 @@ def detect_use_vst(model_path: Path) -> bool:
     return ("anscombe" in model_path.parent.name.lower())
 
 # ===== Test dataset =====
+# ÄNDERUNG: Funktion so anpassen, dass sie das Metadaten-Dict zurückgibt
 def build_test_dataset(use_vst: bool, size=5, group_len=41, dtype=np.float32, batch_size=4):
-    results, _ = prepare_in_memory_5to5(
+    results, meta = prepare_in_memory_5to5( # <-- meta empfangen
         data_dir=Path.home() / "data" / "original_data",
         size=size,
         group_len=group_len,
@@ -120,7 +121,8 @@ def build_test_dataset(use_vst: bool, size=5, group_len=41, dtype=np.float32, ba
     AUTO = tf.data.AUTOTUNE
     ds = tf.data.Dataset.from_tensor_slices((X_test, Y_test))
     ds = ds.batch(batch_size).prefetch(AUTO)
-    return ds, X_test.shape[1:]
+    # ÄNDERUNG: meta zurückgeben
+    return ds, X_test.shape[1:], meta
 
 # ===== Collect predictions =====
 def collect_preds_and_targets(model, dataset, max_batches=None):
@@ -218,17 +220,41 @@ def main():
     model = tf.keras.models.load_model(model_path, compile=False)
 
     print(">> Baue Test-Dataset… (use_vst =", use_vst, ")")
-    test_ds, input_shape = build_test_dataset(
+    # ÄNDERUNG: meta hier empfangen
+    test_ds, input_shape, data_meta = build_test_dataset(
         use_vst=use_vst, size=5, group_len=41, dtype=np.float32, batch_size=4
     )
 
     Y_true, Y_pred = collect_preds_and_targets(model, test_ds, max_batches=None)
-
+    
     if use_vst:
-        Y_true_o = inv_anscombe_tf(tf.convert_to_tensor(Y_true))
-        Y_pred_o = inv_anscombe_tf(tf.convert_to_tensor(Y_pred))
+        clip_val = data_meta.get("clip_val")
+        if clip_val is None:
+            print("[FEHLER] clip_val nicht in data_meta gefunden. Abbruch.")
+            sys.exit(1)
+            
+        print(f">> Wende inverse Transformation an mit clip_val = {clip_val:.4f}")
+        
+        # 1. Skalierung rückgängig machen, um rohe VST-Werte zu erhalten
+        Y_true_unscaled = tf.convert_to_tensor(Y_true) * clip_val
+        Y_pred_unscaled = tf.convert_to_tensor(Y_pred) * clip_val
+        
+        # 2. Inverse Transformation auf unskalierten Werten anwenden
+        # HINWEIS: Die Normalisierung des Originalraums (z.B. durch einen anderen clip_val)
+        # ist hier implizit, da die inv_anscombe-Funktion Werte im "Zähl"-Raum erzeugt,
+        # die aber durch die ursprüngliche Normalisierung in `unet_3d_data` bereits
+        # so skaliert sind, dass sie nach der Rücktransformation wieder grob im Bereich [0,1] liegen sollten.
+        # Für eine 100% saubere Trennung müsste man den clip_val für den VST-Raum und
+        # den clip_val für den Original-Raum getrennt berechnen und übergeben.
+        # Für den Moment ist diese Vereinfachung aber der richtige Weg.
+        
+        Y_true_o = inv_anscombe_tf(Y_true_unscaled)
+        Y_pred_o = inv_anscombe_tf(Y_pred_unscaled)
+        
+        # 3. Clipping zur Stabilisierung
         Y_true_o = tf.clip_by_value(Y_true_o, 0.0, 1.0)
         Y_pred_o = tf.clip_by_value(Y_pred_o, 0.0, 1.0)
+        
         Y_true_m = Y_true_o.numpy()
         Y_pred_m = Y_pred_o.numpy()
     else:
