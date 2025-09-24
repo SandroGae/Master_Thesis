@@ -521,9 +521,6 @@ def combined_loss(y_true, y_pred, k_slices=1):
     l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
     l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)  # nutzt _safe_imgs intern
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
-    
-def combined_loss(y_true, y_pred, k_slices=1):
-    return tf.reduce_mean(tf.abs(y_true - y_pred))
 
 def ms_ssim_metric(y_true, y_pred):
     y_true, y_pred = _safe_imgs(y_true, y_pred)
@@ -702,7 +699,12 @@ def mae_only(y_true, y_pred):
     return tf.reduce_mean(tf.abs(y_true - y_pred))
 
 opt = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0, epsilon=1e-7)
-model.compile(optimizer=opt, loss=combined_loss, metrics=["mae"], jit_compile=False)
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0, epsilon=1e-7),
+    loss=combined_loss,
+    metrics=["mae", psnr_metric, ms_ssim_metric, ms_ssim_loss_metric],  # <- optional
+    jit_compile=False
+)
 
 # Forward-Check (ohne Training): produziert das Netz NaNs?
 xb, yb = next(iter(train_ds.take(1)))
@@ -722,6 +724,7 @@ history = model.fit(
     callbacks=[tf.keras.callbacks.TerminateOnNaN()],
     verbose=2
 )
+
 
 
 print(">>> Phase 3: Training complete!")
