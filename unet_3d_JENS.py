@@ -384,6 +384,11 @@ print("yb", yb.dtype, tf.reduce_min(yb).numpy(), tf.reduce_max(yb).numpy())
 val = combined_loss(yb, model(xb, training=False))
 print("probe-loss:", float(val.numpy()))
 
+xb, yb = next(iter(train_ds.take(1)))
+y_trainmode = model(xb, training=True)
+tf.debugging.assert_all_finite(y_trainmode, "FORWARD(training=True) produced NaN/Inf")
+print("forward train-mode ok:", float(tf.reduce_mean(y_trainmode).numpy()))
+
 
 
 history = model.fit(
