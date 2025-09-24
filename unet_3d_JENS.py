@@ -473,10 +473,9 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
 
     outputs = layers.Conv3D(1, (1,1,1), dtype="float32", activation="sigmoid")(c6)
     return models.Model(inputs, outputs, name="3D_U-Net")
+
+
 # =========== Defining Loss function MAE + MS-SSIM (slice-wise) ========
-
-ALPHA = 0.7  # Weight for MS-SSIM
-
 def _sample_depth_indices(batch_size, depth, k=1, seed=42):
     """
     Generates deterministic matrix and samples indices using highest values per row
@@ -515,13 +514,13 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=1):
     tf.debugging.assert_all_finite(ms, "MS-SSIM produced NaN/Inf")
     return 1.0 - tf.reduce_mean(ms)
 
-"""
+ALPHA = 0.3  # erstmal kleiner starten
+
 def combined_loss(y_true, y_pred, k_slices=1):
     y_true, y_pred = _safe_imgs(y_true, y_pred)
     l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)
+    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)  # nutzt _safe_imgs intern
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
-"""
     
 def combined_loss(y_true, y_pred, k_slices=1):
     return tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -703,7 +702,7 @@ def mae_only(y_true, y_pred):
     return tf.reduce_mean(tf.abs(y_true - y_pred))
 
 opt = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0, epsilon=1e-7)
-model.compile(optimizer=opt, loss=mae_only, metrics=["mae"], jit_compile=False)
+model.compile(optimizer=opt, loss=combined_loss, metrics=["mae"], jit_compile=False)
 
 # Forward-Check (ohne Training): produziert das Netz NaNs?
 xb, yb = next(iter(train_ds.take(1)))
@@ -720,10 +719,9 @@ history = model.fit(
     train_ds,
     validation_data=val_ds,
     epochs=1,
-    steps_per_epoch=5,
-    validation_steps=2,
     callbacks=[tf.keras.callbacks.TerminateOnNaN()],
     verbose=2
 )
+
 
 print(">>> Phase 3: Training complete!")
