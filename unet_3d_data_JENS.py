@@ -97,7 +97,7 @@ def prepare_in_memory_5to5(
 
 # Get data
 results = prepare_in_memory_5to5(
-    data_dir = Path("data") / "original_data",
+    data_dir=Path.home() / "data" / "original_data",
     size=5,
     group_len=41,
     dtype=np.float32,
