@@ -700,9 +700,9 @@ def mae_only(y_true, y_pred):
 
 opt = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0, epsilon=1e-7)
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0, epsilon=1e-7),
-    loss=combined_loss,
-    metrics=["mae", psnr_metric, ms_ssim_metric, ms_ssim_loss_metric],  # <- optional
+    optimizer=opt,
+    loss=mae_only,                             # <— wirklich MAE-only
+    metrics=["mae", psnr_metric],              # <— KEIN ms_ssim_* hier
     jit_compile=False
 )
 
@@ -725,6 +725,5 @@ history = model.fit(
     verbose=2
 )
 
-
-
 print(">>> Phase 3: Training complete!")
+
