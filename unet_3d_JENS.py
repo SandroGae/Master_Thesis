@@ -76,7 +76,7 @@ print(">>> Datasets created")
 
 
 # ========= Defining 3D-U-Net Architecture ========
-
+"""
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
     x = layers.Conv3D(filters, kernel_size, padding=padding)(x)
     x = layers.BatchNormalization()(x)
@@ -85,6 +85,17 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu
     x = layers.BatchNormalization()(x)
     x = layers.Activation(activation)(x)
     return x
+"""
+
+def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer="he_normal", use_bias=True)(x)
+    x = layers.Activation(activation)(x)
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer="he_normal", use_bias=True)(x)
+    x = layers.Activation(activation)(x)
+    return x
+
 
 def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     inputs = layers.Input(shape=input_shape)
@@ -340,12 +351,13 @@ class BestFinalizeCallback(callbacks.Callback):
 print(">>> Phase 3: GPU training starts now!")
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
+
 opt = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0)
 model.compile(
     optimizer=opt,
     loss=combined_loss,
-    metrics=["mae", "mse", psnr_metric, ms_ssim_metric],
-    jit_compile=False
+    metrics=["mae","mse", psnr_metric, ms_ssim_metric],
+    jit_compile=False,
 )
 
 # model.summary()
