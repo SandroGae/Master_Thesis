@@ -11,11 +11,10 @@
 # %%
 # ======== Imports =======
 import os
-from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("mixed_float16")
-
 import numpy as np
 import tensorflow as tf
+from tensorflow.keras import mixed_precision
+mixed_precision.set_global_policy("float32") # float 32 to test if this was the issue
 from tensorflow.keras import layers, models, callbacks
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
@@ -119,6 +118,8 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     outputs = layers.Conv3D(1, (1,1,1), dtype="float32", activation="sigmoid")(c6)
     return models.Model(inputs, outputs, name="3D_U-Net")
 
+
+# %%
 # =========== Defining Loss function MAE + MS-SSIM (slice-wise) ========
 
 ALPHA = 0.7  # Weight for MS-SSIM
