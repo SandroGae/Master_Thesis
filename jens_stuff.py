@@ -94,6 +94,8 @@ class SumScaleNormalizer(Normalizer):
 
     def map(self, *args):
         args = super().map(*args)
+        eps = tf.constant(1e-12, dtype=args[0].dtype)
+
         # Features
         args[0] = self._pre_clipping(args[0] + self.pre_offset)
         scale = tf.random.uniform(
@@ -102,12 +104,15 @@ class SumScaleNormalizer(Normalizer):
             maxval=self._max_scale
         )
         sum_feature = tf.math.reduce_sum(args[0], axis=self.axis, keepdims=True)
+        sum_feature = tf.maximum(sum_feature, eps)  # ← Schutz
         args[0] = args[0] / sum_feature * scale
         args[0] = self._post_clipping(args[0])
 
         if self.normalize_label:
             args[1] = self._pre_clipping(args[1] + self.pre_offset)
-            args[1] = args[1] / tf.math.reduce_sum(args[1], axis=self.axis, keepdims=True) * scale
+            sum_label = tf.math.reduce_sum(args[1], axis=self.axis, keepdims=True)
+            sum_label = tf.maximum(sum_label, eps)  # ← Schutz
+            args[1] = args[1] / sum_label * scale
             args[1] = self._post_clipping(args[1])
 
         self._denorm_pars['scale'] = scale
@@ -150,7 +155,10 @@ class DatasetGenerator:
             dataset = tf.data.Dataset.from_tensor_slices((self._features, self._labels))
 
         if self._pp_map is not None:
-            dataset = dataset.map(self._pp_map, num_parallel_calls=tf.data.AUTOTUNE).cache()
+            def _pp(*t):
+                out = self.preprocessor.map(*t)
+                return tuple(out)  # sicherstellen: (features, labels[, weights])
+            dataset = dataset.map(_pp, num_parallel_calls=tf.data.AUTOTUNE).cache()
 
         if self._aug_map is not None:
             dataset = dataset.map(self._aug_map, num_parallel_calls=tf.data.AUTOTUNE)

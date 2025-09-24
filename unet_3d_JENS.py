@@ -11,71 +11,71 @@
 # %%
 # ======== Imports =======
 import os
-
 from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("mixed_float16") # Increases performance without loss of quality (calculations still done with float_32 precision)
+mixed_precision.set_global_policy("mixed_float16")
 
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
 from unet_3d_data_JENS import prepare_in_memory_5to5
-from jens_stuff import reset_random_seeds
-reset_random_seeds(0)
-
+from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from pathlib import Path
 
 import json, socket, getpass, platform, subprocess, time, uuid # for naming files and callbacks
 
-# ======== Allocate GPU memory dynamically as needed =======
+seed = 0
+reset_random_seeds(seed)
 for g in tf.config.list_physical_devices('GPU'):
-    try:
-        tf.config.experimental.set_memory_growth(g, True)
-    except:
-        pass
+    try: tf.config.experimental.set_memory_growth(g, True)
+    except: pass
+AUTO = tf.data.AUTOTUNE
 
-AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depending on hardware
 # ===== Loading Data in RAM =====
-
 print(">>> Phase 1: Starting data prep on CPU...")
 results = prepare_in_memory_5to5(
     data_dir=Path.home() / "data" / "original_data",
-    size=5,
-    group_len=41,
-    dtype=np.float32,
+    size=5, group_len=41, dtype=np.float32,
 )
 print(">>> Data preperation finished, all data in RAM")
-
 X_train, Y_train = results["train"]
 X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
-
-INPUT_SHAPE = X_train.shape[1:]  # (5, H, W, 1)
-# ======== Making Tensorflow dataset =======
-
+INPUT_SHAPE = X_train.shape[1:]
 BATCH_SIZE = 16
 EPOCHS     = 400
 
-# Sanity check for INPUT_SHAPE
-D,H,W,C = INPUT_SHAPE
-if (H % 8) or (W % 8):
-    print(f"[WARN] H={H} oder W={W} nicht durch 8 teilbar (3x (1,2,2)-Pooling)")
+# ===== Preprocessing (nach dem Laden definieren) =====
+preproc_train = SumScaleNormalizer(
+    scale_range=[5000, 15001], pre_offset=0.0,
+    normalize_label=True, axis=None, batch_mode=False,
+    clip_before=[0., np.inf], clip_after=[0., 1.]
+)
+preproc_valid = SumScaleNormalizer(
+    scale_range=[5000, 5001], pre_offset=0.0,
+    normalize_label=True, axis=None, batch_mode=False,
+    clip_before=[0., np.inf], clip_after=[0., 1.]
+)
 
-def make_ds(X, Y, shuffle=True):
-    """
-    Creates a tensorflow dataset
-    """
+def make_ds(X, Y, shuffle=True, preproc=None):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
+    if preproc is not None:
+        ds = ds.map(lambda x, y: tuple(preproc.map(x, y)),
+                    num_parallel_calls=AUTO).cache()
     if shuffle:
         ds = ds.shuffle(buffer_size=X.shape[0])
     ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
     return ds
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, True)
-val_ds   = make_ds(X_val,   Y_val,   False)
-test_ds  = make_ds(X_test,  Y_test,  False)
+train_ds = make_ds(X_train, Y_train, True,  preproc=preproc_train)
+val_ds   = make_ds(X_val,   Y_val,   False, preproc=preproc_valid)
+test_ds  = make_ds(X_test,  Y_test,  False, preproc=preproc_valid)
 print(">>> Datasets created")
+
+
+
+
 # ========= Defining 3D-U-Net Architecture ========
 
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
@@ -172,6 +172,8 @@ def psnr_metric(y_true, y_pred):
     """
     return tf.image.psnr(y_true, y_pred, max_val=1.0)
 
+
+# %%
 # ======== Naming files and making callbacks =======
 
 def _safe_git_commit():
@@ -231,7 +233,7 @@ class BestFinalizeCallback(callbacks.Callback):
         json_path = model_path.with_suffix(".json")
 
         meta = {
-            "timestamp": ts,
+            "timestamp": _timestamp(),
             "user": getpass.getuser(),
             "host": socket.gethostname(),
             "platform": platform.platform(),
@@ -326,6 +328,7 @@ class BestFinalizeCallback(callbacks.Callback):
 
 
 
+# %%
 # ======== Train =======
 
 print(">>> Phase 3: GPU training starts now!")
@@ -372,4 +375,3 @@ history = model.fit(
     verbose=2
 )
 print(">>> Training complete")
-

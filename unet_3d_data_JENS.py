@@ -95,68 +95,6 @@ def prepare_in_memory_5to5(
         results[split] = (X, Y)
     return results
 
-# Get data
-results = prepare_in_memory_5to5(
-    data_dir=Path.home() / "data" / "original_data",
-    size=5,
-    group_len=41,
-    dtype=np.float32,
-)
-
-seed = 0 # Same seed as Jens
-reset_random_seeds(seed)
-
-# Normalization exactly according to Jens (sum + scalingfactor alpha)
-preproc_train = SumScaleNormalizer(scale_range=[5000,15001],
-                                   pre_offset=0.,
-                                   normalize_label=False,
-                                   axis=None,
-                                   batch_mode=False,
-                                   clip_before=[0., np.inf],
-                                   clip_after=[0., 1.])
-
-preproc_valid = SumScaleNormalizer(scale_range=[5000,5001],
-                                   pre_offset=0.,
-                                   normalize_label=False,
-                                   axis=None,
-                                   batch_mode=False,
-                                   clip_before=[0., np.inf],
-                                   clip_after=[0., 1.])
-
-
-# Input shape per sample (D,H,W,1) = (5,H,W,1)
-X_train, Y_train = results["train"]
-input_shape = X_train.shape[1:]
-
-train_gen = DatasetGenerator(
-    preprocessor=preproc_train,
-    augmenter=None,
-    features=tf.convert_to_tensor(X_train),
-    labels=tf.convert_to_tensor(Y_train),
-)
-
-train_ds = train_gen.create_dataset(
-    input_shape=input_shape,
-    batch_size=16,
-    seed=seed,
-    shuffle=True
-)
-
-# Same for validation set
-X_val, Y_val = results["val"]
-val_gen = DatasetGenerator(
-    preprocessor=preproc_valid,
-    augmenter=None,
-    features=tf.convert_to_tensor(X_val),
-    labels=tf.convert_to_tensor(Y_val),
-)
-
-val_ds = val_gen.create_dataset(
-    input_shape=input_shape,
-    batch_size=16,
-    seed=seed,
-    shuffle=False
-)
 
 # %%
 # ===== Visualization of some samples =====
