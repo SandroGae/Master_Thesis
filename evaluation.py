@@ -21,12 +21,10 @@ from typing import Optional
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
-
-# --- your data pipeline ---
 from unet_3d_data import prepare_in_memory_5to5
 
 DATA_ROOT = Path.home() / "data"
-EVAL_ROOT = DATA_ROOT  # Zielbasis fuer Ausgaben: ~/data
+EVAL_ROOT = DATA_ROOT  # Output directory
 
 # ===== Anscombe utils (for original-domain metrics) =====
 def inv_anscombe_tf(z, eps=1e-6):
@@ -106,6 +104,7 @@ def detect_use_vst(model_path: Path) -> bool:
         except Exception:
             pass
     return ("anscombe" in model_path.parent.name.lower())
+
 
 # ===== Test dataset =====
 # ÄNDERUNG: Funktion so anpassen, dass sie das Metadaten-Dict zurückgibt
