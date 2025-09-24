@@ -19,7 +19,7 @@
 import h5py
 from pathlib import Path
 import numpy as np
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 import tensorflow as tf
 from jens_stuff import DatasetGenerator, SumScaleNormalizer, reset_random_seeds
@@ -158,10 +158,9 @@ val_ds = val_gen.create_dataset(
     shuffle=False
 )
 
-
 # %%
 # ===== Visualization of some samples =====
-
+"""
 def show_window_pair_3d(X, Y, sample_idx, size=5, group_len=41):
 
     seq_low  = X[sample_idx, ..., 0]   # (size,H,W)
@@ -195,3 +194,4 @@ def show_window_pair_3d(X, Y, sample_idx, size=5, group_len=41):
 X_vis, Y_vis = results["train"]
 for idx in range(3):
     show_window_pair_3d(X_vis, Y_vis, sample_idx=idx, size=WINDOW_SIZE, group_len=GROUP_LEN)
+"""
