@@ -93,31 +93,27 @@ class SumScaleNormalizer(Normalizer):
         self._denorm_pars = {'pre_offset': self.pre_offset}
 
     def map(self, *args):
-        args = super().map(*args)
+        args = list(super().map(*args))
         eps = tf.constant(1e-12, dtype=args[0].dtype)
 
         # Features
         args[0] = self._pre_clipping(args[0] + self.pre_offset)
-        scale = tf.random.uniform(
-            shape=(args[0].shape[0] if self._batch_mode else 1,),
-            minval=self._min_scale,
-            maxval=self._max_scale
-        )
+        scale = tf.random.uniform(shape=(1,), minval=self._min_scale, maxval=self._max_scale)
         sum_feature = tf.math.reduce_sum(args[0], axis=self.axis, keepdims=True)
-        sum_feature = tf.maximum(sum_feature, eps)  # ← Schutz
+        sum_feature = tf.maximum(sum_feature, eps)
         args[0] = args[0] / sum_feature * scale
         args[0] = self._post_clipping(args[0])
 
         if self.normalize_label:
             args[1] = self._pre_clipping(args[1] + self.pre_offset)
             sum_label = tf.math.reduce_sum(args[1], axis=self.axis, keepdims=True)
-            sum_label = tf.maximum(sum_label, eps)  # ← Schutz
+            sum_label = tf.maximum(sum_label, eps)
             args[1] = args[1] / sum_label * scale
             args[1] = self._post_clipping(args[1])
 
         self._denorm_pars['scale'] = scale
         self._denorm_pars['sum'] = sum_feature
-        return args
+        return tuple(args)   # <<< WICHTIG: Tuple, nicht List
 
     def inverse_map(self, tensor):
         tensor = super().inverse_map(tensor, length=3)
@@ -157,7 +153,7 @@ class DatasetGenerator:
         if self._pp_map is not None:
             def _pp(*t):
                 out = self.preprocessor.map(*t)
-                return tuple(out)  # sicherstellen: (features, labels[, weights])
+                return tuple(out)
             dataset = dataset.map(_pp, num_parallel_calls=tf.data.AUTOTUNE).cache()
 
         if self._aug_map is not None:

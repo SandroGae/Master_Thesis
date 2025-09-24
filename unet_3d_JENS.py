@@ -132,45 +132,50 @@ def _sample_depth_indices(batch_size, depth, k=1, seed=42):
     topk = tf.math.top_k(rnd, k=k).indices                                 # Search for 2 highest values per row
     return topk
 
+def _safe_imgs(y_true, y_pred):
+    # mixed precision + Normalisierung robust machen
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    # Begrenze strikt auf [0,1] (MS-SSIM erwartet das)
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+    # harte Numerik-Checks (werfen sofort Exception mit Stacktrace)
+    tf.debugging.assert_all_finite(y_true, "y_true contains NaN/Inf")
+    tf.debugging.assert_all_finite(y_pred, "y_pred contains NaN/Inf")
+    return y_true, y_pred
+
 def ms_ssim_loss_sampled(y_true, y_pred, k=1):
-    """
-    Defining MS-SSIM for the loss function equivalently as in the paper
-    """
-    # y: (B, D, H, W, C)
+    y_true, y_pred = _safe_imgs(y_true, y_pred)
     batch_size = tf.shape(y_true)[0]
-    depth = tf.shape(y_true)[1]                               # Number of 2D slices
-    idx = _sample_depth_indices(batch_size, depth, k=k)       # (B,k)
-    # gathering chosen slices
-    y_groundtruth = tf.gather(y_true, idx, batch_dims=1)      # (B,k,H,W,C)
-    y_model = tf.gather(y_pred, idx, batch_dims=1)            # (B,k,H,W,C)
-    # flatten to 2D pictures
-    y_groundtruth_2 = tf.reshape(y_groundtruth, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    y_model_2 = tf.reshape(y_model, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
-    ms  = tf.image.ssim_multiscale(y_groundtruth_2, y_model_2, max_val=1.0)     # (B*k,)
+    depth = tf.shape(y_true)[1]
+    idx = _sample_depth_indices(batch_size, depth, k=k)  # (B,k)
+
+    y_groundtruth = tf.gather(y_true, idx, batch_dims=1)  # (B,k,H,W,C)
+    y_model       = tf.gather(y_pred, idx, batch_dims=1)  # (B,k,H,W,C)
+
+    yt2 = tf.reshape(y_groundtruth, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
+    yp2 = tf.reshape(y_model,       (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
+
+    yt2, yp2 = _safe_imgs(yt2, yp2)
+    ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
+    tf.debugging.assert_all_finite(ms, "MS-SSIM produced NaN/Inf")
     return 1.0 - tf.reduce_mean(ms)
 
 def combined_loss(y_true, y_pred, k_slices=1):
-    """
-    Combining the loss composite of MAE and MS-SSIM
-    (MAE stable and useful for strong signals --> Bragg peaks)
-    (MS-SSIM focuses on structure --> CDW satellite signals)
-    """
+    y_true, y_pred = _safe_imgs(y_true, y_pred)
     l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)  # K=1
+    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
 
 def ms_ssim_metric(y_true, y_pred):
-    """
-    Showing MS-SSIM metric during training
-    """
-    yt2 = tf.reshape(y_true, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
+    y_true, y_pred = _safe_imgs(y_true, y_pred)
+    yt2 = tf.reshape(y_true, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape[y_true)[4]))
+    yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape[y_pred)[4]))
+    yt2, yp2 = _safe_imgs(yt2, yp2)
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
 
 def psnr_metric(y_true, y_pred):
-    """
-    Showing PSNR metric during training
-    """
+    y_true, y_pred = _safe_imgs(y_true, y_pred)
     return tf.image.psnr(y_true, y_pred, max_val=1.0)
 
 
@@ -335,12 +340,14 @@ class BestFinalizeCallback(callbacks.Callback):
 print(">>> Phase 3: GPU training starts now!")
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
+opt = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0)
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(1e-3),
+    optimizer=opt,
     loss=combined_loss,
     metrics=["mae", "mse", psnr_metric, ms_ssim_metric],
-    jit_compile=False # Would be false per default, but just to be sure
+    jit_compile=False
 )
+
 # model.summary()
 
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
@@ -362,10 +369,21 @@ ckpt_best = callbacks.ModelCheckpoint(
 )
 
 cbs = [
+    callbacks.TerminateOnNaN(),
     ckpt_best, bf,
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
 ]
+
+# Einen Batch holen (nach allen Maps/Preprocs!)
+xb, yb = next(iter(train_ds.take(1)))
+print("xb", xb.dtype, tf.reduce_min(xb).numpy(), tf.reduce_max(xb).numpy())
+print("yb", yb.dtype, tf.reduce_min(yb).numpy(), tf.reduce_max(yb).numpy())
+
+# Einmal Loss ausrechnen
+val = combined_loss(yb, model(xb, training=False))
+print("probe-loss:", float(val.numpy()))
+
 
 
 history = model.fit(
