@@ -375,19 +375,17 @@ cbs = [
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
 ]
 
-# Einen Batch holen (nach allen Maps/Preprocs!)
+# === Forward-check: produziert das Netz selbst NaNs? ===
 xb, yb = next(iter(train_ds.take(1)))
-print("xb", xb.dtype, tf.reduce_min(xb).numpy(), tf.reduce_max(xb).numpy())
-print("yb", yb.dtype, tf.reduce_min(yb).numpy(), tf.reduce_max(yb).numpy())
-
-# Einmal Loss ausrechnen
-val = combined_loss(yb, model(xb, training=False))
-print("probe-loss:", float(val.numpy()))
-
-xb, yb = next(iter(train_ds.take(1)))
-y_trainmode = model(xb, training=True)
-tf.debugging.assert_all_finite(y_trainmode, "FORWARD(training=True) produced NaN/Inf")
-print("forward train-mode ok:", float(tf.reduce_mean(y_trainmode).numpy()))
+y_eval  = model(xb, training=False)
+tf.debugging.assert_all_finite(y_eval, "FORWARD(training=False) produced NaN/Inf")
+y_train = model(xb, training=True)
+tf.debugging.assert_all_finite(y_train, "FORWARD(training=True) produced NaN/Inf")
+print("forward ok:",
+      float(tf.reduce_min(y_eval)),
+      float(tf.reduce_max(y_eval)),
+      float(tf.reduce_min(y_train)),
+      float(tf.reduce_max(y_train)))
 
 
 
