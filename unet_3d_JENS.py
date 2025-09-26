@@ -424,23 +424,9 @@ print(">>> Phase 3: GPU training starts now!")
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 opt = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0, epsilon=1e-7)
-model.compile(
-    optimizer=opt,
-    loss=combined_loss,
-    metrics=["mae", psnr_metric, ms_ssim_metric],
-    jit_compile=False
-)
-
-
-# Forward-Check (ohne Training): produziert das Netz NaNs?
-xb, yb = next(iter(train_ds.take(1)))
-y_eval  = model(xb, training=False)
-tf.debugging.assert_all_finite(y_eval, "FORWARD(training=False) produced NaN/Inf")
-y_train = model(xb, training=True)
-tf.debugging.assert_all_finite(y_train, "FORWARD(training=True) produced NaN/Inf")
-print("forward ok:",
-      float(tf.reduce_min(y_eval)), float(tf.reduce_max(y_eval)),
-      float(tf.reduce_min(y_train)), float(tf.reduce_max(y_train)))
+model.compile(optimizer=tf.keras.optimizers.Adam(1e-4, clipnorm=1.0),
+              loss="mae", metrics=["mae", psnr_metric, ms_ssim_metric],
+              jit_compile=False)
 
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {"batch_size": BATCH_SIZE, "epochs": EPOCHS,
@@ -460,13 +446,7 @@ cbs = [
 ]
 
 
-history = model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=EPOCHS,
-    callbacks=cbs,
-    verbose=2
-)
+history = model.fit(train_ds, validation_data=val_ds, epochs=1, callbacks=cbs, verbose=2)
 
 
 print(">>> Phase 3: Training complete!")
