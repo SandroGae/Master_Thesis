@@ -302,48 +302,47 @@ class BestFinalizeCallback(callbacks.Callback):
 
     # ---------- JSON ----------
     def _write_json_for_model(self, model_path: Path):
-        ts = _timestamp()
-        json_path = model_path.with_suffix("")  # ohne .keras
-        json_path = json_path.parent / f"{json_path.name}_{ts}.json"
+    # kein Timestamp mehr im Dateinamen
+    json_path = model_path.with_suffix(".json")
 
-        try:
-            inp_shape = tuple(int(x) for x in (self.model.input_shape or []) if isinstance(x, (int,np.integer)))
-        except Exception:
-            inp_shape = None
-        try:
-            loss_name = getattr(self.model.loss, "__name__", str(self.model.loss))
-        except Exception:
-            loss_name = None
-        try:
-            metrics_list = [getattr(m, "__name__", str(m)) for m in (self.model.metrics or [])]
-        except Exception:
-            metrics_list = None
+    try:
+        inp_shape = tuple(int(x) for x in (self.model.input_shape or []) if isinstance(x, (int,np.integer)))
+    except Exception:
+        inp_shape = None
+    try:
+        loss_name = getattr(self.model.loss, "__name__", str(self.model.loss))
+    except Exception:
+        loss_name = None
+    try:
+        metrics_list = [getattr(m, "__name__", str(m)) for m in (self.model.metrics or [])]
+    except Exception:
+        metrics_list = None
 
-        meta = {
-            "timestamp": ts,
-            "user": getpass.getuser(),
-            "host": socket.gethostname(),
-            "platform": platform.platform(),
-            "git_commit": _safe_git_commit(),
-            "code_name": self.code,
-            "batch_size": self.run_meta.get("batch_size"),
-            "epochs_planned": self.run_meta.get("epochs"),
-            "early_stopping": self.run_meta.get("early_stopping"),
-            "data_prep": self.run_meta.get("data_prep"),
-            "alpha_ms_ssim": self.run_meta.get("ALPHA"),
-            "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
-            "best_psnr_metric": self.best_psnr,
-            "input_shape": inp_shape,
-            "loss": loss_name,
-            "metrics": metrics_list,
-            "optimizer": _serialize_optimizer(getattr(self.model, "optimizer", None)),
-            "mixed_precision_policy": mixed_precision.global_policy().name if mixed_precision.global_policy() else None,
-        }
-        try:
-            with open(json_path, "w") as f:
-                json.dump(meta, f, indent=2)
-        except Exception as e:
-            print(f"[WARN] Konnte JSON nicht schreiben: {e}")
+    meta = {
+        "timestamp": _timestamp(),   # bleibt im JSON-Inhalt erhalten!
+        "user": getpass.getuser(),
+        "host": socket.gethostname(),
+        "platform": platform.platform(),
+        "git_commit": _safe_git_commit(),
+        "code_name": self.code,
+        "batch_size": self.run_meta.get("batch_size"),
+        "epochs_planned": self.run_meta.get("epochs"),
+        "early_stopping": self.run_meta.get("early_stopping"),
+        "data_prep": self.run_meta.get("data_prep"),
+        "alpha_ms_ssim": self.run_meta.get("ALPHA"),
+        "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
+        "best_psnr_metric": self.best_psnr,
+        "input_shape": inp_shape,
+        "loss": loss_name,
+        "metrics": metrics_list,
+        "optimizer": _serialize_optimizer(getattr(self.model, "optimizer", None)),
+        "mixed_precision_policy": mixed_precision.global_policy().name if mixed_precision.global_policy() else None,
+    }
+    try:
+        with open(json_path, "w") as f:
+            json.dump(meta, f, indent=2)
+    except Exception as e:
+        print(f"[WARN] Konnte JSON nicht schreiben: {e}")
 
     # ---------- Parsing ----------
     @staticmethod
