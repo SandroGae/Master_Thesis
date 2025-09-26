@@ -27,6 +27,19 @@ DATA_ROOT = Path.home() / "data"
 EVAL_ROOT = DATA_ROOT  # Output directory
 
 # ===== Anscombe utils (for original-domain metrics) =====
+def _sanitize_name(s: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (s or "").strip()) or "EVAL"
+
+def _auto_script_name() -> str:
+    # Name dieses Eval-Skripts ohne .py
+    try:
+        path = sys.modules.get("__main__").__file__
+    except Exception:
+        path = None
+    if not path:
+        path = sys.argv[0] if sys.argv else "eval"
+    return _sanitize_name(os.path.splitext(os.path.basename(path))[0])
+
 def inv_anscombe_tf(z, eps=1e-6):
     """Approximate unbiased inverse of Anscombe; clamp small z for stability."""
     z = tf.maximum(z, eps)
@@ -174,17 +187,17 @@ def _read_val_loss_from_name(model_path: Path) -> Optional[float]:
             return None
     return None
 
-def _build_eval_filename(model_path: Path, psnr_value: float, val_loss_value: Optional[float]) -> str:
+def _build_eval_filename(model_path: Path, psnr_value: float, val_loss_value: Optional[float], prefix: Optional[str] = None) -> str:
     """
-    Baut einen sprechenden JSON-Dateinamen:
-    <modellstem>_val<loss>_psnr<db>.json
-    Wenn val_loss nicht bekannt ist, entfaellt der val-Teil.
+    Baut: <prefix>_<modellstem>_val<loss>_psnr<db>.json
+    prefix: Standard = Name des Eval-Skripts.
     """
     stem = model_path.stem
+    pref = _sanitize_name(prefix) if prefix else _auto_script_name()
     if val_loss_value is not None:
-        return f"{stem}_val{val_loss_value:.6f}_psnr{psnr_value:.2f}.json"
+        return f"{pref}_{stem}_val{val_loss_value:.6f}_psnr{psnr_value:.2f}.json"
     else:
-        return f"{stem}_psnr{psnr_value:.2f}.json"
+        return f"{pref}_{stem}_psnr{psnr_value:.2f}.json"
 
 # ====== Ergebnisse speichern ======
 def save_results(model_path, results: dict):
@@ -201,7 +214,7 @@ def save_results(model_path, results: dict):
     psnr_value = float(results.get("psnr", 0.0))
 
     # Dateiname bauen
-    out_name = _build_eval_filename(model_path, psnr_value, val_loss)
+    out_name = _build_eval_filename(model_path, psnr_value, val_loss)  # prefix auto aus Skriptname
     out_path = out_dir / out_name
 
     with open(out_path, "w") as f:

@@ -218,7 +218,7 @@ class BestFinalizeCallback(callbacks.Callback):
     """
     Am Ende:
       1) nimmt die von ModelCheckpoint geschriebene TEMP-Datei und benennt sie um zu <code>_NEW_valloss_...>.keras
-      2) schreibt JSON mit Timestamp
+      2) schreibt JSON
       3) rankt *alle* <code>_*.keras strikt nach val_loss -> <code>_V1_..., <code>_V2_..., ... (Luecken werden beseitigt)
     """
     def __init__(self, root: Path, run_meta: dict = None, tmp_name: str = None, code_name: str = None):
@@ -389,7 +389,10 @@ class BestFinalizeCallback(callbacks.Callback):
         temps = []
         for path, vloss, psnr in items:
             base_stem = path.with_suffix("").name
-            jsons = list(self.root.glob(base_stem + "_*.json"))
+            jsons = []
+            p0 = self.root / (base_stem + ".json")
+            if p0.exists():
+                jsons.append(p0)
             t_model = self.root / f".tmp_{uuid.uuid4().hex}.keras"
             os.replace(path, t_model)
             tmp_jsons = []
