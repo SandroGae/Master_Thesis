@@ -82,19 +82,20 @@ print(">>> Datasets created")
 
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation=None):
     ki  = "glorot_uniform"
-    kr  = regularizers.l2(1e-5)                  # milde L2
-    kc  = constraints.MaxNorm(3.0)               # Max-Norm gegen Explodieren
+    kr  = regularizers.l2(1e-5)
+    kc  = constraints.MaxNorm(3.0)
 
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LeakyReLU(alpha=0.1)(x)           # sanfter als ReLU
+    x = layers.LeakyReLU(negative_slope=0.1)(x)   # <- statt alpha=0.1
 
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LeakyReLU(alpha=0.1)(x)
+    x = layers.LeakyReLU(negative_slope=0.1)(x)   # <- statt alpha=0.1
     return x
+
 
 
 def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
@@ -492,7 +493,6 @@ opt = tf.keras.optimizers.Adam(
     learning_rate=1e-5,       # notfalls 5e-6
     epsilon=1e-6,
     global_clipnorm=1.0,      # GANZ WICHTIG: global, nicht nur per-layer
-    clipvalue=0.5             # optional: zusätzlich kappen
 )
 model.compile(optimizer=opt, loss=combined_loss,
               metrics=["mae", psnr_metric, ms_ssim_metric], jit_compile=False)
