@@ -138,22 +138,24 @@ ALPHA = 0.0          # wir starten bei 0.0 und rampen dann hoch
 K_SLICES = 3         # mehrere Slices mitteln: weniger Varianz
 MS_EPS = 1e-6        # Clipping weg von 0/1
 
-def _safe_imgs(y_true, y_pred):
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
-    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
-    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+def _clip01(x):
+    x = tf.cast(x, tf.float32)
+    return tf.clip_by_value(x, 0.0, 1.0)
+
+def _safe_imgs_for_ms_ssim(y_true, y_pred):
+    # Nur fuer den MS-SSIM Zweig: mit harten Checks
+    y_true = _clip01(y_true)
+    y_pred = _clip01(y_pred)
+    # leicht wegclipsen von 0/1 fuer Numerik
+    y_true = tf.clip_by_value(y_true, MS_EPS, 1.0 - MS_EPS)
+    y_pred = tf.clip_by_value(y_pred, MS_EPS, 1.0 - MS_EPS)
     tf.debugging.assert_all_finite(y_true, "y_true contains NaN/Inf")
     tf.debugging.assert_all_finite(y_pred, "y_pred contains NaN/Inf")
     return y_true, y_pred
 
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
-    # 1) Clip streng in [eps, 1-eps], damit keine konstanten 0/1-Bilder reingehen
-    y_true, y_pred = _safe_imgs(y_true, y_pred)
-    y_true = tf.clip_by_value(y_true, MS_EPS, 1.0 - MS_EPS)
-    y_pred = tf.clip_by_value(y_pred, MS_EPS, 1.0 - MS_EPS)
+    y_true, y_pred = _safe_imgs_for_ms_ssim(y_true, y_pred)
 
-    # 2) zufaellige Tiefenpositionen mitteln -> stabiler
     batch_size = tf.shape(y_true)[0]
     depth = tf.shape(y_true)[1]
     idx = _sample_depth_indices(batch_size, depth, k=k)  # (B,k)
@@ -164,33 +166,37 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     yt2 = tf.reshape(y_groundtruth, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
     yp2 = tf.reshape(y_model,       (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
 
-    # 3) MS-SSIM berechnen und mitteln
-    ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)  # -> [B*k]
+    ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
     tf.debugging.assert_all_finite(ms, "MS-SSIM produced NaN/Inf")
     return 1.0 - tf.reduce_mean(ms)
 
 def combined_loss(y_true, y_pred):
-    y_true, y_pred = _safe_imgs(y_true, y_pred)
-    l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES)
+    # Gemeinsamer Teil OHNE harte Asserts
+    yt = _clip01(y_true)
+    yp = _clip01(y_pred)
+
+    l_mae = tf.reduce_mean(tf.abs(yt - yp))
+    # Short-circuit: solange ALPHA==0, kein MS-SSIM auswerten
+    if ALPHA <= 0.0:
+        return l_mae
+
+    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
 
 # Metriken separat sichtbar machen
 def mae_metric(y_true, y_pred):
-    y_true, y_pred = _safe_imgs(y_true, y_pred)
-    return tf.reduce_mean(tf.abs(y_true - y_pred))
+    yt = _clip01(y_true); yp = _clip01(y_pred)
+    return tf.reduce_mean(tf.abs(yt - yp))
 
 def ms_ssim_metric(y_true, y_pred):
-    y_true, y_pred = _safe_imgs(y_true, y_pred)
-    y_true = tf.clip_by_value(y_true, MS_EPS, 1.0 - MS_EPS)
-    y_pred = tf.clip_by_value(y_pred, MS_EPS, 1.0 - MS_EPS)
-    yt2 = tf.reshape(y_true, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
+    yt, yp = _safe_imgs_for_ms_ssim(y_true, y_pred)
+    yt2 = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
+    yp2 = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
 
 def psnr_metric(y_true, y_pred):
-    y_true, y_pred = _safe_imgs(y_true, y_pred)
-    return tf.image.psnr(y_true, y_pred, max_val=1.0)
+    yt = _clip01(y_true); yp = _clip01(y_pred)
+    return tf.image.psnr(yt, yp, max_val=1.0)
 
 def _sample_depth_indices(batch_size, depth, k=1, seed=42):
     """
@@ -434,7 +440,7 @@ print(">>> Phase 3: GPU training starts now!")
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # ======== Optimizer (etwas konservativer) ========
-opt = tf.keras.optimizers.Adam(learning_rate=3e-5, epsilon=1e-6, clipnorm=1.0)
+opt = tf.keras.optimizers.Adam(learning_rate=1e-5, epsilon=1e-6, clipnorm=1.0)
 
 # ======== Alpha linear hochfahren ========
 class AlphaScheduler(callbacks.Callback):
