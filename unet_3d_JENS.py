@@ -44,7 +44,7 @@ X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]
 BATCH_SIZE = 16
-EPOCHS     = 3
+EPOCHS     = 10
 
 # %%
 # ===== Preprocessing (nach dem Laden definieren) =====
@@ -133,57 +133,49 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
 # %%
 # =========== Defining Loss function MAE + MS-SSIM (slice-wise) ========
 
-ALPHA_TARGET = 0.3   # spaeteres Ziel
-ALPHA = 0.0          # wir starten bei 0.0 und rampen dann hoch
-K_SLICES = 3         # mehrere Slices mitteln: weniger Varianz
-MS_EPS = 1e-6        # Clipping weg von 0/1
+ALPHA_TARGET = 0.7    # <- bis hier hochfahren
+ALPHA = 0.0
+K_SLICES     = 3
+MS_EPS       = 1e-6
+
+# ALPHA als TF-Variable (damit der Graph nicht einfriert)
+ALPHA_TF = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
+
 
 def _clip01(x):
     x = tf.cast(x, tf.float32)
     return tf.clip_by_value(x, 0.0, 1.0)
 
 def _safe_imgs_for_ms_ssim(y_true, y_pred):
-    # Nur fuer den MS-SSIM Zweig: mit harten Checks
-    y_true = _clip01(y_true)
-    y_pred = _clip01(y_pred)
-    # leicht wegclipsen von 0/1 fuer Numerik
-    y_true = tf.clip_by_value(y_true, MS_EPS, 1.0 - MS_EPS)
-    y_pred = tf.clip_by_value(y_pred, MS_EPS, 1.0 - MS_EPS)
-    tf.debugging.assert_all_finite(y_true, "y_true contains NaN/Inf")
-    tf.debugging.assert_all_finite(y_pred, "y_pred contains NaN/Inf")
-    return y_true, y_pred
+    yt = _clip01(y_true); yp = _clip01(y_pred)
+    yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
+    yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
+    tf.debugging.assert_all_finite(yt, "y_true contains NaN/Inf")
+    tf.debugging.assert_all_finite(yp, "y_pred contains NaN/Inf")
+    return yt, yp
 
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
-    y_true, y_pred = _safe_imgs_for_ms_ssim(y_true, y_pred)
-
-    batch_size = tf.shape(y_true)[0]
-    depth = tf.shape(y_true)[1]
-    idx = _sample_depth_indices(batch_size, depth, k=k)  # (B,k)
-
-    y_groundtruth = tf.gather(y_true, idx, batch_dims=1)  # (B,k,H,W,C)
-    y_model       = tf.gather(y_pred, idx, batch_dims=1)  # (B,k,H,W,C)
-
-    yt2 = tf.reshape(y_groundtruth, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    yp2 = tf.reshape(y_model,       (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
-
+    yt, yp = _safe_imgs_for_ms_ssim(y_true, y_pred)
+    B = tf.shape(yt)[0]; D = tf.shape(yt)[1]
+    idx = _sample_depth_indices(B, D, k=k)
+    ygt = tf.gather(yt, idx, batch_dims=1)
+    ypd = tf.gather(yp, idx, batch_dims=1)
+    yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
+    yp2 = tf.reshape(ypd, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
     ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
     tf.debugging.assert_all_finite(ms, "MS-SSIM produced NaN/Inf")
     return 1.0 - tf.reduce_mean(ms)
 
 def combined_loss(y_true, y_pred):
-    # Gemeinsamer Teil OHNE harte Asserts
-    yt = _clip01(y_true)
-    yp = _clip01(y_pred)
-
+    yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
-    # Short-circuit: solange ALPHA==0, kein MS-SSIM auswerten
-    if ALPHA <= 0.0:
+    def ms_branch():
+        l_ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
+        return (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms
+    def mae_branch():
         return l_mae
+    return tf.cond(ALPHA_TF > 0.0, ms_branch, mae_branch)
 
-    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-    return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
-
-# Metriken separat sichtbar machen
 def mae_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     return tf.reduce_mean(tf.abs(yt - yp))
@@ -193,7 +185,6 @@ def ms_ssim_metric(y_true, y_pred):
     yt2 = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
     yp2 = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
-
 def psnr_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     return tf.image.psnr(yt, yp, max_val=1.0)
@@ -437,28 +428,45 @@ class BestFinalizeCallback(callbacks.Callback):
 # ======== Train (STEP 1: MAE-only sanity) ========
 print(">>> Phase 3: GPU training starts now!")
 
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
-
-# ======== Optimizer (etwas konservativer) ========
-opt = tf.keras.optimizers.Adam(learning_rate=1e-5, epsilon=1e-6, clipnorm=1.0)
-
 # ======== Alpha linear hochfahren ========
 class AlphaScheduler(callbacks.Callback):
-    def __init__(self, epochs_warmup=1, epochs_ramp=2, target=ALPHA_TARGET):
+    def __init__(self, warmup=1, step=0.1, target=ALPHA_TARGET, min_alpha=0.0):
         super().__init__()
-        self.warm = int(epochs_warmup)
-        self.ramp = int(epochs_ramp)
+        self.warmup = int(warmup)
+        self.step   = float(step)
         self.target = float(target)
+        self.min_a  = float(min_alpha)
+        self.best_val = np.inf
+
     def on_epoch_begin(self, epoch, logs=None):
-        global ALPHA
-        if epoch < self.warm:
-            ALPHA = 0.0
-        elif epoch < self.warm + self.ramp:
-            t = (epoch - self.warm + 1) / max(1, self.ramp)
-            ALPHA = float(min(self.target, t * self.target))
+        # während Warmup bei 0.0 bleiben
+        if epoch < self.warmup:
+            ALPHA_TF.assign(self.min_a)
+        print(f"[AlphaScheduler] begin epoch {epoch}  ALPHA={float(ALPHA_TF.numpy()):.3f}")
+
+    def on_epoch_end(self, epoch, logs=None):
+        vl = float(logs.get("val_loss", np.inf))
+        if not np.isfinite(vl):
+            # instabil -> alpha leicht senken
+            new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
+            ALPHA_TF.assign(new_a)
+            print(f"[AlphaScheduler] val_loss non-finite -> ALPHA={new_a:.3f}")
+            return
+
+        improved = vl < self.best_val - 1e-6
+        if improved:
+            self.best_val = vl
+
+        # Wenn stabil (endlich) und nicht deutlich schlechter, erhöhe ALPHA
+        if vl <= self.best_val * 1.02:  # <= +2% Verschlechterung tolerieren
+            new_a = min(self.target, float(ALPHA_TF.numpy()) + self.step)
+            ALPHA_TF.assign(new_a)
+            print(f"[AlphaScheduler] val ok -> ALPHA={new_a:.3f}")
         else:
-            ALPHA = self.target
-        print(f"[AlphaScheduler] ALPHA={ALPHA:.3f}")
+            # leichte Verschlechterung -> halte oder kleine Reduktion
+            new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
+            ALPHA_TF.assign(new_a)
+            print(f"[AlphaScheduler] val worsened -> ALPHA={new_a:.3f}")
 
 # ======== Checkpoints inkl. BestFinalize ========
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
@@ -475,20 +483,28 @@ ckpt_best = callbacks.ModelCheckpoint(
     mode="min", save_best_only=True, verbose=1
 )
 
-# ======== Compile mit kombiniertem Loss + Metriken ========
-model.compile(
-    optimizer=opt,
-    loss=combined_loss,
-    metrics=["mae", psnr_metric, ms_ssim_metric],
-    jit_compile=False
-)
-
 # ======== Callbacks-Liste ========
+
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
+
+# ======== Optimizer (etwas konservativer) ========
+opt = tf.keras.optimizers.Adam(learning_rate=1e-5, epsilon=1e-6, clipnorm=1.0)
+model.compile(optimizer=opt, loss=combined_loss,
+              metrics=["mae", psnr_metric, ms_ssim_metric], jit_compile=False)
+
+class LogAlphaAtEnd(callbacks.Callback):
+    def on_train_end(self, logs=None):
+        try:
+            bf.run_meta["ALPHA_final"] = float(ALPHA_TF.numpy())
+            bf.run_meta["ALPHA_target"] = float(ALPHA_TARGET)
+        except Exception:
+            pass
+
 cbs = [
-    AlphaScheduler(epochs_warmup=1, epochs_ramp=2, target=ALPHA_TARGET),
+    AlphaScheduler(warmup=1, step=0.1, target=ALPHA_TARGET),
+    LogAlphaAtEnd(),
     callbacks.TerminateOnNaN(),
-    ckpt_best,
-    bf,
+    ckpt_best, bf,
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6),
 ]
