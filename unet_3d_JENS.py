@@ -89,11 +89,10 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu
 """
 
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer="he_normal", use_bias=True)(x)
+    ki = "glorot_uniform"
+    x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
     x = layers.Activation(activation)(x)
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer="he_normal", use_bias=True)(x)
+    x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
     x = layers.Activation(activation)(x)
     return x
 
@@ -133,29 +132,28 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
 
 # %%
 # =========== Defining Loss function MAE + MS-SSIM (slice-wise) ========
-def _sample_depth_indices(batch_size, depth, k=1, seed=42):
-    """
-    Generates deterministic matrix and samples indices using highest values per row
-    """
-    rnd = tf.random.stateless_uniform([batch_size, depth], seed=[seed, 0]) # (B,D) matrix with random values
-    topk = tf.math.top_k(rnd, k=k).indices                                 # Search for 2 highest values per row
-    return topk
+
+ALPHA_TARGET = 0.3   # spaeteres Ziel
+ALPHA = 0.0          # wir starten bei 0.0 und rampen dann hoch
+K_SLICES = 3         # mehrere Slices mitteln: weniger Varianz
+MS_EPS = 1e-6        # Clipping weg von 0/1
 
 def _safe_imgs(y_true, y_pred):
-    # mixed precision + Normalisierung robust machen
     y_true = tf.cast(y_true, tf.float32)
     y_pred = tf.cast(y_pred, tf.float32)
-    # Begrenze strikt auf [0,1] (MS-SSIM erwartet das)
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
-    # harte Numerik-Checks (werfen sofort Exception mit Stacktrace)
     tf.debugging.assert_all_finite(y_true, "y_true contains NaN/Inf")
     tf.debugging.assert_all_finite(y_pred, "y_pred contains NaN/Inf")
     return y_true, y_pred
 
-
-def ms_ssim_loss_sampled(y_true, y_pred, k=1):
+def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
+    # 1) Clip streng in [eps, 1-eps], damit keine konstanten 0/1-Bilder reingehen
     y_true, y_pred = _safe_imgs(y_true, y_pred)
+    y_true = tf.clip_by_value(y_true, MS_EPS, 1.0 - MS_EPS)
+    y_pred = tf.clip_by_value(y_pred, MS_EPS, 1.0 - MS_EPS)
+
+    # 2) zufaellige Tiefenpositionen mitteln -> stabiler
     batch_size = tf.shape(y_true)[0]
     depth = tf.shape(y_true)[1]
     idx = _sample_depth_indices(batch_size, depth, k=k)  # (B,k)
@@ -166,29 +164,41 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=1):
     yt2 = tf.reshape(y_groundtruth, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
     yp2 = tf.reshape(y_model,       (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
 
-    yt2, yp2 = _safe_imgs(yt2, yp2)
-    ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
+    # 3) MS-SSIM berechnen und mitteln
+    ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)  # -> [B*k]
     tf.debugging.assert_all_finite(ms, "MS-SSIM produced NaN/Inf")
     return 1.0 - tf.reduce_mean(ms)
 
-ALPHA = 0.3  # erstmal kleiner starten
-
-def combined_loss(y_true, y_pred, k_slices=1):
+def combined_loss(y_true, y_pred):
     y_true, y_pred = _safe_imgs(y_true, y_pred)
     l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)  # nutzt _safe_imgs intern
+    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES)
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
+
+# Metriken separat sichtbar machen
+def mae_metric(y_true, y_pred):
+    y_true, y_pred = _safe_imgs(y_true, y_pred)
+    return tf.reduce_mean(tf.abs(y_true - y_pred))
 
 def ms_ssim_metric(y_true, y_pred):
     y_true, y_pred = _safe_imgs(y_true, y_pred)
+    y_true = tf.clip_by_value(y_true, MS_EPS, 1.0 - MS_EPS)
+    y_pred = tf.clip_by_value(y_pred, MS_EPS, 1.0 - MS_EPS)
     yt2 = tf.reshape(y_true, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
     yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
-    yt2, yp2 = _safe_imgs(yt2, yp2)
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
 
 def psnr_metric(y_true, y_pred):
     y_true, y_pred = _safe_imgs(y_true, y_pred)
     return tf.image.psnr(y_true, y_pred, max_val=1.0)
+
+def _sample_depth_indices(batch_size, depth, k=1, seed=42):
+    """
+    Generates deterministic matrix and samples indices using highest values per row
+    """
+    rnd = tf.random.stateless_uniform([batch_size, depth], seed=[seed, 0]) # (B,D) matrix with random values
+    topk = tf.math.top_k(rnd, k=k).indices                                 # Search for 2 highest values per row
+    return topk
 
 
 
@@ -423,30 +433,68 @@ print(">>> Phase 3: GPU training starts now!")
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
-opt = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0, epsilon=1e-7)
-model.compile(optimizer=tf.keras.optimizers.Adam(1e-4, clipnorm=1.0),
-              loss="mae", metrics=["mae", psnr_metric, ms_ssim_metric],
-              jit_compile=False)
+# ======== Optimizer (etwas konservativer) ========
+opt = tf.keras.optimizers.Adam(learning_rate=3e-5, epsilon=1e-6, clipnorm=1.0)
 
+# ======== Alpha linear hochfahren ========
+class AlphaScheduler(callbacks.Callback):
+    def __init__(self, epochs_warmup=1, epochs_ramp=2, target=ALPHA_TARGET):
+        super().__init__()
+        self.warm = int(epochs_warmup)
+        self.ramp = int(epochs_ramp)
+        self.target = float(target)
+    def on_epoch_begin(self, epoch, logs=None):
+        global ALPHA
+        if epoch < self.warm:
+            ALPHA = 0.0
+        elif epoch < self.warm + self.ramp:
+            t = (epoch - self.warm + 1) / max(1, self.ramp)
+            ALPHA = float(min(self.target, t * self.target))
+        else:
+            ALPHA = self.target
+        print(f"[AlphaScheduler] ALPHA={ALPHA:.3f}")
+
+# ======== Checkpoints inkl. BestFinalize ========
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
-run_meta = {"batch_size": BATCH_SIZE, "epochs": EPOCHS,
-            "early_stopping": {"monitor":"val_loss","patience":10},
-            "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-            "ALPHA": ALPHA}
+run_meta = {
+    "batch_size": BATCH_SIZE, "epochs": EPOCHS,
+    "early_stopping": {"monitor":"val_loss","patience":10},
+    "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+    "ALPHA": ALPHA
+}
 
 bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta, code_name="AUTO")
+ckpt_best = callbacks.ModelCheckpoint(
+    filepath=str(bf.tmp_path), monitor="val_loss",
+    mode="min", save_best_only=True, verbose=1
+)
 
-ckpt_best = callbacks.ModelCheckpoint(filepath=str(bf.tmp_path), monitor="val_loss",
-                                      mode="min", save_best_only=True, verbose=1)
+# ======== Compile mit kombiniertem Loss + Metriken ========
+model.compile(
+    optimizer=opt,
+    loss=combined_loss,
+    metrics=["mae", psnr_metric, ms_ssim_metric],
+    jit_compile=False
+)
+
+# ======== Callbacks-Liste ========
 cbs = [
+    AlphaScheduler(epochs_warmup=1, epochs_ramp=2, target=ALPHA_TARGET),
     callbacks.TerminateOnNaN(),
-    ckpt_best, bf,
+    ckpt_best,
+    bf,
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6),
 ]
 
-
-history = model.fit(train_ds, validation_data=val_ds, epochs=1, callbacks=cbs, verbose=2)
+# ======== Train ========
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,   # z.B. 6-10 empfehlenswert fuer den Ramp
+    callbacks=cbs,
+    verbose=2
+)
 
 
 print(">>> Phase 3: Training complete!")
