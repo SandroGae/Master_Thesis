@@ -19,6 +19,7 @@ from tensorflow.keras import layers, models, callbacks
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from pathlib import Path
+from tensorflow.keras import regularizers, constraints
 
 import sys, inspect
 import json, socket, getpass, platform, subprocess, time, uuid # for naming files and callbacks
@@ -75,25 +76,24 @@ val_ds   = make_ds(X_val,   Y_val,   False, preproc=preproc_valid)
 test_ds  = make_ds(X_test,  Y_test,  False, preproc=preproc_valid)
 print(">>> Datasets created")
 
+
 # %%
 # ========= Defining 3D-U-Net Architecture ========
-"""
-def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
-    x = layers.Conv3D(filters, kernel_size, padding=padding)(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation(activation)(x)
-    x = layers.Conv3D(filters, kernel_size, padding=padding)(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation(activation)(x)
-    return x
-"""
 
-def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
-    ki = "glorot_uniform"
-    x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
-    x = layers.Activation(activation)(x)
-    x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
-    x = layers.Activation(activation)(x)
+def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation=None):
+    ki  = "glorot_uniform"
+    kr  = regularizers.l2(1e-5)                  # milde L2
+    kc  = constraints.MaxNorm(3.0)               # Max-Norm gegen Explodieren
+
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer=ki, use_bias=True,
+                      kernel_regularizer=kr, kernel_constraint=kc)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)           # sanfter als ReLU
+
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer=ki, use_bias=True,
+                      kernel_regularizer=kr, kernel_constraint=kc)(x)
+    x = layers.LeakyReLU(alpha=0.1)(x)
     return x
 
 
@@ -135,8 +135,8 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
 
 ALPHA_TARGET = 0.7    # <- bis hier hochfahren
 ALPHA = 0.0
-K_SLICES     = 3
-MS_EPS       = 1e-6
+K_SLICES     = 5
+MS_EPS       = 1e-5
 
 # ALPHA als TF-Variable (damit der Graph nicht einfriert)
 ALPHA_TF = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
@@ -488,9 +488,16 @@ ckpt_best = callbacks.ModelCheckpoint(
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # ======== Optimizer (etwas konservativer) ========
-opt = tf.keras.optimizers.Adam(learning_rate=1e-5, epsilon=1e-6, clipnorm=1.0)
+opt = tf.keras.optimizers.Adam(
+    learning_rate=1e-5,       # notfalls 5e-6
+    epsilon=1e-6,
+    global_clipnorm=1.0,      # GANZ WICHTIG: global, nicht nur per-layer
+    clipvalue=0.5             # optional: zusätzlich kappen
+)
 model.compile(optimizer=opt, loss=combined_loss,
               metrics=["mae", psnr_metric, ms_ssim_metric], jit_compile=False)
+
+model.run_eagerly = True  # nur zum Debuggen, danach wieder False
 
 class LogAlphaAtEnd(callbacks.Callback):
     def on_train_end(self, logs=None):
@@ -500,9 +507,18 @@ class LogAlphaAtEnd(callbacks.Callback):
         except Exception:
             pass
 
+class WeightNaNGuard(callbacks.Callback):
+    def on_train_batch_end(self, batch, logs=None):
+        for i, w in enumerate(self.model.weights):
+            if not tf.reduce_all(tf.math.is_finite(w)):
+                print(f"[NaNWeight] layer={w.name} batch={batch}")
+                self.model.stop_training = True
+                break
+
 cbs = [
-    AlphaScheduler(warmup=1, step=0.1, target=ALPHA_TARGET),
-    LogAlphaAtEnd(),
+    AlphaScheduler(warmup=2, step=0.05, target=ALPHA_TARGET),
+    WeightNaNGuard(),
+    LogAlphaAtEnd(),                 # <- HINZU
     callbacks.TerminateOnNaN(),
     ckpt_best, bf,
     callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True),
