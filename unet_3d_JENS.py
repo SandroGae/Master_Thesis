@@ -191,7 +191,7 @@ ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_
 MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool,   name="ms_grad_on")
 
 MS_EPS    = 1e-5
-K_SLICES  = 5
+K_SLICES = 2  # vorerst klein
 
 MS_ENABLE_TF = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_enable")
 
@@ -202,27 +202,39 @@ def _clip01(x):
 
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     yt = _clip01(y_true); yp = _clip01(y_pred)
+
+    # komplett detach, damit wirklich kein Grad & weniger Interaktion
+    yt = tf.stop_gradient(yt)
+    yp = tf.stop_gradient(yp)
+
+    MS_EPS = tf.constant(1e-5, tf.float32)
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
     yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
 
-    # leichtes Dithering gegen konstante Fenster
+    # ganz kleines Dithering (ebenfalls float32, detached)
     noise = tf.constant(1e-4, tf.float32)
     yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=tf.float32)
     yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=tf.float32)
 
-    # energie-basiertes Slice-Sampling
+    # Energie-basiertes Sampling (robust gegen k > D)
     energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])  # (B,D)
     D = tf.shape(yt)[1]
     k_eff = tf.minimum(k, D)
     idx = tf.math.top_k(energy, k=k_eff).indices
-    yt = tf.gather(yt, idx, batch_dims=1)  # (B,k,H,W,C)
+    yt = tf.gather(yt, idx, batch_dims=1)
     yp = tf.gather(yp, idx, batch_dims=1)
+
     yt = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
     yp = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
 
     ms = tf.image.ssim_multiscale(yt, yp, max_val=1.0)  # float32
     ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
-    return 1.0 - tf.reduce_mean(ms)
+    ms_mean = tf.reduce_mean(ms)
+
+    # harte Finite-Absicherung
+    ms_mean = tf.where(tf.math.is_finite(ms_mean), ms_mean, tf.constant(0.0, tf.float32))
+    return 1.0 - ms_mean
+
 
 @tf.function(jit_compile=False)
 def combined_loss(y_true, y_pred):
@@ -570,10 +582,13 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 # Callback-Liste (ohne AlphaScheduler für Debug)
 cbs = [
-        AlphaScheduler(target=0.3, warmup=2, epochs_to_target=6,
-                   ms_enable_epoch=5,   # MS erst ab Epoche 5 überhaupt berechnen
-                   grad_on_epoch=9999), # Gradients vorerst aus,
-    #BatchDebugDump(every=50),
+    AlphaScheduler(
+        target=0.10,        # erstmal nur 0.10 mischen
+        warmup=4,           # 4 Epochen reines MAE
+        epochs_to_target=8, # langsam bis 0.10
+        ms_enable_epoch=8,  # MS überhaupt erst ab Epoche 8 berechnen
+        grad_on_epoch=9999  # Grad weiter AUS lassen
+    ),
     WeightNaNGuard(),
     LossNaNGuard(),
     callbacks.TerminateOnNaN(),
