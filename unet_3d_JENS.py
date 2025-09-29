@@ -16,8 +16,6 @@ import os, sys, inspect, json, socket, getpass, platform, subprocess, time, uuid
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("float32")
 
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from tensorflow.keras.optimizers import AdamW
@@ -190,7 +188,6 @@ ALPHA = 0.0
 ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
 MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool,   name="ms_grad_on")
 
-MS_EPS    = 1e-5
 K_SLICES = 2  # vorerst klein
 
 MS_ENABLE_TF = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_enable")
@@ -202,10 +199,6 @@ def _clip01(x):
 
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     yt = _clip01(y_true); yp = _clip01(y_pred)
-
-    # komplett detach, damit wirklich kein Grad & weniger Interaktion
-    yt = tf.stop_gradient(yt)
-    yp = tf.stop_gradient(yp)
 
     MS_EPS = tf.constant(1e-5, tf.float32)
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
@@ -272,11 +265,6 @@ opt = AdamW(
     amsgrad=False
 )
 
-metric_list = [
-    tf.keras.metrics.MeanAbsoluteError(name="mae"),
-    tf.keras.metrics.MeanSquaredError(name="mse"),
-    psnr_metric,
-]
 model.compile(
     optimizer=opt,
     loss=combined_loss,                 # <— statt reines MAE
@@ -287,10 +275,6 @@ model.compile(
     ],
     jit_compile=False
 )
-
-
-# Debug: Eager an
-model.run_eagerly = False # Just for debugging
 
 
 # %%
@@ -355,7 +339,7 @@ class BestFinalizeCallback(callbacks.Callback):
         vloss = float(logs["val_loss"])
         if vloss < self.best_val_loss:
             self.best_val_loss = vloss
-            psnr = logs.get("psnr_metric")
+            psnr = logs.get("psnr")
             self.best_psnr = float(psnr) if psnr is not None else None
     def on_train_end(self, logs=None):
         vloss_str = f"{self.best_val_loss:.3e}" if np.isfinite(self.best_val_loss) else "nan"
@@ -507,33 +491,6 @@ class WeightNaNGuard(callbacks.Callback):
                 self.model.stop_training = True
                 break
 
-class BatchDebugDump(callbacks.Callback):
-    def __init__(self, every=50, dump_first_nan=True, outdir=Path("./nan_dump")):
-        super().__init__()
-        self.every = every
-        self.dump_first_nan = dump_first_nan
-        self.outdir = Path(outdir); self.outdir.mkdir(parents=True, exist_ok=True)
-        self._nan_dumped = False
-
-    def on_train_batch_end(self, batch, logs=None):
-        logs = logs or {}
-        loss = logs.get("loss", None)
-        if batch % self.every == 0 and loss is not None:
-            print(f"[Batch {batch:05d}] loss={float(loss):.6f}")
-
-        if (loss is not None) and (not np.isfinite(loss)) and self.dump_first_nan and (not self._nan_dumped):
-            # Versuch: Eingaben aus der letzten Batch ziehen (nur im Eager-Mode gut möglich)
-            try:
-                # Greif auf das zuletzt verarbeitete Batch aus dem Iterator zu:
-                # Als pragmatischer Workaround: Modell einmal auf dem letzten Batch callen und abspeichern
-                # (Hier nur Pseudogreif – wenn du schnell willst, kannst du stattdessen an der Input-Pipeline dumpen.)
-                pass
-            except Exception:
-                pass
-            self._nan_dumped = True
-            print(f"[Dump] NaN bei Batch {batch}. (Siehe {self.outdir})")
-            self.model.stop_training = True
-
 class AlphaScheduler(callbacks.Callback):
     def __init__(self, target=0.3, warmup=2, epochs_to_target=6,
                  ms_enable_epoch=5, grad_on_epoch=8):
@@ -557,14 +514,6 @@ class AlphaScheduler(callbacks.Callback):
             MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
         print(f"[AlphaScheduler] epoch={epoch}  alpha={float(ALPHA_TF.numpy()):.3f}  ms_enable={bool(MS_ENABLE_TF.numpy())}  grad_on={bool(MS_GRAD_ON.numpy())}")
 
-class MsTermLogger(callbacks.Callback):
-    def on_train_batch_end(self, batch, logs=None):
-        if bool(MS_ENABLE_TF.numpy()) and ALPHA_TF.numpy() > 0:
-            # kleine Probe mit aktuellen y_true/y_pred geht hier nicht direkt; reicht, dass keine NaNs in loss sind
-            if logs and "loss" in logs and not np.isfinite(logs["loss"]):
-                print(f"[MsTermLogger] NaN loss @ batch {batch} (alpha={float(ALPHA_TF.numpy()):.3f})")
-                self.model.stop_training = True
-
 
 # Checkpoints + Meta
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
@@ -580,10 +529,10 @@ ckpt_best = callbacks.ModelCheckpoint(
     mode="min", save_best_only=True, verbose=1
 )
 
-# Callback-Liste (ohne AlphaScheduler für Debug)
+# Callback-Liste
 cbs = [
     AlphaScheduler(
-        target=0.70,        # erstmal nur 0.10 mischen
+        target=ALPHA_TARGET,        # testing
         warmup=4,           # 4 Epochen reines MAE
         epochs_to_target=8, # langsam bis 0.10
         ms_enable_epoch=8,  # MS überhaupt erst ab Epoche 8 berechnen
@@ -606,7 +555,6 @@ print(">>> Phase 3: GPU training starts now!")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    validation_freq=1,
     epochs=EPOCHS,
     callbacks=cbs,
     verbose=0
