@@ -43,8 +43,8 @@ X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]
-BATCH_SIZE = 8
-EPOCHS     = 100
+BATCH_SIZE = 16
+EPOCHS     = 200
 
 # %%
 # ===== Preprocessing (nach dem Laden definieren) =====
@@ -87,9 +87,27 @@ def make_ds(X, Y, shuffle=True, preproc=None, limit=None, cache_in_memory=True):
 
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice), limit=32)
-val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice), limit=8)
-#test_ds  = make_ds(X_test,  Y_test,  False, preproc=map_slice_wise(preproc_valid_slice))
+train_ds = make_ds(
+    X_train, Y_train,
+    shuffle=True,
+    preproc=map_slice_wise(preproc_train_slice),
+    limit=None  # << volle Trainingsdaten
+)
+
+val_ds = make_ds(
+    X_val, Y_val,
+    shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice),
+    limit=None  # << volle Val-Daten
+)
+
+test_ds = make_ds(
+    X_test, Y_test,
+    shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice),
+    limit=None
+)
+
 print(">>> Datasets created")
 
 
@@ -611,19 +629,28 @@ class WeightNaNGuard(callbacks.Callback):
 
 # --- Callbacks ---
 cbs = [
-    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=10, warmup=3, grad_on_epoch=8),
+    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=50, warmup=5, grad_on_epoch=20),
     WeightNaNGuard(),
     callbacks.TerminateOnNaN(),
-    CompactLogger(),     # <<— NEU
+
+    # Lernrate automatisch anpassen + frühes Stoppen
+    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=0),
+    callbacks.EarlyStopping(monitor="val_loss", patience=20, restore_best_weights=True, verbose=0),
+
+    # Checkpoints + Finalizer wieder aktivieren (du hast sie definiert)
+    ckpt_best, bf,
+
+    # deine kompakte Log-Ausgabe
+    CompactLogger(),
 ]
 
 history = model.fit(
     train_ds,
-    validation_data=val_ds,
-    validation_freq=1,
+    validation_data=val_ds,  # Val bleibt Val
+    validation_freq=1,       # jede Epoche
     epochs=EPOCHS,
     callbacks=cbs,
-    verbose=0            # Keras-Progress abschalten
+    verbose=0                # nur CompactLogger-Ausgabe
 )
 
 
@@ -641,4 +668,13 @@ def combined_loss(y_true, y_pred):
 
 
 print(">>> Phase 3: Training complete!")
+
+
+# %%
+final_val = model.evaluate(val_ds, return_dict=True, verbose=0)
+print("FINAL VAL:", {k: float(v) for k, v in final_val.items()})
+
+# Falls oben test_ds gebaut wurde:
+final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
+print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 
