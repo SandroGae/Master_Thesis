@@ -43,7 +43,7 @@ X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]
 BATCH_SIZE = 16
-EPOCHS     = 10
+EPOCHS     = 100
 
 # %%
 # ===== Preprocessing (nach dem Laden definieren) =====
@@ -204,12 +204,11 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
-    def ms_branch():
-        l_ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-        return (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms
-    def mae_branch():
+    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
+    if not tf.reduce_all(tf.math.is_finite(l_ms)):
         return l_mae
-    return tf.cond(ALPHA_TF > 0.0, ms_branch, mae_branch)
+    return (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms
+
 
 def mae_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
@@ -523,10 +522,11 @@ ckpt_best = callbacks.ModelCheckpoint(
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # ======== Optimizer (etwas konservativer) ========
-opt = tf.keras.optimizers.Adam(
+opt = tf.keras.optimizers.experimental.AdamW(
     learning_rate=1e-5,
-    epsilon=1e-5,          # etwas groesser
-    global_clipnorm=0.5,   # staerker clippen
+    epsilon=1e-5,
+    global_clipnorm=0.25,    # stärkeres Clipping
+    weight_decay=1e-5        # sanfter Weight Decay
 )
 
 
@@ -552,7 +552,7 @@ class WeightNaNGuard(callbacks.Callback):
                 break
 
 cbs = [
-    AlphaScheduler(warmup=2, step=0.05, target=ALPHA_TARGET),
+    AlphaScheduler(warmup=5, step=0.02, target=ALPHA_TARGET),
     WeightNaNGuard(),
     LogAlphaAtEnd(),                 # <- HINZU
     callbacks.TerminateOnNaN(),
