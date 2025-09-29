@@ -240,10 +240,6 @@ def combined_loss(y_true, y_pred):
     return tf.cond(use_ms, with_ms, lambda: l_mae)
 
 
-    # wenn alpha==0 → reines MAE; ms-ssim wird gar nicht aufgerufen
-    return tf.cond(ALPHA_TF > 0.0, with_ms, lambda: l_mae)
-
-
 
 
 def psnr_metric(y_true, y_pred):
@@ -574,7 +570,9 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 # Callback-Liste (ohne AlphaScheduler für Debug)
 cbs = [
-    AlphaScheduler(target=0.3, warmup=2, epochs_to_target=6, grad_on_epoch=9999),
+        AlphaScheduler(target=0.3, warmup=2, epochs_to_target=6,
+                   ms_enable_epoch=5,   # MS erst ab Epoche 5 überhaupt berechnen
+                   grad_on_epoch=9999), # Gradients vorerst aus,
     #BatchDebugDump(every=50),
     WeightNaNGuard(),
     LossNaNGuard(),
