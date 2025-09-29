@@ -14,7 +14,7 @@ import os
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("mixed_float16")
+mixed_precision.set_global_policy("float32")
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from tensorflow.keras.optimizers import AdamW
 from unet_3d_data_JENS import prepare_in_memory_5to5
@@ -43,7 +43,7 @@ X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 EPOCHS     = 200
 
 # %%
@@ -147,13 +147,13 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization(dtype="float32", epsilon=1e-4)(x)
+    x = layers.LayerNormalization(dtype="float32", epsilon=1e-3)(x)
     x = layers.ELU()(x)
 
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization(dtype="float32", epsilon=1e-4)(x)
+    x = layers.LayerNormalization(dtype="float32", epsilon=1e-3)(x)
     x = layers.ELU()(x)
     return x
 
@@ -590,12 +590,13 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # Optimizer: höheres LR für Toy, weniger Bremse
 opt = AdamW(
-    learning_rate=5e-5,   # kleiner
-    epsilon=1e-5,         # größer -> robuster in mixed-precision
-    global_clipnorm=1.0,  # lassen
-    weight_decay=0.0,     # AUS zum Stabilisieren
-    amsgrad=False         # AUS (kann mit fp16 + wd zickig werden)
+    learning_rate=1e-5,   # kleiner
+    epsilon=1e-4,         # größer = robuster
+    global_clipnorm=0.5,  # stärker clippen
+    weight_decay=0.0,     # zunächst kein WD
+    amsgrad=False
 )
+
 
 
 # schönerer Name im Log
@@ -610,7 +611,7 @@ metric_list = [
 model.compile(optimizer=opt, loss=combined_loss,
               metrics=metric_list, jit_compile=False)
 
-model.run_eagerly = False
+model.run_eagerly = True # TODO: just for debugging, remove later
 
 class CompactLogger(callbacks.Callback):
     def __init__(self, cols=None, show_time=True):
@@ -673,6 +674,7 @@ class LossNaNGuard(callbacks.Callback):
 
 
 
+
 class WeightNaNGuard(callbacks.Callback):
     def on_train_batch_end(self, batch, logs=None):
         for i, w in enumerate(self.model.weights):
@@ -683,21 +685,16 @@ class WeightNaNGuard(callbacks.Callback):
 
 # --- Callbacks ---
 cbs = [
-    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=50, warmup=5, grad_on_epoch=9999),
+    # AlphaScheduler(...)  # aus
     WeightNaNGuard(),
-    callbacks.TerminateOnNaN(),
     LossNaNGuard(),
-
-    # Lernrate automatisch anpassen + frühes Stoppen
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=0),
-    callbacks.EarlyStopping(monitor="val_loss", patience=20, restore_best_weights=True, verbose=0),
-
-    # Checkpoints + Finalizer wieder aktivieren (du hast sie definiert)
+    callbacks.TerminateOnNaN(),
+    callbacks.ReduceLROnPlateau(...),
+    callbacks.EarlyStopping(...),
     ckpt_best, bf,
-
-    # deine kompakte Log-Ausgabe
     CompactLogger(),
 ]
+
 
 history = model.fit(
     train_ds,
