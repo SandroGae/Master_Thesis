@@ -43,7 +43,7 @@ X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 EPOCHS     = 200
 
 # %%
@@ -91,25 +91,22 @@ def make_ds(X, Y, *,
             cache_in_memory=True,
             check_nans=False):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
-
-    # Preprocessing pro Sample
     if preproc is not None:
-        ds = ds.map(lambda x, y: tuple(preproc(x, y)),
-                    num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=AUTO)
 
-    # Optionaler NaN/Inf-Check NACH dem Preproc
+    if cache_in_memory:
+        ds = ds.cache()  # <-- vor shuffle
+
     if check_nans:
-        ds = ds.map(nan_debug, num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.map(nan_debug, num_parallel_calls=AUTO)
 
-    # Rest
     if shuffle:
         ds = ds.shuffle(buffer_size=X.shape[0], reshuffle_each_iteration=True)
+
     if limit is not None:
-        ds = ds.take(int(limit))  # take vor cache()
-    ds = ds.batch(BATCH_SIZE, drop_remainder=False)
-    if cache_in_memory:
-        ds = ds.cache()
-    ds = ds.prefetch(tf.data.AUTOTUNE)
+        ds = ds.take(int(limit))
+
+    ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
     return ds
 
 
@@ -150,13 +147,13 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization(dtype="float32", epsilon=1e-5)(x)
+    x = layers.LayerNormalization(dtype="float32", epsilon=1e-4)(x)
     x = layers.ELU()(x)
 
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization(dtype="float32", epsilon=1e-5)(x)
+    x = layers.LayerNormalization(dtype="float32", epsilon=1e-4)(x)
     x = layers.ELU()(x)
     return x
 
@@ -258,6 +255,7 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
 # steuert, ob der MS-SSIM-Term Gradienten liefert (True ab gewuenschtem Zeitpunkt)
 MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_grad_on")
 
+@tf.function(jit_compile=False)
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
@@ -592,11 +590,11 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # Optimizer: höheres LR für Toy, weniger Bremse
 opt = AdamW(
-    learning_rate=1e-4,      # runter von 3e-4
-    epsilon=1e-7,            # stabiler für mixed precision
-    global_clipnorm=1.0,     # etwas höherer Clip
-    weight_decay=1e-5,       # wieder aktivieren
-    amsgrad=True             # optional stabiler
+    learning_rate=5e-5,   # kleiner
+    epsilon=1e-5,         # größer -> robuster in mixed-precision
+    global_clipnorm=1.0,  # lassen
+    weight_decay=0.0,     # AUS zum Stabilisieren
+    amsgrad=False         # AUS (kann mit fp16 + wd zickig werden)
 )
 
 
@@ -665,6 +663,14 @@ class CompactLogger(callbacks.Callback):
 
         print(" | ".join(parts))
 
+class LossNaNGuard(callbacks.Callback):
+    def on_train_batch_end(self, batch, logs=None):
+        logs = logs or {}
+        loss = logs.get("loss", None)
+        if loss is not None and not np.isfinite(loss):
+            print(f"[NaNLoss] batch={batch} loss={loss}")
+            self.model.stop_training = True
+
 
 
 class WeightNaNGuard(callbacks.Callback):
@@ -677,9 +683,10 @@ class WeightNaNGuard(callbacks.Callback):
 
 # --- Callbacks ---
 cbs = [
-    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=50, warmup=5, grad_on_epoch=20),
+    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=50, warmup=5, grad_on_epoch=9999),
     WeightNaNGuard(),
     callbacks.TerminateOnNaN(),
+    LossNaNGuard(),
 
     # Lernrate automatisch anpassen + frühes Stoppen
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=0),
@@ -700,20 +707,6 @@ history = model.fit(
     callbacks=cbs,
     verbose=0                # nur CompactLogger-Ausgabe
 )
-
-
-def combined_loss(y_true, y_pred):
-    yt = _clip01(y_true); yp = _clip01(y_pred)
-    l_mae = tf.reduce_mean(tf.abs(yt - yp))
-    def ms_branch():
-        ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-        ms = tf.where(tf.math.is_finite(ms), ms, l_mae)  # fallback pro Bad-Batch
-        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * ms
-        out = tf.where(tf.math.is_finite(out), out, l_mae)
-        return out
-    return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
-
-
 
 print(">>> Phase 3: Training complete!")
 
