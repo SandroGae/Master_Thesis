@@ -59,6 +59,7 @@ EPOCHS     = 200
 # %%
 # ==============================
 # 2) Preprocessing (slice-weise)
+# + Data Augmentation (flip H/W)
 # ==============================
 
 # Normalisierung auf Summe 1.0 pro Slice (H,W,C), getrennt für Train/Val
@@ -87,6 +88,20 @@ def map_slice_wise(normalizer):
         return _finite01(x_norm), _finite01(y_norm)
     return _fn
 
+def augment_5stack_flips(x, y):
+    # x,y: (D,H,W,C) eines Samples – flippe entlang H/W synchron für x und y
+    do_lr = tf.random.uniform(()) < 0.5  # 50% Left-Right
+    do_ud = tf.random.uniform(()) < 0.5  # 50% Up-Down
+
+    def fliplr(t): return tf.reverse(t, axis=[2])  # W-Achse
+    def flipud(t): return tf.reverse(t, axis=[1])  # H-Achse
+
+    x = tf.cond(do_lr, lambda: fliplr(x), lambda: x)
+    y = tf.cond(do_lr, lambda: fliplr(y), lambda: y)
+    x = tf.cond(do_ud, lambda: flipud(x), lambda: x)
+    y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
+    return x, y
+
 
 
 # %%
@@ -100,13 +115,19 @@ def nan_debug(x, y):
     tf.debugging.assert_equal(ny, 0, message="NaN/Inf in Y batch")
     return x, y
 
-def make_ds(X, Y, *, shuffle=True, preproc=None, limit=None,
-            cache_in_memory=False, check_nans=False):
+def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
+            limit=None, cache_in_memory=False, check_nans=False):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
+
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=AUTO)
     if cache_in_memory:
-        ds = ds.cache()  # cache vor shuffle (vermeidet Cache-Warnungen)
+        ds = ds.cache()
+
+    # Augmentation (nur Training verwenden)
+    if augmenter is not None:
+        ds = ds.map(lambda x, y: augmenter(x, y), num_parallel_calls=AUTO)
+
     if check_nans:
         ds = ds.map(nan_debug, num_parallel_calls=AUTO)
     if shuffle:
@@ -116,16 +137,32 @@ def make_ds(X, Y, *, shuffle=True, preproc=None, limit=None,
     ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
     return ds
 
+
+
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, shuffle=True,
-                   preproc=map_slice_wise(preproc_train_slice),
-                   check_nans=True)
-val_ds   = make_ds(X_val, Y_val, shuffle=False,
-                   preproc=map_slice_wise(preproc_valid_slice),
-                   check_nans=True)
-test_ds  = make_ds(X_test, Y_test, shuffle=False,
-                   preproc=map_slice_wise(preproc_valid_slice),
-                   check_nans=True)
+train_ds = make_ds(
+    X_train, Y_train,
+    shuffle=True,
+    preproc=map_slice_wise(preproc_train_slice),  # deine SumScale-Norm [5000,15001]
+    augmenter=augment_5stack_flips,               # <-- Augmentation NUR hier
+    check_nans=True
+)
+
+val_ds = make_ds(
+    X_val, Y_val,
+    shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice),  # ~5000
+    augmenter=None,                               # <-- KEINE Augmentation
+    check_nans=True
+)
+
+test_ds = make_ds(
+    X_test, Y_test,
+    shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice),
+    augmenter=None,                               # <-- KEINE Augmentation
+    check_nans=True
+)
 print(">>> Datasets created")
 
 

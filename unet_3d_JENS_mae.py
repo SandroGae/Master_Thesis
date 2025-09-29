@@ -33,6 +33,8 @@ for g in tf.config.list_physical_devices('GPU'):
     except: pass
 
 AUTO = tf.data.AUTOTUNE
+
+# %%
 # ==============================
 # 1) Daten laden (CPU)
 # ==============================
@@ -49,6 +51,8 @@ X_test,  Y_test  = results["test"]
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
 BATCH_SIZE = 32
 EPOCHS     = 200
+
+# %%
 # ==============================
 # 2) Preprocessing (slice-weise)
 # ==============================
@@ -77,6 +81,22 @@ def map_slice_wise(normalizer):
         return _finite01(x_norm), _finite01(y_norm)
     return _fn
 
+def augment_5stack_flips(x, y):
+    # x,y: (D,H,W,C) eines Samples – flippe entlang H/W synchron für x und y
+    do_lr = tf.random.uniform(()) < 0.5  # 50% Left-Right
+    do_ud = tf.random.uniform(()) < 0.5  # 50% Up-Down
+
+    def fliplr(t): return tf.reverse(t, axis=[2])  # W-Achse
+    def flipud(t): return tf.reverse(t, axis=[1])  # H-Achse
+
+    x = tf.cond(do_lr, lambda: fliplr(x), lambda: x)
+    y = tf.cond(do_lr, lambda: fliplr(y), lambda: y)
+    x = tf.cond(do_ud, lambda: flipud(x), lambda: x)
+    y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
+    return x, y
+
+
+# %%
 # ==============================
 # 3) Dataset-Bau (+ NaN-Wächter)
 # ==============================
@@ -87,13 +107,19 @@ def nan_debug(x, y):
     tf.debugging.assert_equal(ny, 0, message="NaN/Inf in Y batch")
     return x, y
 
-def make_ds(X, Y, *, shuffle=True, preproc=None, limit=None,
-            cache_in_memory=False, check_nans=False):
+def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
+            limit=None, cache_in_memory=False, check_nans=False):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
+
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=AUTO)
     if cache_in_memory:
-        ds = ds.cache()  # cache vor shuffle (vermeidet Cache-Warnungen)
+        ds = ds.cache()
+
+    # Augmentation (nur Training verwenden)
+    if augmenter is not None:
+        ds = ds.map(lambda x, y: augmenter(x, y), num_parallel_calls=AUTO)
+
     if check_nans:
         ds = ds.map(nan_debug, num_parallel_calls=AUTO)
     if shuffle:
@@ -103,18 +129,36 @@ def make_ds(X, Y, *, shuffle=True, preproc=None, limit=None,
     ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
     return ds
 
+
+
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, shuffle=True,
-                   preproc=map_slice_wise(preproc_train_slice),
-                   check_nans=True)
-val_ds   = make_ds(X_val, Y_val, shuffle=False,
-                   preproc=map_slice_wise(preproc_valid_slice),
-                   check_nans=True)
-test_ds  = make_ds(X_test, Y_test, shuffle=False,
-                   preproc=map_slice_wise(preproc_valid_slice),
-                   check_nans=True)
+train_ds = make_ds(
+    X_train, Y_train,
+    shuffle=True,
+    preproc=map_slice_wise(preproc_train_slice),  # deine SumScale-Norm [5000,15001]
+    augmenter=augment_5stack_flips,               # <-- Augmentation NUR hier
+    check_nans=True
+)
+
+val_ds = make_ds(
+    X_val, Y_val,
+    shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice),  # ~5000
+    augmenter=None,                               # <-- KEINE Augmentation
+    check_nans=True
+)
+
+test_ds = make_ds(
+    X_test, Y_test,
+    shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice),
+    augmenter=None,                               # <-- KEINE Augmentation
+    check_nans=True
+)
 print(">>> Datasets created")
 
+
+# %%
 # ==============================
 # 4) Modell-Definition (3D U-Net)
 # ==============================
@@ -170,71 +214,26 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
     return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
+
+
+# %%
 # ==============================
-# 5) Loss & Metriken
+# 5) Loss & Metriken (nur MAE)
 # ==============================
-ALPHA_TARGET = 0.7
-ALPHA = 0.0
-
-ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
-MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool,   name="ms_grad_on")
-
-MS_EPS    = 1e-5
-K_SLICES  = 5
-
 def _clip01(x):
     x = tf.cast(x, tf.float32)
     return tf.clip_by_value(x, 0.0, 1.0)
 
-def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
+def mae_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
-    yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
-    yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
-
-    # leichtes Dithering gegen konstante Fenster
-    noise = tf.constant(1e-4, tf.float32)
-    yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=tf.float32)
-    yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=tf.float32)
-
-    # energie-basiertes Slice-Sampling
-    energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])  # (B,D)
-    D = tf.shape(yt)[1]
-    k_eff = tf.minimum(k, D)
-    idx = tf.math.top_k(energy, k=k_eff).indices
-    yt = tf.gather(yt, idx, batch_dims=1)  # (B,k,H,W,C)
-    yp = tf.gather(yp, idx, batch_dims=1)
-    yt = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
-    yp = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
-
-    ms = tf.image.ssim_multiscale(yt, yp, max_val=1.0)  # float32
-    ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
-    return 1.0 - tf.reduce_mean(ms)
-
-@tf.function(jit_compile=False)
-def combined_loss(y_true, y_pred):
-    yt = _clip01(y_true); yp = _clip01(y_pred)
-    l_mae = tf.reduce_mean(tf.abs(yt - yp))
-
-    def with_ms():
-        l_ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)  # nur hier berechnen!
-        l_ms = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)
-        l_ms_used = tf.cond(MS_GRAD_ON,
-                            lambda: l_ms,
-                            lambda: tf.stop_gradient(l_ms))
-        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
-        return tf.where(tf.math.is_finite(out), out, l_mae)
-
-    # wenn alpha==0 → reines MAE; ms-ssim wird gar nicht aufgerufen
-    return tf.cond(ALPHA_TF > 0.0, with_ms, lambda: l_mae)
-
-
-
+    return tf.reduce_mean(tf.abs(yt - yp))
 
 def psnr_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     return tf.image.psnr(yt, yp, max_val=1.0)
 psnr_metric.__name__ = "psnr"
 
+# %%
 # ==============================
 # 6) Optimizer & Compile
 # ==============================
@@ -253,8 +252,8 @@ metric_list = [
 ]
 model.compile(
     optimizer=opt,
-    loss=combined_loss,                 # <— statt reines MAE
-    metrics=[                           # (deine Metrics bleiben)
+    loss=mae_loss,
+    metrics=[
         tf.keras.metrics.MeanAbsoluteError(name="mae"),
         tf.keras.metrics.MeanSquaredError(name="mse"),
         psnr_metric,
@@ -265,6 +264,9 @@ model.compile(
 
 # Debug: Eager an
 model.run_eagerly = False # Just for debugging
+
+
+# %%
 # ==============================
 # 7) Naming files pipeline
 # ==============================
@@ -368,7 +370,6 @@ class BestFinalizeCallback(callbacks.Callback):
             "epochs_planned": self.run_meta.get("epochs"),
             "early_stopping": self.run_meta.get("early_stopping"),
             "data_prep": self.run_meta.get("data_prep"),
-            "alpha_ms_ssim": self.run_meta.get("ALPHA"),
             "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
             "best_psnr_metric": self.best_psnr,
             "input_shape": inp_shape,
@@ -433,6 +434,10 @@ class BestFinalizeCallback(callbacks.Callback):
                     final_json = final_model.with_suffix("")
                     final_json = final_json.parent / (final_stem + ts_suffix)
                     os.replace(t_json, final_json)
+
+
+# %%
+
 # ==============================
 # 8) Callbacks (Guards, Logging, Checkpoints)
 # ==============================
@@ -446,19 +451,13 @@ class CompactLogger(callbacks.Callback):
     def on_epoch_begin(self, epoch, logs=None):
         if self.show_time: self._t0 = time.time()
     def on_epoch_end(self, epoch, logs=None):
-        logs = logs or {}
-        if "val_loss" not in logs: return
-        dt = (time.time() - self._t0) if (self.show_time and self._t0 is not None) else None
-        try: lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
-        except Exception: lr = None
-        parts = [f"E{epoch+1:03d}"]
-        for k in self.cols:
-            v = logs.get(k, None)
-            if v is not None and np.isfinite(v):
-                parts.append(f"{k}={v:7.4f}")
-        if lr is not None: parts.append(f"lr={lr:.1e}")
-        if dt is not None: parts.append(f"time={dt:5.1f}s")
-        print(" | ".join(parts))
+        if not logs or "val_loss" not in logs: return
+        vloss = float(logs["val_loss"])
+        if vloss < self.best_val_loss:
+            self.best_val_loss = vloss
+            psnr = logs.get("psnr")
+            self.best_psnr = float(psnr) if psnr is not None else None
+
 
 class LossNaNGuard(callbacks.Callback):
     def on_train_batch_end(self, batch, logs=None):
@@ -475,51 +474,6 @@ class WeightNaNGuard(callbacks.Callback):
                 self.model.stop_training = True
                 break
 
-class BatchDebugDump(callbacks.Callback):
-    def __init__(self, every=50, dump_first_nan=True, outdir=Path("./nan_dump")):
-        super().__init__()
-        self.every = every
-        self.dump_first_nan = dump_first_nan
-        self.outdir = Path(outdir); self.outdir.mkdir(parents=True, exist_ok=True)
-        self._nan_dumped = False
-
-    def on_train_batch_end(self, batch, logs=None):
-        logs = logs or {}
-        loss = logs.get("loss", None)
-        if batch % self.every == 0 and loss is not None:
-            print(f"[Batch {batch:05d}] loss={float(loss):.6f}")
-
-        if (loss is not None) and (not np.isfinite(loss)) and self.dump_first_nan and (not self._nan_dumped):
-            # Versuch: Eingaben aus der letzten Batch ziehen (nur im Eager-Mode gut möglich)
-            try:
-                # Greif auf das zuletzt verarbeitete Batch aus dem Iterator zu:
-                # Als pragmatischer Workaround: Modell einmal auf dem letzten Batch callen und abspeichern
-                # (Hier nur Pseudogreif – wenn du schnell willst, kannst du stattdessen an der Input-Pipeline dumpen.)
-                pass
-            except Exception:
-                pass
-            self._nan_dumped = True
-            print(f"[Dump] NaN bei Batch {batch}. (Siehe {self.outdir})")
-            self.model.stop_training = True
-
-class AlphaScheduler(callbacks.Callback):
-    def __init__(self, target=0.3, warmup=2, epochs_to_target=6, grad_on_epoch=9999):
-        super().__init__()
-        self.target = float(target)
-        self.warmup = int(warmup)
-        self.epochs_to_target = int(epochs_to_target)
-        self.grad_on_epoch = int(grad_on_epoch)
-
-    def on_epoch_begin(self, epoch, logs=None):
-        if epoch < self.warmup:
-            ALPHA_TF.assign(0.0); MS_GRAD_ON.assign(False)
-        else:
-            t = epoch - self.warmup
-            frac = tf.clip_by_value(tf.cast(t, tf.float32)/float(self.epochs_to_target), 0.0, 1.0)
-            ALPHA_TF.assign(self.target * frac)
-            MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
-        print(f"[AlphaScheduler] epoch={epoch}  alpha={float(ALPHA_TF.numpy()):.3f}  grad_on={bool(MS_GRAD_ON.numpy())}")
-
 
 # Checkpoints + Meta
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
@@ -527,7 +481,6 @@ run_meta = {
     "batch_size": BATCH_SIZE, "epochs": EPOCHS,
     "early_stopping": {"monitor":"val_loss","patience":10},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-    "ALPHA": ALPHA
 }
 bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta, code_name="AUTO")
 ckpt_best = callbacks.ModelCheckpoint(
@@ -535,10 +488,8 @@ ckpt_best = callbacks.ModelCheckpoint(
     mode="min", save_best_only=True, verbose=1
 )
 
-# Callback-Liste (ohne AlphaScheduler für Debug)
+# Callback-Liste
 cbs = [
-    AlphaScheduler(target=0.3, warmup=2, epochs_to_target=6, grad_on_epoch=9999),
-    #BatchDebugDump(every=50),
     WeightNaNGuard(),
     LossNaNGuard(),
     callbacks.TerminateOnNaN(),
@@ -547,6 +498,7 @@ cbs = [
     ckpt_best, bf,
     CompactLogger(),
 ]
+
 # ==============================
 # 9) Train
 # ==============================
