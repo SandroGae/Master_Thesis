@@ -108,53 +108,69 @@ def nan_debug(x, y):
     return x, y
 
 def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
-            limit=None, cache_in_memory=False, check_nans=False):
+            limit=None, cache_in_memory=False, check_nans=False,
+            shuffle_buf=1024, prefetch_n=2, num_calls=2):
+
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
 
     if preproc is not None:
-        ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=AUTO)
-    if cache_in_memory:
-        ds = ds.cache()
+        ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=num_calls)
 
-    # Augmentation (nur Training verwenden)
+    if cache_in_memory:
+        ds = ds.cache()  # Nur benutzen, wenn RAM sicher reicht!
+
     if augmenter is not None:
-        ds = ds.map(lambda x, y: augmenter(x, y), num_parallel_calls=AUTO)
+        ds = ds.map(lambda x, y: augmenter(x, y), num_parallel_calls=num_calls)
 
     if check_nans:
-        ds = ds.map(nan_debug, num_parallel_calls=AUTO)
+        ds = ds.map(nan_debug, num_parallel_calls=num_calls)
+
     if shuffle:
-        ds = ds.shuffle(buffer_size=X.shape[0], reshuffle_each_iteration=True)
+        ds = ds.shuffle(buffer_size=min(shuffle_buf, X.shape[0]), reshuffle_each_iteration=True)
+
     if limit is not None:
         ds = ds.take(int(limit))
-    ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
+
+    ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(prefetch_n)
     return ds
 
 
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
+
 train_ds = make_ds(
     X_train, Y_train,
     shuffle=True,
-    preproc=map_slice_wise(preproc_train_slice),  # deine SumScale-Norm [5000,15001]
-    augmenter=augment_5stack_flips,               # <-- Augmentation NUR hier
-    check_nans=True
+    preproc=map_slice_wise(preproc_train_slice),   # deine SumScale-Norm [5000,15001]
+    augmenter=augment_5stack_flips,                # Augmentation NUR im Training
+    check_nans=True,
+    shuffle_buf=512,   # 256–1024 ist meist gut; begrenzt RAM
+    prefetch_n=2,      # moderat vorfetchen
+    num_calls=2        # weniger Parallel-Maps = weniger RAM-Spitzen
 )
 
 val_ds = make_ds(
     X_val, Y_val,
     shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice),  # ~5000
-    augmenter=None,                               # <-- KEINE Augmentation
-    check_nans=True
+    preproc=map_slice_wise(preproc_valid_slice),   # ~5000
+    augmenter=None,                                # KEINE Augmentation
+    check_nans=True,
+    shuffle_buf=1,    # ignoriert bei shuffle=False, aber gesetzt der Vollständigkeit halber
+    prefetch_n=1,
+    num_calls=1
 )
 
 test_ds = make_ds(
     X_test, Y_test,
     shuffle=False,
     preproc=map_slice_wise(preproc_valid_slice),
-    augmenter=None,                               # <-- KEINE Augmentation
-    check_nans=True
+    augmenter=None,                                # KEINE Augmentation
+    check_nans=True,
+    shuffle_buf=1,
+    prefetch_n=1,
+    num_calls=1
 )
+
 print(">>> Datasets created")
 
 
