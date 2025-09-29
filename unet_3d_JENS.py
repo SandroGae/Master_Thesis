@@ -12,6 +12,7 @@
 # ==============================
 # 0) Imports & global setup
 # ==============================
+
 import os, sys, inspect, json, socket, getpass, platform, subprocess, time, uuid
 from pathlib import Path
 import numpy as np
@@ -23,9 +24,11 @@ from tensorflow.keras.optimizers import AdamW
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 
-# --- Repro & GPU ---
+# Reproduzierbarkeit
 seed = 0
 reset_random_seeds(seed)
+
+# Lädt Daten in GPU dynamisch nach Bedarf
 for g in tf.config.list_physical_devices('GPU'):
     try: tf.config.experimental.set_memory_growth(g, True)
     except: pass
@@ -36,12 +39,15 @@ AUTO = tf.data.AUTOTUNE
 # ==============================
 # 1) Daten laden (CPU)
 # ==============================
+
 print(">>> Phase 1: Starting data prep on CPU...")
-results = prepare_in_memory_5to5(
-    data_dir=Path.home() / "data" / "original_data",
-    size=5, group_len=41, dtype=np.float32,
-)
+
+# Daten werden ins RAM geladen
+results = prepare_in_memory_5to5(data_dir=Path.home() / "data" / "original_data",
+    size=5, group_len=41, dtype=np.float32,)
+
 print(">>> Data preperation finished, all data in RAM")
+
 X_train, Y_train = results["train"]
 X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
@@ -54,6 +60,7 @@ EPOCHS     = 200
 # ==============================
 # 2) Preprocessing (slice-weise)
 # ==============================
+
 preproc_train_slice = SumScaleNormalizer(
     scale_range=[5000, 15001], pre_offset=0.0,
     normalize_label=True,
@@ -388,7 +395,6 @@ class BestFinalizeCallback(callbacks.Callback):
             "loss": loss_name,
             "metrics": metrics_list,
             "optimizer": _serialize_optimizer(getattr(self.model, "optimizer", None)),
-            "mixed_precision_policy": mixed_precision.global_policy().name if mixed_precision.global_policy() else None,
         }
         try:
             with open(json_path, "w") as f:
