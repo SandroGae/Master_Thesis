@@ -206,17 +206,30 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     ms = tf.clip_by_value(ms, 0.0, 1.0)
     return 1.0 - tf.reduce_mean(ms)
 
+# steuert, ob der MS-SSIM-Term Gradienten liefert (True ab gewuenschtem Zeitpunkt)
+MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_grad_on")
 
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
+
+    # MS-SSIM robust berechnen
+    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
+    l_ms  = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)    # fallback pro Batch
+
+    # Waehle, ob MS-SSIM Grad liefert oder nur als "gewichteter Score" dient
+    l_ms_used = tf.cond(MS_GRAD_ON,
+                        lambda: l_ms,                   # mit Gradienten
+                        lambda: tf.stop_gradient(l_ms) # ohne Gradienten (nur Gewicht)
+                       )
+
+    # Wenn alpha==0 -> reines MAE
     def ms_branch():
-        ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-        ms = tf.where(tf.math.is_finite(ms), ms, l_mae)  # fallback pro Bad-Batch
-        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * ms
-        out = tf.where(tf.math.is_finite(out), out, l_mae)
-        return out
+        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
+        return tf.where(tf.math.is_finite(out), out, l_mae)
+
     return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
+
 
 
 
@@ -475,43 +488,32 @@ print(">>> Phase 3: GPU training starts now!")
 
 # ======== Alpha linear hochfahren ========
 class AlphaScheduler(callbacks.Callback):
-    def __init__(self, warmup=5, step=0.02, target=ALPHA_TARGET, min_alpha=0.0, use_train_when_no_val=True):
+    """
+    Monotone Ramp: hebt ALPHA_TF linear bis target in genau `epochs_to_target` Epochen an,
+    unabhaengig von val_loss. MS_GRAD_ON wird erst spaeter aktiviert, um die Numerik zu schuetzen.
+    """
+    def __init__(self, target=0.7, epochs_to_target=30, warmup=5, grad_on_epoch=None):
         super().__init__()
-        self.warmup = int(warmup)
-        self.step   = float(step)
         self.target = float(target)
-        self.min_a  = float(min_alpha)
-        self.best_val = np.inf
-        self.use_train_when_no_val = bool(use_train_when_no_val)
+        self.warmup = int(warmup)
+        self.epochs_to_target = int(epochs_to_target)
+        # Standard: Grad erst einschalten, wenn Ziel erreicht ist
+        self.grad_on_epoch = int(grad_on_epoch) if grad_on_epoch is not None else (self.warmup + self.epochs_to_target)
 
     def on_epoch_begin(self, epoch, logs=None):
+        # Warmup: alpha=0
         if epoch < self.warmup:
-            ALPHA_TF.assign(self.min_a)
-        print(f"[AlphaScheduler] begin epoch {epoch}  ALPHA={float(ALPHA_TF.numpy()):.3f}")
-
-    def on_epoch_end(self, epoch, logs=None):
-        if (epoch + 1) < self.warmup:
-            return
-        logs = logs or {}
-        vl = logs.get("val_loss", None)
-        if vl is None and self.use_train_when_no_val:
-            vl = logs.get("loss", None)
-        if vl is None or not np.isfinite(float(vl)):
-            new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
-            ALPHA_TF.assign(new_a)
-            print(f"[AlphaScheduler] no/invalid val -> ALPHA={new_a:.3f}")
-            return
-
-        vl = float(vl)
-        improved = vl < self.best_val - 1e-6
-        if improved:
-            self.best_val = vl
-        if vl <= self.best_val * 1.02:
-            new_a = min(self.target, float(ALPHA_TF.numpy()) + self.step)
+            ALPHA_TF.assign(0.0)
+            MS_GRAD_ON.assign(False)
         else:
-            new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
-        ALPHA_TF.assign(new_a)
-        print(f"[AlphaScheduler] val {'ok' if vl <= self.best_val * 1.02 else 'worsened'} -> ALPHA={new_a:.3f}")
+            # Linearer Ramp rein nach Epoche
+            t = epoch - self.warmup
+            frac = tf.clip_by_value(tf.cast(t, tf.float32) / float(self.epochs_to_target), 0.0, 1.0)
+            ALPHA_TF.assign(self.target * frac)
+            # MS-Gradienten erst spaeter erlauben
+            MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
+
+        print(f"[AlphaScheduler] epoch={epoch}  ALPHA={float(ALPHA_TF.numpy()):.3f}  MS_GRAD_ON={bool(MS_GRAD_ON.numpy())}")
 
 
 # ======== Checkpoints inkl. BestFinalize ========
@@ -563,25 +565,22 @@ class WeightNaNGuard(callbacks.Callback):
                 self.model.stop_training = True
                 break
 
+# --- Callbacks ---
 cbs = [
-    AlphaScheduler(warmup=5, step=0.02, target=ALPHA_TARGET),
+    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=30, warmup=5, grad_on_epoch=35),
     WeightNaNGuard(),
-    LogAlphaAtEnd(),                 # <- HINZU
     callbacks.TerminateOnNaN(),
-    ckpt_best, bf,
-    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True),
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6),
 ]
 
-# ======== Train ========
+# --- Fit ---
 history = model.fit(
     train_ds,
-    validation_data=val_ds,
-    validation_freq=5,   # <<< nur alle 5 Epochen validieren
     epochs=100,
     callbacks=cbs,
-    verbose=2
+    verbose=2,
+    # keine validation_data: maximaler Durchsatz
 )
+
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
