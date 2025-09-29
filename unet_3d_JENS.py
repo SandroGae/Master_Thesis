@@ -61,6 +61,7 @@ EPOCHS     = 200
 # 2) Preprocessing (slice-weise)
 # ==============================
 
+# Normalisierung auf Summe 1.0 pro Slice (H,W,C), getrennt für Train/Val
 preproc_train_slice = SumScaleNormalizer(
     scale_range=[5000, 15001], pre_offset=0.0,
     normalize_label=True,
@@ -189,7 +190,7 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 # ==============================
 # 5) Loss & Metriken
 # ==============================
-ALPHA_TARGET = 0.7
+ALPHA_TARGET = 0.1
 ALPHA = 0.0
 
 ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
