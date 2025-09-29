@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("float32")  # Debug: stabil
+mixed_precision.set_global_policy("float16")
 
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from tensorflow.keras.optimizers import AdamW
@@ -49,7 +49,7 @@ X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
-BATCH_SIZE = 4
+BATCH_SIZE = 32
 EPOCHS     = 200
 
 # %%
@@ -260,7 +260,7 @@ metric_list = [
 model.compile(optimizer=opt, loss=combined_loss, metrics=metric_list, jit_compile=False)
 
 # Debug: Eager an
-model.run_eagerly = True
+model.run_eagerly = False # Just for debugging
 
 
 # %%
@@ -520,7 +520,7 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 # Callback-Liste (ohne AlphaScheduler für Debug)
 cbs = [
-    BatchDebugDump(every=50),
+    #BatchDebugDump(every=50),
     WeightNaNGuard(),
     LossNaNGuard(),
     callbacks.TerminateOnNaN(),
