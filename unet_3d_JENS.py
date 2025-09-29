@@ -9,29 +9,35 @@
 # ---
 
 # %%
-# ======== Imports =======
-import os
+# ==============================
+# 0) Imports & global setup
+# ==============================
+import os, sys, inspect, json, socket, getpass, platform, subprocess, time, uuid
+from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("float32")
+mixed_precision.set_global_policy("float32")  # Debug: stabil
+
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from tensorflow.keras.optimizers import AdamW
+
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
-from pathlib import Path
-import sys, inspect
-import json, socket, getpass, platform, subprocess, time, uuid # for naming files and callbacks
 
+# --- Repro & GPU ---
 seed = 0
 reset_random_seeds(seed)
 for g in tf.config.list_physical_devices('GPU'):
     try: tf.config.experimental.set_memory_growth(g, True)
     except: pass
+
 AUTO = tf.data.AUTOTUNE
 
 # %%
-# ===== Loading Data in RAM =====
+# ==============================
+# 1) Daten laden (CPU)
+# ==============================
 print(">>> Phase 1: Starting data prep on CPU...")
 results = prepare_in_memory_5to5(
     data_dir=Path.home() / "data" / "original_data",
@@ -42,17 +48,19 @@ X_train, Y_train = results["train"]
 X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
-INPUT_SHAPE = X_train.shape[1:]
+INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
 BATCH_SIZE = 4
 EPOCHS     = 200
 
 # %%
-# ===== Preprocessing (nach dem Laden definieren) =====
+# ==============================
+# 2) Preprocessing (slice-weise)
+# ==============================
 preproc_train_slice = SumScaleNormalizer(
     scale_range=[5000, 15001], pre_offset=0.0,
     normalize_label=True,
     axis=(1, 2, 3),      # reduziert H,W,C — NICHT D
-    batch_mode=True,     # jede Scheibe ist ein "Batch-Item"
+    batch_mode=True,     # pro Slice
     clip_before=[0., float("inf")], clip_after=[0., 1.]
 )
 preproc_valid_slice = SumScaleNormalizer(
@@ -68,15 +76,17 @@ def map_slice_wise(normalizer):
         t = tf.cast(t, tf.float32)
         t = tf.where(tf.math.is_finite(t), t, tf.zeros_like(t))
         return tf.clip_by_value(t, 0.0, 1.0)
-
     def _fn(x, y):
-        x_norm, y_norm = normalizer.map(x, y)  # batch_mode=True → pro Slice
-        x_norm = _finite01(x_norm)
-        y_norm = _finite01(y_norm)
-        return x_norm, y_norm
+        x_norm, y_norm = normalizer.map(x, y)
+        return _finite01(x_norm), _finite01(y_norm)
     return _fn
 
 
+
+# %%
+# ==============================
+# 3) Dataset-Bau (+ NaN-Wächter)
+# ==============================
 def nan_debug(x, y):
     nx = tf.reduce_sum(tf.cast(~tf.math.is_finite(x), tf.int32))
     ny = tf.reduce_sum(tf.cast(~tf.math.is_finite(y), tf.int32))
@@ -84,61 +94,39 @@ def nan_debug(x, y):
     tf.debugging.assert_equal(ny, 0, message="NaN/Inf in Y batch")
     return x, y
 
-def make_ds(X, Y, *,
-            shuffle=True,
-            preproc=None,
-            limit=None,
-            cache_in_memory=True,
-            check_nans=False):
+def make_ds(X, Y, *, shuffle=True, preproc=None, limit=None,
+            cache_in_memory=True, check_nans=False):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=AUTO)
-
     if cache_in_memory:
-        ds = ds.cache()  # <-- vor shuffle
-
+        ds = ds.cache()  # cache vor shuffle (vermeidet Cache-Warnungen)
     if check_nans:
         ds = ds.map(nan_debug, num_parallel_calls=AUTO)
-
     if shuffle:
         ds = ds.shuffle(buffer_size=X.shape[0], reshuffle_each_iteration=True)
-
     if limit is not None:
         ds = ds.take(int(limit))
-
     ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
     return ds
 
-
 print(">>> Phase 2: Create Tensorflow Datasets...")
-
-train_ds = make_ds(
-    X_train, Y_train,
-    shuffle=True,
-    preproc=map_slice_wise(preproc_train_slice),
-    check_nans=True      # ← jetzt auch im Training prüfen
-)
-
-val_ds = make_ds(
-    X_val, Y_val,
-    shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice),
-    check_nans=True
-)
-
-test_ds = make_ds(
-    X_test, Y_test,
-    shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice),
-    check_nans=True
-)
-
+train_ds = make_ds(X_train, Y_train, shuffle=True,
+                   preproc=map_slice_wise(preproc_train_slice),
+                   check_nans=True)
+val_ds   = make_ds(X_val, Y_val, shuffle=False,
+                   preproc=map_slice_wise(preproc_valid_slice),
+                   check_nans=True)
+test_ds  = make_ds(X_test, Y_test, shuffle=False,
+                   preproc=map_slice_wise(preproc_valid_slice),
+                   check_nans=True)
 print(">>> Datasets created")
 
 
 # %%
-# ========= Defining 3D-U-Net Architecture ========
-
+# ==============================
+# 4) Modell-Definition (3D U-Net)
+# ==============================
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     ki  = "he_normal"
     kr  = regularizers.l2(1e-5)
@@ -157,12 +145,9 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     x = layers.ELU()(x)
     return x
 
-
-
-def unet3d(input_shape=(5, 192, 240, 1), base_filters=8): #TODO go higher for real training!
+def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
     inputs = layers.Input(shape=input_shape)
-
-    # Encoder (pool only over H,W)
+    # Encoder (nur H,W poolen)
     c1 = conv_block(inputs, base_filters)
     p1 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c1)
 
@@ -175,7 +160,7 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=8): #TODO go higher for re
     # Bottleneck
     bn = conv_block(p3, base_filters*8)
 
-    # Decoder (upsample only over H,W)
+    # Decoder (nur H,W upsamplen)
     u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
     u3 = layers.concatenate([u3, c3])
     c4 = conv_block(u3, base_filters*4)
@@ -191,22 +176,20 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=8): #TODO go higher for re
     # Output Layer: tanh -> [0,1]
     raw_out = layers.Conv3D(1, (1,1,1), activation="tanh")(c6)
     outputs = layers.Lambda(lambda z: (z + 1.0) / 2.0, dtype="float32")(raw_out)
-
     return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
 
-
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # %%
-# =========== Defining Loss function MAE + MS-SSIM (slice-wise) ========
-
-ALPHA_TARGET = 0.7    # <- bis hier hochfahren
+# ==============================
+# 5) Loss & Metriken
+# ==============================
+ALPHA_TARGET = 0.7
 ALPHA = 0.0
 K_SLICES     = 5
 MS_EPS       = 1e-5
-
-# ALPHA als TF-Variable (damit der Graph nicht einfriert)
-ALPHA_TF = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
-
+ALPHA_TF     = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
+MS_GRAD_ON   = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_grad_on")
 
 def _clip01(x):
     x = tf.cast(x, tf.float32)
@@ -216,109 +199,85 @@ def _safe_imgs_for_ms_ssim(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
     yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
-    # keine assert_all_finite in der Metric/Inference-Route!
     return yt, yp
-
 
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     yt, yp = _clip01(y_true), _clip01(y_pred)
-    MS_EPS = 1e-5
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
     yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
-
+    # leichtes Dithering
     noise = tf.constant(1e-4, yt.dtype)
     yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=yt.dtype)
     yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=yp.dtype)
-
-    # --- NEU: Finite-Schutz ---
+    # Finite-Schutz
     yt = tf.where(tf.math.is_finite(yt), yt, tf.zeros_like(yt))
     yp = tf.where(tf.math.is_finite(yp), yp, tf.zeros_like(yp))
-    # ---------------------------
-
-    B = tf.shape(yt)[0]; D = tf.shape(yt)[1]
+    # energie-basiertes Slice-Sampling
+    D = tf.shape(yt)[1]
     energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])  # (B,D)
     k_eff = tf.minimum(k, D)
     idx = tf.math.top_k(energy, k=k_eff).indices
     idx = tf.stop_gradient(idx)
-
     ygt = tf.gather(yt, idx, batch_dims=1)
     ypd = tf.gather(yp, idx, batch_dims=1)
     yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
     yp2 = tf.reshape(ypd, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
-
     ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
     ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
     ms = tf.clip_by_value(ms, 0.0, 1.0)
     return 1.0 - tf.reduce_mean(ms)
 
-
-# steuert, ob der MS-SSIM-Term Gradienten liefert (True ab gewuenschtem Zeitpunkt)
-MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_grad_on")
-
 @tf.function(jit_compile=False)
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
-
-    # MS-SSIM robust berechnen
     l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-    l_ms  = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)    # fallback pro Batch
-
-    # Waehle, ob MS-SSIM Grad liefert oder nur als "gewichteter Score" dient
-    l_ms_used = tf.cond(MS_GRAD_ON,
-                        lambda: l_ms,                   # mit Gradienten
-                        lambda: tf.stop_gradient(l_ms) # ohne Gradienten (nur Gewicht)
-                       )
-
-    # Wenn alpha==0 -> reines MAE
+    l_ms  = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)
+    l_ms_used = tf.cond(MS_GRAD_ON, lambda: l_ms, lambda: tf.stop_gradient(l_ms))
     def ms_branch():
         out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
         return tf.where(tf.math.is_finite(out), out, l_mae)
-
     return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
-
-
-
-
-
-def mae_metric(y_true, y_pred):
-    yt = _clip01(y_true); yp = _clip01(y_pred)
-    return tf.reduce_mean(tf.abs(yt - yp))
-
-def ms_ssim_metric(y_true, y_pred):
-    yt, yp = _safe_imgs_for_ms_ssim(y_true, y_pred)
-    yt2 = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
-    yp2 = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
-    return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
-
-# --- Metriken ---
-def mse_metric(y_true, y_pred):
-    yt = _clip01(y_true); yp = _clip01(y_pred)
-    return tf.reduce_mean(tf.square(yt - yp))
 
 def psnr_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     return tf.image.psnr(yt, yp, max_val=1.0)
-
-def _sample_depth_indices(batch_size, depth, k=1, seed=42):
-    """
-    Generates deterministic matrix and samples indices using highest values per row
-    """
-    rnd = tf.random.stateless_uniform([batch_size, depth], seed=[seed, 0]) # (B,D) matrix with random values
-    topk = tf.math.top_k(rnd, k=k).indices                                 # Search for 2 highest values per row
-    return topk
-
+psnr_metric.__name__ = "psnr"
 
 
 # %%
-# ======== Automaic Naming Pipeline ============
+# ==============================
+# 6) Optimizer & Compile
+# ==============================
+opt = AdamW(
+    learning_rate=1e-5,   # klein & stabil
+    epsilon=1e-4,         # robust
+    global_clipnorm=0.5,  # härter clippen
+    weight_decay=0.0,     # erstmal aus
+    amsgrad=False
+)
+metric_list = [
+    tf.keras.metrics.MeanAbsoluteError(name="mae"),
+    tf.keras.metrics.MeanSquaredError(name="mse"),
+    psnr_metric,
+]
+model.compile(optimizer=opt, loss=combined_loss, metrics=metric_list, jit_compile=False)
+
+# Debug: Eager an
+model.run_eagerly = True
+
+
+# %%
+# ==============================
+# 7) Naming files pipeline
+# ==============================
+def _timestamp():
+    return time.strftime("%Y-%m-%dT%H-%M-%S")
 
 def _safe_git_commit():
     try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL
-        ).decode().strip()
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                       stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
         return None
 
@@ -328,17 +287,8 @@ def _serialize_optimizer(opt):
     except Exception:
         return None
 
-def _timestamp():
-    # Dateiname-sicher (kein ":" unter Windows)
-    return time.strftime("%Y-%m-%dT%H-%M-%S")
-
 class BestFinalizeCallback(callbacks.Callback):
-    """
-    Am Ende:
-      1) nimmt die von ModelCheckpoint geschriebene TEMP-Datei und benennt sie um zu <code>_NEW_valloss_...>.keras
-      2) schreibt JSON
-      3) rankt *alle* <code>_*.keras strikt nach val_loss -> <code>_V1_..., <code>_V2_..., ... (Luecken werden beseitigt)
-    """
+    # (unverändert aus deinem Code, nur hier platziert)
     def __init__(self, root: Path, run_meta: dict = None, tmp_name: str = None, code_name: str = None):
         super().__init__()
         self.root = Path(root); self.root.mkdir(parents=True, exist_ok=True)
@@ -348,82 +298,56 @@ class BestFinalizeCallback(callbacks.Callback):
         self.best_val_loss = np.inf
         self.best_psnr = None
         self.run_meta = run_meta or {}
-
     @staticmethod
     def _sanitize_code(code: str) -> str:
         safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (code or "").strip())
         return safe or "MODEL"
-
     @staticmethod
     def _auto_code_name():
-        # 1) __main__.__file__
         try:
             main_mod = sys.modules.get("__main__")
             if main_mod and getattr(main_mod, "__file__", None):
                 return os.path.splitext(os.path.basename(main_mod.__file__))[0]
-        except Exception:
-            pass
-        # 2) sys.argv[0]
+        except Exception: pass
         try:
             if sys.argv and sys.argv[0]:
                 return os.path.splitext(os.path.basename(sys.argv[0]))[0]
-        except Exception:
-            pass
-        # 3) erster echter Stack-Frame
+        except Exception: pass
         try:
             for fr in inspect.stack():
                 fn = fr.filename
                 if fn and fn not in ("<stdin>", "<string>"):
                     return os.path.splitext(os.path.basename(fn))[0]
-        except Exception:
-            pass
-        # 4) SLURM/PBS
+        except Exception: pass
         for k in ("SLURM_JOB_NAME", "PBS_JOBNAME", "JOB_NAME"):
             v = os.environ.get(k)
             if v:
                 return v
         return "MODEL"
-
-    # ---------- Trainingslogik: nur Metriken merken, KEIN Speichern hier! ----------
     def on_epoch_end(self, epoch, logs=None):
-        if not logs or "val_loss" not in logs:
-            return
+        if not logs or "val_loss" not in logs: return
         vloss = float(logs["val_loss"])
         if vloss < self.best_val_loss:
             self.best_val_loss = vloss
             psnr = logs.get("psnr_metric")
             self.best_psnr = float(psnr) if psnr is not None else None
-
     def on_train_end(self, logs=None):
-        # TEMP -> NEW_* (nur wenn TEMP existiert – ModelCheckpoint muss sie geschrieben haben)
         vloss_str = f"{self.best_val_loss:.3e}" if np.isfinite(self.best_val_loss) else "nan"
         psnr_part = f"_PSNR_{self.best_psnr:.3g}" if (self.best_psnr is not None and np.isfinite(self.best_psnr)) else ""
         new_model = self.root / f"{self.code}_NEW_valloss_{vloss_str}{psnr_part}.keras"
-
         if self.tmp_path.exists() and self.tmp_path.stat().st_size > 0:
             try:
                 os.replace(self.tmp_path, new_model)
             except Exception as e:
                 print(f"[WARN] Konnte TEMP nicht nach NEW umbenennen: {e}")
                 return
-            # JSON schreiben
             self._write_json_for_model(new_model)
-
-        # Re-Ranking fuer alle mit diesem Prefix
         self._rank_all_models()
-
-        # Aufraeumen
         try:
-            if self.tmp_path.exists():
-                os.remove(self.tmp_path)
-        except Exception:
-            pass
-
-    # ---------- JSON ----------
+            if self.tmp_path.exists(): os.remove(self.tmp_path)
+        except Exception: pass
     def _write_json_for_model(self, model_path: Path):
-        # kein Timestamp mehr im Dateinamen
         json_path = model_path.with_suffix(".json")
-
         try:
             inp_shape = tuple(int(x) for x in (self.model.input_shape or []) if isinstance(x, (int,np.integer)))
         except Exception:
@@ -436,9 +360,8 @@ class BestFinalizeCallback(callbacks.Callback):
             metrics_list = [getattr(m, "__name__", str(m)) for m in (self.model.metrics or [])]
         except Exception:
             metrics_list = None
-
         meta = {
-            "timestamp": _timestamp(),   # bleibt im JSON-Inhalt erhalten!
+            "timestamp": _timestamp(),
             "user": getpass.getuser(),
             "host": socket.gethostname(),
             "platform": platform.platform(),
@@ -462,55 +385,36 @@ class BestFinalizeCallback(callbacks.Callback):
                 json.dump(meta, f, indent=2)
         except Exception as e:
             print(f"[WARN] Konnte JSON nicht schreiben: {e}")
-
-    # ---------- Parsing ----------
     @staticmethod
     def _parse_filename_simple(name: str):
-        if not name.endswith(".keras"):
-            return None
-        base = name[:-6]
-        parts = base.split("_")
-        try:
-            i_vl = parts.index("valloss")
-        except ValueError:
-            return None
-        if i_vl + 1 >= len(parts):
-            return None
-        try:
-            val_loss = float(parts[i_vl + 1])
-        except Exception:
-            return None
+        if not name.endswith(".keras"): return None
+        base = name[:-6]; parts = base.split("_")
+        try: i_vl = parts.index("valloss")
+        except ValueError: return None
+        if i_vl + 1 >= len(parts): return None
+        try: val_loss = float(parts[i_vl + 1])
+        except Exception: return None
         psnr = None
         try:
             i_ps = parts.index("PSNR")
-            if i_ps + 1 < len(parts):
-                psnr = float(parts[i_ps + 1])
-        except ValueError:
-            pass
-        except Exception:
-            psnr = None
+            if i_ps + 1 < len(parts): psnr = float(parts[i_ps + 1])
+        except ValueError: pass
+        except Exception: psnr = None
         return {"val_loss": val_loss, "psnr": psnr}
-
-    # ---------- Ranking & Umbenennen ----------
     def _rank_all_models(self):
         items = []
         for p in self.root.glob(f"{self.code}_*.keras"):
-            if not p.is_file():
-                continue
+            if not p.is_file(): continue
             meta = self._parse_filename_simple(p.name)
-            if meta:
-                items.append((p, meta["val_loss"], meta["psnr"]))
-        if not items:
-            return
+            if meta: items.append((p, meta["val_loss"], meta["psnr"]))
+        if not items: return
         items.sort(key=lambda x: (x[1], x[0].stat().st_mtime))
-
         temps = []
         for path, vloss, psnr in items:
             base_stem = path.with_suffix("").name
             jsons = []
             p0 = self.root / (base_stem + ".json")
-            if p0.exists():
-                jsons.append(p0)
+            if p0.exists(): jsons.append(p0)
             t_model = self.root / f".tmp_{uuid.uuid4().hex}.keras"
             os.replace(path, t_model)
             tmp_jsons = []
@@ -521,7 +425,6 @@ class BestFinalizeCallback(callbacks.Callback):
                 os.replace(j, t_json)
                 tmp_jsons.append((t_json, ts_suffix))
             temps.append((t_model, tmp_jsons, vloss, psnr))
-
         for rank, (t_model, tmp_jsons, vloss, psnr) in enumerate(temps, start=1):
             v = f"{vloss:.3e}"
             ps = f"_PSNR_{psnr:.3g}" if psnr is not None else ""
@@ -536,40 +439,49 @@ class BestFinalizeCallback(callbacks.Callback):
 
 
 # %%
-# ======== Train (STEP 1: MAE-only sanity) ========
-print(">>> Phase 3: GPU training starts now!")
+# ==============================
+# 8) Callbacks (Guards, Logging, Checkpoints)
+# ==============================
 
-# ======== Alpha linear hochfahren ========
-class AlphaScheduler(callbacks.Callback):
-    """
-    Monotone Ramp: hebt ALPHA_TF linear bis target in genau `epochs_to_target` Epochen an,
-    unabhaengig von val_loss. MS_GRAD_ON wird erst spaeter aktiviert, um die Numerik zu schuetzen.
-    """
-    def __init__(self, target=0.7, epochs_to_target=30, warmup=5, grad_on_epoch=None):
+class CompactLogger(callbacks.Callback):
+    def __init__(self, cols=None, show_time=True):
         super().__init__()
-        self.target = float(target)
-        self.warmup = int(warmup)
-        self.epochs_to_target = int(epochs_to_target)
-        # Standard: Grad erst einschalten, wenn Ziel erreicht ist
-        self.grad_on_epoch = int(grad_on_epoch) if grad_on_epoch is not None else (self.warmup + self.epochs_to_target)
-
+        self.cols = cols or ["loss","val_loss","mae","val_mae","mse","val_mse","psnr","val_psnr"]
+        self.show_time = show_time
+        self._t0 = None
     def on_epoch_begin(self, epoch, logs=None):
-        # Warmup: alpha=0
-        if epoch < self.warmup:
-            ALPHA_TF.assign(0.0)
-            MS_GRAD_ON.assign(False)
-        else:
-            # Linearer Ramp rein nach Epoche
-            t = epoch - self.warmup
-            frac = tf.clip_by_value(tf.cast(t, tf.float32) / float(self.epochs_to_target), 0.0, 1.0)
-            ALPHA_TF.assign(self.target * frac)
-            # MS-Gradienten erst spaeter erlauben
-            MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
+        if self.show_time: self._t0 = time.time()
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        if "val_loss" not in logs: return
+        dt = (time.time() - self._t0) if (self.show_time and self._t0 is not None) else None
+        try: lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
+        except Exception: lr = None
+        parts = [f"E{epoch+1:03d}"]
+        for k in self.cols:
+            v = logs.get(k, None)
+            if v is not None and np.isfinite(v):
+                parts.append(f"{k}={v:7.4f}")
+        if lr is not None: parts.append(f"lr={lr:.1e}")
+        if dt is not None: parts.append(f"time={dt:5.1f}s")
+        print(" | ".join(parts))
 
-        print(f"[AlphaScheduler] epoch={epoch}  ALPHA={float(ALPHA_TF.numpy()):.3f}  MS_GRAD_ON={bool(MS_GRAD_ON.numpy())}")
+class LossNaNGuard(callbacks.Callback):
+    def on_train_batch_end(self, batch, logs=None):
+        loss = (logs or {}).get("loss", None)
+        if loss is not None and not np.isfinite(loss):
+            print(f"[NaNLoss] batch={batch} loss={loss}")
+            self.model.stop_training = True
 
+class WeightNaNGuard(callbacks.Callback):
+    def on_train_batch_end(self, batch, logs=None):
+        for w in self.model.weights:
+            if not tf.reduce_all(tf.math.is_finite(w)):
+                print(f"[NaNWeight] layer={w.name} batch={batch}")
+                self.model.stop_training = True
+                break
 
-# ======== Checkpoints inkl. BestFinalize ========
+# Checkpoints + Meta
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE, "epochs": EPOCHS,
@@ -577,142 +489,44 @@ run_meta = {
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
     "ALPHA": ALPHA
 }
-
 bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta, code_name="AUTO")
 ckpt_best = callbacks.ModelCheckpoint(
     filepath=str(bf.tmp_path), monitor="val_loss",
     mode="min", save_best_only=True, verbose=1
 )
 
-# ======== Callbacks-Liste ========
-
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
-
-# Optimizer: höheres LR für Toy, weniger Bremse
-opt = AdamW(
-    learning_rate=1e-5,   # kleiner
-    epsilon=1e-4,         # größer = robuster
-    global_clipnorm=0.5,  # stärker clippen
-    weight_decay=0.0,     # zunächst kein WD
-    amsgrad=False
-)
-
-
-
-# schönerer Name im Log
-psnr_metric.__name__ = "psnr"
-
-metric_list = [
-    tf.keras.metrics.MeanAbsoluteError(name="mae"),
-    tf.keras.metrics.MeanSquaredError(name="mse"),
-    psnr_metric,
-]
-
-model.compile(optimizer=opt, loss=combined_loss,
-              metrics=metric_list, jit_compile=False)
-
-model.run_eagerly = True # TODO: just for debugging, remove later
-
-class CompactLogger(callbacks.Callback):
-    def __init__(self, cols=None, show_time=True):
-        super().__init__()
-        self.cols = cols or [
-            "loss", "val_loss",
-            "mae", "val_mae",
-            "mse", "val_mse",
-            "psnr", "val_psnr",
-        ]
-        self.show_time = show_time
-        self._t0 = None
-
-    def on_epoch_begin(self, epoch, logs=None):
-        if self.show_time:
-            self._t0 = time.time()
-
-    def on_epoch_end(self, epoch, logs=None):
-        logs = logs or {}
-        # nur ausgeben, wenn in dieser Epoche validiert wurde
-        if "val_loss" not in logs:
-            return
-
-        # Zeit berechnen
-        dt = None
-        if self.show_time and self._t0 is not None:
-            dt = time.time() - self._t0
-
-        # Alpha & LR
-        try:
-            alpha = float(ALPHA_TF.numpy())
-        except Exception:
-            alpha = None
-        try:
-            lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
-        except Exception:
-            lr = None
-
-        parts = [f"E{epoch+1:03d}"]
-        for k in self.cols:
-            v = logs.get(k, None)
-            if v is not None and np.isfinite(v):
-                parts.append(f"{k}={v:7.4f}")
-        if alpha is not None:
-            parts.append(f"alpha={alpha:4.2f}")
-        if lr is not None:
-            parts.append(f"lr={lr:.1e}")
-        if dt is not None:
-            parts.append(f"time={dt:5.1f}s")  # <<— Epoche in Sekunden
-
-        print(" | ".join(parts))
-
-class LossNaNGuard(callbacks.Callback):
-    def on_train_batch_end(self, batch, logs=None):
-        logs = logs or {}
-        loss = logs.get("loss", None)
-        if loss is not None and not np.isfinite(loss):
-            print(f"[NaNLoss] batch={batch} loss={loss}")
-            self.model.stop_training = True
-
-
-
-
-class WeightNaNGuard(callbacks.Callback):
-    def on_train_batch_end(self, batch, logs=None):
-        for i, w in enumerate(self.model.weights):
-            if not tf.reduce_all(tf.math.is_finite(w)):
-                print(f"[NaNWeight] layer={w.name} batch={batch}")
-                self.model.stop_training = True
-                break
-
-# --- Callbacks ---
+# Callback-Liste (ohne AlphaScheduler für Debug)
 cbs = [
-    # AlphaScheduler(...)  # aus
     WeightNaNGuard(),
     LossNaNGuard(),
     callbacks.TerminateOnNaN(),
-    callbacks.ReduceLROnPlateau(...),
-    callbacks.EarlyStopping(...),
+    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6, verbose=0),
+    callbacks.EarlyStopping(monitor="val_loss", patience=16, restore_best_weights=True, verbose=0),
     ckpt_best, bf,
     CompactLogger(),
 ]
 
-
+# %%
+# ==============================
+# 9) Train
+# ==============================
+print(">>> Phase 3: GPU training starts now!")
 history = model.fit(
     train_ds,
-    validation_data=val_ds,  # Val bleibt Val
-    validation_freq=1,       # jede Epoche
+    validation_data=val_ds,
+    validation_freq=1,
     epochs=EPOCHS,
     callbacks=cbs,
-    verbose=0                # nur CompactLogger-Ausgabe
+    verbose=0
 )
-
 print(">>> Phase 3: Training complete!")
 
-
 # %%
+# ==============================
+# 10) Evaluate (Val & Test)
+# ==============================
 final_val = model.evaluate(val_ds, return_dict=True, verbose=0)
 print("FINAL VAL:", {k: float(v) for k, v in final_val.items()})
 
-# Falls oben test_ds gebaut wurde:
 final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
 print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
-
