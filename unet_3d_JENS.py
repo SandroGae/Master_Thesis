@@ -167,32 +167,32 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
     inputs = layers.Input(shape=input_shape)
 
     # Encoder (nur H,W poolen)
-    c1 = conv_block_stable(inputs, base_filters,   k=(1,3,3), drop=0.05)
+    c1 = conv_block(inputs, base_filters,   k=(1,3,3), drop=0.05)
     p1 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c1)
 
-    c2 = conv_block_stable(p1,     base_filters*2, k=(1,3,3), drop=0.05)
+    c2 = conv_block(p1,     base_filters*2, k=(1,3,3), drop=0.05)
     p2 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c2)
 
     # Bottleneck
-    bn = conv_block_stable(p2,     base_filters*4, k=(1,3,3), drop=0.05)
+    bn = conv_block(p2,     base_filters*4, k=(1,3,3), drop=0.05)
 
     # Decoder (nur H,W upsamplen)
     u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
     u2 = layers.Concatenate()([u2, c2])
-    c3 = conv_block_stable(u2, base_filters*2, k=(1,3,3), drop=0.05)
+    c3 = conv_block(u2, base_filters*2, k=(1,3,3), drop=0.05)
 
     u1 = layers.Conv3DTranspose(base_filters,   kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c3)
     u1 = layers.Concatenate()([u1, c1])
-    c4 = conv_block_stable(u1, base_filters, k=(1,3,3), drop=0.05)
+    c4 = conv_block(u1, base_filters, k=(1,3,3), drop=0.05)
 
     # Output: Sigmoid in [0,1]
     out = layers.Conv3D(1, (1,1,1), activation="sigmoid")(c4)
     out = layers.Lambda(lambda z: tf.clip_by_value(tf.cast(z, tf.float32), 0.0, 1.0))(out)
 
-    return models.Model(inputs, out, name="UNet3D_Shallow_Stable")
+    return models.Model(inputs, out, name="UNet3D")
 
 # Modell instanziieren – SCHMAL & FLACH
-model = unet3d_shallow(input_shape=INPUT_SHAPE, base_filters=8)
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=8)
 
 
 # %%
