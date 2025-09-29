@@ -14,7 +14,7 @@ import os
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("float32") # float 32 to test if this was the issue
+mixed_precision.set_global_policy("mixed_float16")
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from tensorflow.keras.optimizers import AdamW
 from unet_3d_data_JENS import prepare_in_memory_5to5
@@ -89,7 +89,7 @@ def make_ds(X, Y, shuffle=True, preproc=None, limit=None, cache_in_memory=True):
 print(">>> Phase 2: Create Tensorflow Datasets...")
 train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice), limit=20)
 val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice), limit=5)
-test_ds  = make_ds(X_test,  Y_test,  False, preproc=map_slice_wise(preproc_valid_slice))
+#test_ds  = make_ds(X_test,  Y_test,  False, preproc=map_slice_wise(preproc_valid_slice))
 print(">>> Datasets created")
 
 
@@ -210,11 +210,14 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
-    return tf.cond(
-        ALPHA_TF > 0.0,
-        lambda: (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * ms_ssim_loss_sampled(yt, yp, k=K_SLICES),
-        lambda: l_mae
-    )
+    def ms_branch():
+        ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
+        ms = tf.where(tf.math.is_finite(ms), ms, l_mae)  # fallback pro Bad-Batch
+        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * ms
+        out = tf.where(tf.math.is_finite(out), out, l_mae)
+        return out
+    return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
+
 
 
 
@@ -472,37 +475,38 @@ print(">>> Phase 3: GPU training starts now!")
 
 # ======== Alpha linear hochfahren ========
 class AlphaScheduler(callbacks.Callback):
-    def __init__(self, warmup=1, step=0.1, target=ALPHA_TARGET, min_alpha=0.0):
+    def __init__(self, warmup=5, step=0.02, target=ALPHA_TARGET, min_alpha=0.0, use_train_when_no_val=True):
         super().__init__()
         self.warmup = int(warmup)
         self.step   = float(step)
         self.target = float(target)
         self.min_a  = float(min_alpha)
         self.best_val = np.inf
+        self.use_train_when_no_val = bool(use_train_when_no_val)
 
     def on_epoch_begin(self, epoch, logs=None):
-        # Während Warmup strikt alpha=0 halten
         if epoch < self.warmup:
             ALPHA_TF.assign(self.min_a)
         print(f"[AlphaScheduler] begin epoch {epoch}  ALPHA={float(ALPHA_TF.numpy()):.3f}")
 
     def on_epoch_end(self, epoch, logs=None):
-        # Waehrend Warmup keine Anpassung (epoch ist 0-basiert)
         if (epoch + 1) < self.warmup:
             return
-
-        vl = float((logs or {}).get("val_loss", np.inf))
-        if not np.isfinite(vl):
+        logs = logs or {}
+        vl = logs.get("val_loss", None)
+        if vl is None and self.use_train_when_no_val:
+            vl = logs.get("loss", None)
+        if vl is None or not np.isfinite(float(vl)):
             new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
             ALPHA_TF.assign(new_a)
-            print(f"[AlphaScheduler] val_loss non-finite -> ALPHA={new_a:.3f}")
+            print(f"[AlphaScheduler] no/invalid val -> ALPHA={new_a:.3f}")
             return
 
+        vl = float(vl)
         improved = vl < self.best_val - 1e-6
         if improved:
             self.best_val = vl
-
-        if vl <= self.best_val * 1.02:  # <= +2% tolerieren
+        if vl <= self.best_val * 1.02:
             new_a = min(self.target, float(ALPHA_TF.numpy()) + self.step)
         else:
             new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
@@ -573,10 +577,22 @@ cbs = [
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=EPOCHS,   # z.B. 6-10 empfehlenswert fuer den Ramp
+    validation_freq=5,   # <<< nur alle 5 Epochen validieren
+    epochs=100,
     callbacks=cbs,
     verbose=2
 )
+def combined_loss(y_true, y_pred):
+    yt = _clip01(y_true); yp = _clip01(y_pred)
+    l_mae = tf.reduce_mean(tf.abs(yt - yp))
+    def ms_branch():
+        ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
+        ms = tf.where(tf.math.is_finite(ms), ms, l_mae)  # fallback pro Bad-Batch
+        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * ms
+        out = tf.where(tf.math.is_finite(out), out, l_mae)
+        return out
+    return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
+
 
 
 print(">>> Phase 3: Training complete!")
