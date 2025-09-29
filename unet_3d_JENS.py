@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("float16")
+mixed_precision.set_global_policy("float32")
 
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from tensorflow.keras.optimizers import AdamW
