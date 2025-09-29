@@ -16,6 +16,7 @@ import tensorflow as tf
 from tensorflow.keras import mixed_precision
 mixed_precision.set_global_policy("float32") # float 32 to test if this was the issue
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
+from tensorflow.keras.optimizers import AdamW
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from pathlib import Path
@@ -83,6 +84,8 @@ def make_ds(X, Y, shuffle=True, preproc=None):
 print(">>> Phase 2: Create Tensorflow Datasets...")
 train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice))
 val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice))
+train_ds = train_ds.take(20)   # nur 20 Batches für schnellen Test
+val_ds   = val_ds.take(5)
 test_ds  = make_ds(X_test,  Y_test,  False, preproc=map_slice_wise(preproc_valid_slice))
 print(">>> Datasets created")
 
@@ -112,7 +115,7 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     return x
 
 
-def unet3d(input_shape=(5, 192, 240, 1), base_filters=16):
+def unet3d(input_shape=(5, 192, 240, 1), base_filters=8): #TODO go higher for real training!
     inputs = layers.Input(shape=input_shape)
 
     # Encoder (pool only over H,W)
@@ -169,9 +172,9 @@ def _safe_imgs_for_ms_ssim(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
     yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
-    tf.debugging.assert_all_finite(yt, "y_true contains NaN/Inf")
-    tf.debugging.assert_all_finite(yp, "y_pred contains NaN/Inf")
+    # keine assert_all_finite in der Metric/Inference-Route!
     return yt, yp
+
 
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     yt, yp = _clip01(y_true), _clip01(y_pred)
@@ -473,15 +476,18 @@ class AlphaScheduler(callbacks.Callback):
         self.best_val = np.inf
 
     def on_epoch_begin(self, epoch, logs=None):
-        # während Warmup bei 0.0 bleiben
+        # Während Warmup strikt alpha=0 halten
         if epoch < self.warmup:
             ALPHA_TF.assign(self.min_a)
         print(f"[AlphaScheduler] begin epoch {epoch}  ALPHA={float(ALPHA_TF.numpy()):.3f}")
 
     def on_epoch_end(self, epoch, logs=None):
-        vl = float(logs.get("val_loss", np.inf))
+        # Waehrend Warmup keine Anpassung (epoch ist 0-basiert)
+        if (epoch + 1) < self.warmup:
+            return
+
+        vl = float((logs or {}).get("val_loss", np.inf))
         if not np.isfinite(vl):
-            # instabil -> alpha leicht senken
             new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
             ALPHA_TF.assign(new_a)
             print(f"[AlphaScheduler] val_loss non-finite -> ALPHA={new_a:.3f}")
@@ -491,16 +497,13 @@ class AlphaScheduler(callbacks.Callback):
         if improved:
             self.best_val = vl
 
-        # Wenn stabil (endlich) und nicht deutlich schlechter, erhöhe ALPHA
-        if vl <= self.best_val * 1.02:  # <= +2% Verschlechterung tolerieren
+        if vl <= self.best_val * 1.02:  # <= +2% tolerieren
             new_a = min(self.target, float(ALPHA_TF.numpy()) + self.step)
-            ALPHA_TF.assign(new_a)
-            print(f"[AlphaScheduler] val ok -> ALPHA={new_a:.3f}")
         else:
-            # leichte Verschlechterung -> halte oder kleine Reduktion
             new_a = max(self.min_a, float(ALPHA_TF.numpy()) - self.step/2.0)
-            ALPHA_TF.assign(new_a)
-            print(f"[AlphaScheduler] val worsened -> ALPHA={new_a:.3f}")
+        ALPHA_TF.assign(new_a)
+        print(f"[AlphaScheduler] val {'ok' if vl <= self.best_val * 1.02 else 'worsened'} -> ALPHA={new_a:.3f}")
+
 
 # ======== Checkpoints inkl. BestFinalize ========
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
@@ -521,12 +524,11 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
-# ======== Optimizer (etwas konservativer) ========
-opt = tf.keras.optimizers.experimental.AdamW(
+opt = AdamW(
     learning_rate=1e-5,
     epsilon=1e-5,
-    global_clipnorm=0.25,    # stärkeres Clipping
-    weight_decay=1e-5        # sanfter Weight Decay
+    global_clipnorm=0.25,
+    weight_decay=1e-5
 )
 
 
