@@ -84,22 +84,28 @@ def nan_debug(x, y):
     tf.debugging.assert_equal(ny, 0, message="NaN/Inf in Y batch")
     return x, y
 
-def make_ds(X, Y, shuffle=True, preproc=None, limit=None, cache_in_memory=True):
+def make_ds(X, Y, *,
+            shuffle=True,
+            preproc=None,
+            limit=None,
+            cache_in_memory=True,
+            check_nans=False):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
 
-    # 1) Preprocessing pro Sample
+    # Preprocessing pro Sample
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)),
                     num_parallel_calls=tf.data.AUTOTUNE)
 
-    # 2) NaN/Inf-Check NACH dem Preproc (genau hier einfügen)
-    ds = ds.map(nan_debug, num_parallel_calls=tf.data.AUTOTUNE)
+    # Optionaler NaN/Inf-Check NACH dem Preproc
+    if check_nans:
+        ds = ds.map(nan_debug, num_parallel_calls=tf.data.AUTOTUNE)
 
-    # 3) Rest wie gehabt
+    # Rest
     if shuffle:
         ds = ds.shuffle(buffer_size=X.shape[0], reshuffle_each_iteration=True)
     if limit is not None:
-        ds = ds.take(int(limit))
+        ds = ds.take(int(limit))  # take vor cache()
     ds = ds.batch(BATCH_SIZE, drop_remainder=False)
     if cache_in_memory:
         ds = ds.cache()
@@ -108,15 +114,26 @@ def make_ds(X, Y, shuffle=True, preproc=None, limit=None, cache_in_memory=True):
 
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
-val_ds  = make_ds(X_val,  Y_val,  shuffle=False, preproc=map_slice_wise(preproc_valid_slice), check_nans=True)
-test_ds = make_ds(X_test, Y_test, shuffle=False, preproc=map_slice_wise(preproc_valid_slice), check_nans=True)
 
+train_ds = make_ds(
+    X_train, Y_train,
+    shuffle=True,
+    preproc=map_slice_wise(preproc_train_slice),
+    check_nans=True      # ← jetzt auch im Training prüfen
+)
+
+val_ds = make_ds(
+    X_val, Y_val,
+    shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice),
+    check_nans=True
+)
 
 test_ds = make_ds(
     X_test, Y_test,
     shuffle=False,
     preproc=map_slice_wise(preproc_valid_slice),
-    limit=None
+    check_nans=True
 )
 
 print(">>> Datasets created")
