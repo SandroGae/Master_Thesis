@@ -225,18 +225,19 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
-    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-    l_ms  = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)
 
-    l_ms_used = tf.cond(MS_GRAD_ON,
-                        lambda: l_ms,
-                        lambda: tf.stop_gradient(l_ms))
-
-    def ms_branch():
+    def with_ms():
+        l_ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)  # nur hier berechnen!
+        l_ms = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)
+        l_ms_used = tf.cond(MS_GRAD_ON,
+                            lambda: l_ms,
+                            lambda: tf.stop_gradient(l_ms))
         out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
         return tf.where(tf.math.is_finite(out), out, l_mae)
 
-    return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
+    # wenn alpha==0 → reines MAE; ms-ssim wird gar nicht aufgerufen
+    return tf.cond(ALPHA_TF > 0.0, with_ms, lambda: l_mae)
+
 
 
 
@@ -521,7 +522,7 @@ class BatchDebugDump(callbacks.Callback):
             self.model.stop_training = True
 
 class AlphaScheduler(callbacks.Callback):
-    def __init__(self, target=0.3, warmup=3, epochs_to_target=10, grad_on_epoch=9999):
+    def __init__(self, target=0.3, warmup=2, epochs_to_target=6, grad_on_epoch=9999):
         super().__init__()
         self.target = float(target)
         self.warmup = int(warmup)
@@ -530,11 +531,10 @@ class AlphaScheduler(callbacks.Callback):
 
     def on_epoch_begin(self, epoch, logs=None):
         if epoch < self.warmup:
-            ALPHA_TF.assign(0.0)
-            MS_GRAD_ON.assign(False)
+            ALPHA_TF.assign(0.0); MS_GRAD_ON.assign(False)
         else:
             t = epoch - self.warmup
-            frac = tf.clip_by_value(tf.cast(t, tf.float32) / float(self.epochs_to_target), 0.0, 1.0)
+            frac = tf.clip_by_value(tf.cast(t, tf.float32)/float(self.epochs_to_target), 0.0, 1.0)
             ALPHA_TF.assign(self.target * frac)
             MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
         print(f"[AlphaScheduler] epoch={epoch}  alpha={float(ALPHA_TF.numpy()):.3f}  grad_on={bool(MS_GRAD_ON.numpy())}")
