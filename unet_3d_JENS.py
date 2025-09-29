@@ -131,67 +131,69 @@ print(">>> Datasets created")
 
 # %%
 # ==============================
-# 4) Modell-Definition (3D U-Net)
+# 4) Modell-Definition (3D U-Net) – FLACH & STABIL
 # ==============================
-def conv_block(x, filters, k=(3,3,3), p="same", drop=0.0):
-    kr = regularizers.l2(1e-6)          # etwas kleineres L2
-    kc = constraints.MaxNorm(2.0)       # strengeres MaxNorm
+def conv_block(x, filters, k=(1,3,3), p="same", drop=0.05):
+    """Conv3D -> BN -> LeakyReLU (x2) + Residual, optional SpatialDropout3D."""
+    kr = regularizers.l2(1e-6)
+    kc = constraints.MaxNorm(2.0)
 
     def conv_bn_lrelu(z, f):
-        z = layers.Conv3D(f, k, padding=p, use_bias=False,
-                          kernel_initializer="he_normal",
-                          kernel_regularizer=kr, kernel_constraint=kc)(z)
+        z = layers.Conv3D(
+            f, k, padding=p, use_bias=False,
+            kernel_initializer="he_normal",
+            kernel_regularizer=kr, kernel_constraint=kc
+        )(z)
         z = layers.BatchNormalization()(z)
-        z = layers.LeakyReLU(alpha=0.1)(z)
+        z = layers.LeakyReLU(negative_slope=0.1)
         return z
 
     y = conv_bn_lrelu(x, filters)
     y = conv_bn_lrelu(y, filters)
 
-    if drop > 0:
-        y = layers.SpatialDropout3D(drop)(y)  # dropout auf feature-maps
+    if drop and drop > 0.0:
+        y = layers.SpatialDropout3D(drop)(y)
 
-    # Residual (projiziert falls Kanäle nicht passen)
+    # Residual Pfad: falls Kanäle nicht passen, 1x1x1-Projektion
     if x.shape[-1] != filters:
         x = layers.Conv3D(filters, (1,1,1), padding=p, use_bias=False)(x)
         x = layers.BatchNormalization()(x)
+
     return layers.Add()([x, y])
 
 
 def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
+    """Sehr flaches 3D-UNet: 2 Down-/Up-Stufen, nur H/W-Operationen."""
     inputs = layers.Input(shape=input_shape)
+
     # Encoder (nur H,W poolen)
-    c1 = conv_block(inputs, base_filters)
+    c1 = conv_block_stable(inputs, base_filters,   k=(1,3,3), drop=0.05)
     p1 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c1)
 
-    c2 = conv_block(p1, base_filters*2)
+    c2 = conv_block_stable(p1,     base_filters*2, k=(1,3,3), drop=0.05)
     p2 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c2)
 
-    c3 = conv_block(p2, base_filters*4)
-    p3 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c3)
-
     # Bottleneck
-    bn = conv_block(p3, base_filters*8)
+    bn = conv_block_stable(p2,     base_filters*4, k=(1,3,3), drop=0.05)
 
     # Decoder (nur H,W upsamplen)
-    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
-    u3 = layers.concatenate([u3, c3])
-    c4 = conv_block(u3, base_filters*4)
+    u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
+    u2 = layers.Concatenate()([u2, c2])
+    c3 = conv_block_stable(u2, base_filters*2, k=(1,3,3), drop=0.05)
 
-    u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c4)
-    u2 = layers.concatenate([u2, c2])
-    c5 = conv_block(u2, base_filters*2)
+    u1 = layers.Conv3DTranspose(base_filters,   kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c3)
+    u1 = layers.Concatenate()([u1, c1])
+    c4 = conv_block_stable(u1, base_filters, k=(1,3,3), drop=0.05)
 
-    u1 = layers.Conv3DTranspose(base_filters, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c5)
-    u1 = layers.concatenate([u1, c1])
-    c6 = conv_block(u1, base_filters)
+    # Output: Sigmoid in [0,1]
+    out = layers.Conv3D(1, (1,1,1), activation="sigmoid")(c4)
+    out = layers.Lambda(lambda z: tf.clip_by_value(tf.cast(z, tf.float32), 0.0, 1.0))(out)
 
-    # Output Layer: tanh -> [0,1]
-    raw_out = layers.Conv3D(1, (1,1,1), activation="sigmoid")(c6)
-    outputs = layers.Lambda(lambda z: tf.clip_by_value(tf.cast(z, tf.float32), 0., 1.0))(raw_out)
-    return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
+    return models.Model(inputs, out, name="UNet3D_Shallow_Stable")
 
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
+# Modell instanziieren – SCHMAL & FLACH
+model = unet3d_shallow(input_shape=INPUT_SHAPE, base_filters=8)
+
 
 # %%
 # ==============================
