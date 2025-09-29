@@ -243,6 +243,12 @@ def ms_ssim_metric(y_true, y_pred):
     yt2 = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
     yp2 = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
+
+# --- Metriken ---
+def mse_metric(y_true, y_pred):
+    yt = _clip01(y_true); yp = _clip01(y_pred)
+    return tf.reduce_mean(tf.square(yt - yp))
+
 def psnr_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     return tf.image.psnr(yt, yp, max_val=1.0)
@@ -544,19 +550,56 @@ opt = AdamW(
 )
 
 
-metric_list = ["mae", psnr_metric]  # schlank & stabil
+# schönerer Name im Log
+psnr_metric.__name__ = "psnr"
+
+metric_list = [
+    tf.keras.metrics.MeanAbsoluteError(name="mae"),
+    tf.keras.metrics.MeanSquaredError(name="mse"),
+    psnr_metric,
+]
+
 model.compile(optimizer=opt, loss=combined_loss,
               metrics=metric_list, jit_compile=False)
 
 model.run_eagerly = False
 
-class LogAlphaAtEnd(callbacks.Callback):
-    def on_train_end(self, logs=None):
+class CompactLogger(callbacks.Callback):
+    def __init__(self, cols=None):
+        super().__init__()
+        self.cols = cols or [
+            "loss", "val_loss",
+            "mae", "val_mae",
+            "mse", "val_mse",
+            "psnr", "val_psnr",
+        ]
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        # Nur ausgeben, wenn Validierung in dieser Epoche gelaufen ist
+        if "val_loss" not in logs: 
+            return
+        # Alpha & LR mit loggen
         try:
-            bf.run_meta["ALPHA_final"] = float(ALPHA_TF.numpy())
-            bf.run_meta["ALPHA_target"] = float(ALPHA_TARGET)
+            alpha = float(ALPHA_TF.numpy())
         except Exception:
-            pass
+            alpha = None
+        try:
+            lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
+        except Exception:
+            lr = None
+
+        parts = [f"E{epoch+1:03d}"]
+        for k in self.cols:
+            v = logs.get(k, None)
+            if v is not None and np.isfinite(v):
+                parts.append(f"{k}={v:7.4f}")
+        if alpha is not None:
+            parts.append(f"alpha={alpha:4.2f}")
+        if lr is not None:
+            parts.append(f"lr={lr:.1e}")
+        print(" | ".join(parts))
+
 
 class WeightNaNGuard(callbacks.Callback):
     def on_train_batch_end(self, batch, logs=None):
@@ -571,16 +614,18 @@ cbs = [
     AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=10, warmup=3, grad_on_epoch=8),
     WeightNaNGuard(),
     callbacks.TerminateOnNaN(),
+    CompactLogger(),     # <<— NEU
 ]
 
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    validation_freq=4,
+    validation_freq=1,
     epochs=EPOCHS,
     callbacks=cbs,
-    verbose=2
+    verbose=0            # Keras-Progress abschalten
 )
+
 
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
