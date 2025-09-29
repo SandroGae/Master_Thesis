@@ -43,7 +43,7 @@ X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 EPOCHS     = 100
 
 # %%
@@ -87,8 +87,8 @@ def make_ds(X, Y, shuffle=True, preproc=None, limit=None, cache_in_memory=True):
 
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice), limit=20)
-val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice), limit=5)
+train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice), limit=32)
+val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice), limit=8)
 #test_ds  = make_ds(X_test,  Y_test,  False, preproc=map_slice_wise(preproc_valid_slice))
 print(">>> Datasets created")
 
@@ -535,11 +535,12 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
+# Optimizer: höheres LR für Toy, weniger Bremse
 opt = AdamW(
-    learning_rate=1e-5,
+    learning_rate=3e-4,     # <<— hoch für Toy
     epsilon=1e-5,
-    global_clipnorm=0.25,
-    weight_decay=1e-5
+    global_clipnorm=0.5,    # etwas lockerer
+    weight_decay=0.0        # fürs echte Training wieder 1e-5
 )
 
 
@@ -567,18 +568,18 @@ class WeightNaNGuard(callbacks.Callback):
 
 # --- Callbacks ---
 cbs = [
-    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=30, warmup=5, grad_on_epoch=35),
+    AlphaScheduler(target=ALPHA_TARGET, epochs_to_target=10, warmup=3, grad_on_epoch=8),
     WeightNaNGuard(),
     callbacks.TerminateOnNaN(),
 ]
 
-# --- Fit ---
 history = model.fit(
     train_ds,
-    epochs=100,
+    validation_data=val_ds,
+    validation_freq=4,
+    epochs=EPOCHS,
     callbacks=cbs,
-    verbose=2,
-    # keine validation_data: maximaler Durchsatz
+    verbose=2
 )
 
 def combined_loss(y_true, y_pred):
