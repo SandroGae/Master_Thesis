@@ -49,31 +49,43 @@ EPOCHS     = 10
 
 # %%
 # ===== Preprocessing (nach dem Laden definieren) =====
-preproc_train = SumScaleNormalizer(
+preproc_train_slice = SumScaleNormalizer(
     scale_range=[5000, 15001], pre_offset=0.0,
-    normalize_label=True, axis=None, batch_mode=False,
-    clip_before=[0., np.inf], clip_after=[0., 1.]
+    normalize_label=True,
+    axis=(1, 2, 3),      # reduziert H,W,C — NICHT D
+    batch_mode=True,     # jede Scheibe ist ein "Batch-Item"
+    clip_before=[0., float("inf")], clip_after=[0., 1.]
 )
-preproc_valid = SumScaleNormalizer(
+preproc_valid_slice = SumScaleNormalizer(
     scale_range=[5000, 5001], pre_offset=0.0,
-    normalize_label=True, axis=None, batch_mode=False,
-    clip_before=[0., np.inf], clip_after=[0., 1.]
+    normalize_label=True,
+    axis=(1, 2, 3),
+    batch_mode=True,
+    clip_before=[0., float("inf")], clip_after=[0., 1.]
 )
 
+def map_slice_wise(normalizer):
+    # x,y: (D,H,W,C) für ein einzelnes Sample
+    def _fn(x, y):
+        x_norm, y_norm = normalizer.map(x, y)  # batch_mode=True → pro Slice
+        return x_norm, y_norm
+    return _fn
+
+
 def make_ds(X, Y, shuffle=True, preproc=None):
-    ds = tf.data.Dataset.from_tensor_slices((X, Y))
+    ds = tf.data.Dataset.from_tensor_slices((X, Y))  # Element: (D,H,W,1)
     if preproc is not None:
-        ds = ds.map(lambda x, y: tuple(preproc.map(x, y)),
-                    num_parallel_calls=AUTO).cache()
+        ds = ds.map(lambda x, y: tuple(preproc(x, y)),
+                    num_parallel_calls=tf.data.AUTOTUNE).cache()
     if shuffle:
         ds = ds.shuffle(buffer_size=X.shape[0])
-    ds = ds.batch(BATCH_SIZE).prefetch(AUTO)
+    ds = ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
     return ds
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, True,  preproc=preproc_train)
-val_ds   = make_ds(X_val,   Y_val,   False, preproc=preproc_valid)
-test_ds  = make_ds(X_test,  Y_test,  False, preproc=preproc_valid)
+train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice))
+val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice))
+test_ds  = make_ds(X_test,  Y_test,  False, preproc=map_slice_wise(preproc_valid_slice))
 print(">>> Datasets created")
 
 
@@ -155,16 +167,34 @@ def _safe_imgs_for_ms_ssim(y_true, y_pred):
     tf.debugging.assert_all_finite(yp, "y_pred contains NaN/Inf")
     return yt, yp
 
+K_SLICES = 1
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
-    yt, yp = _safe_imgs_for_ms_ssim(y_true, y_pred)
-    B = tf.shape(yt)[0]; D = tf.shape(yt)[1]
-    idx = _sample_depth_indices(B, D, k=k)
-    ygt = tf.gather(yt, idx, batch_dims=1)
-    ypd = tf.gather(yp, idx, batch_dims=1)
-    yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
+    # 1) Safeguards & leichtes Dithering, um exakt konstante Fenster zu vermeiden
+    yt, yp = _safe_imgs_for_ms_ssim(y_true, y_pred)        # schon [MS_EPS,1-MS_EPS]
+    eps_noise = tf.constant(1e-4, yt.dtype)
+    yt = yt + eps_noise * tf.random.normal(tf.shape(yt), dtype=yt.dtype)
+    yp = yp + eps_noise * tf.random.normal(tf.shape(yp), dtype=yp.dtype)
+
+    # 2) Energie-basiertes Slice-Sampling (robuster als rein zufällig)
+    #    -> vermeidet "leere" Slices; stop_gradient, damit Sampling nicht in den Graph diffundiert
+    B = tf.shape(yt)[0]
+    D = tf.shape(yt)[1]
+    energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])   # (B,D)
+    idx = tf.math.top_k(energy, k=tf.minimum(k, D)).indices          # (B,k)
+    idx = tf.stop_gradient(idx)
+
+    # 3) Gather & reshape nach 2D-Bildern
+    ygt = tf.gather(yt, idx, batch_dims=1)   # (B,k,H,W,C)
+    ypd = tf.gather(yp, idx, batch_dims=1)   # (B,k,H,W,C)
+    yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))  # (B*k,H,W,C)
     yp2 = tf.reshape(ypd, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
+
+    # 4) MS-SSIM mit Schutzgeländern
     ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
-    tf.debugging.assert_all_finite(ms, "MS-SSIM produced NaN/Inf")
+    # numerische Sanitisierung statt harter Assert-Abbrüche
+    ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
+    ms = tf.clip_by_value(ms, 0.0, 1.0)
+
     return 1.0 - tf.reduce_mean(ms)
 
 def combined_loss(y_true, y_pred):
