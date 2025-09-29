@@ -15,7 +15,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
 mixed_precision.set_global_policy("float32") # float 32 to test if this was the issue
-from tensorflow.keras import regularizers, constraints, layers, models, callbacksv
+from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from pathlib import Path
