@@ -133,23 +133,30 @@ print(">>> Datasets created")
 # ==============================
 # 4) Modell-Definition (3D U-Net)
 # ==============================
-def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
-    ki  = "he_normal"
-    kr  = regularizers.l2(1e-5)
-    kc  = constraints.MaxNorm(3.0)
+def conv_block(x, filters, k=(3,3,3), p="same", drop=0.0):
+    kr = regularizers.l2(1e-6)          # etwas kleineres L2
+    kc = constraints.MaxNorm(2.0)       # strengeres MaxNorm
 
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True,
-                      kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization(dtype="float32", epsilon=1e-3)(x)
-    x = layers.ELU()(x)
+    def conv_bn_lrelu(z, f):
+        z = layers.Conv3D(f, k, padding=p, use_bias=False,
+                          kernel_initializer="he_normal",
+                          kernel_regularizer=kr, kernel_constraint=kc)(z)
+        z = layers.BatchNormalization()(z)
+        z = layers.LeakyReLU(alpha=0.1)(z)
+        return z
 
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True,
-                      kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization(dtype="float32", epsilon=1e-3)(x)
-    x = layers.ELU()(x)
-    return x
+    y = conv_bn_lrelu(x, filters)
+    y = conv_bn_lrelu(y, filters)
+
+    if drop > 0:
+        y = layers.SpatialDropout3D(drop)(y)  # dropout auf feature-maps
+
+    # Residual (projiziert falls Kanäle nicht passen)
+    if x.shape[-1] != filters:
+        x = layers.Conv3D(filters, (1,1,1), padding=p, use_bias=False)(x)
+        x = layers.BatchNormalization()(x)
+    return layers.Add()([x, y])
+
 
 def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
     inputs = layers.Input(shape=input_shape)
@@ -180,8 +187,8 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
     c6 = conv_block(u1, base_filters)
 
     # Output Layer: tanh -> [0,1]
-    raw_out = layers.Conv3D(1, (1,1,1), activation="tanh")(c6)
-    outputs = layers.Lambda(lambda z: (z + 1.0) / 2.0, dtype="float32")(raw_out)
+    raw_out = layers.Conv3D(1, (1,1,1), activation="sigmoid")(c6)
+    outputs = layers.Lambda(lambda z: tf.clip_by_value(tf.cast(z, tf.float32), 0., 1.0))(raw_out)
     return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
@@ -258,13 +265,9 @@ psnr_metric.__name__ = "psnr"
 # ==============================
 # 6) Optimizer & Compile
 # ==============================
-opt = AdamW(
-    learning_rate=1e-5,   # oder 5e-6, wenn es erneut knallt
-    epsilon=1e-3,         # höher = numerisch robuster
-    global_clipnorm=0.1,  # stärker clippen
-    weight_decay=0.0,
-    amsgrad=False
-)
+opt = AdamW(learning_rate=5e-6, epsilon=1e-3,
+            global_clipnorm=0.05, weight_decay=1e-4, amsgrad=True)
+
 
 model.compile(
     optimizer=opt,
