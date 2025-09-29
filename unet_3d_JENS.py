@@ -119,21 +119,19 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     kr  = regularizers.l2(1e-5)
     kc  = constraints.MaxNorm(3.0)
 
-    # 1. Conv
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization()(x)
+    x = layers.LayerNormalization(dtype="float32", epsilon=1e-5)(x)
     x = layers.ELU()(x)
 
-    # 2. Conv
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LayerNormalization()(x)
+    x = layers.LayerNormalization(dtype="float32", epsilon=1e-5)(x)
     x = layers.ELU()(x)
-
     return x
+
 
 
 def unet3d(input_shape=(5, 192, 240, 1), base_filters=8): #TODO go higher for real training!
@@ -561,10 +559,11 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # Optimizer: höheres LR für Toy, weniger Bremse
 opt = AdamW(
-    learning_rate=3e-4,     # <<— hoch für Toy
-    epsilon=1e-5,
-    global_clipnorm=0.5,    # etwas lockerer
-    weight_decay=0.0        # fürs echte Training wieder 1e-5
+    learning_rate=1e-4,      # runter von 3e-4
+    epsilon=1e-7,            # stabiler für mixed precision
+    global_clipnorm=1.0,     # etwas höherer Clip
+    weight_decay=1e-5,       # wieder aktivieren
+    amsgrad=True             # optional stabiler
 )
 
 
@@ -583,7 +582,7 @@ model.compile(optimizer=opt, loss=combined_loss,
 model.run_eagerly = False
 
 class CompactLogger(callbacks.Callback):
-    def __init__(self, cols=None):
+    def __init__(self, cols=None, show_time=True):
         super().__init__()
         self.cols = cols or [
             "loss", "val_loss",
@@ -591,13 +590,25 @@ class CompactLogger(callbacks.Callback):
             "mse", "val_mse",
             "psnr", "val_psnr",
         ]
+        self.show_time = show_time
+        self._t0 = None
+
+    def on_epoch_begin(self, epoch, logs=None):
+        if self.show_time:
+            self._t0 = time.time()
 
     def on_epoch_end(self, epoch, logs=None):
         logs = logs or {}
-        # Nur ausgeben, wenn Validierung in dieser Epoche gelaufen ist
-        if "val_loss" not in logs: 
+        # nur ausgeben, wenn in dieser Epoche validiert wurde
+        if "val_loss" not in logs:
             return
-        # Alpha & LR mit loggen
+
+        # Zeit berechnen
+        dt = None
+        if self.show_time and self._t0 is not None:
+            dt = time.time() - self._t0
+
+        # Alpha & LR
         try:
             alpha = float(ALPHA_TF.numpy())
         except Exception:
@@ -616,7 +627,11 @@ class CompactLogger(callbacks.Callback):
             parts.append(f"alpha={alpha:4.2f}")
         if lr is not None:
             parts.append(f"lr={lr:.1e}")
+        if dt is not None:
+            parts.append(f"time={dt:5.1f}s")  # <<— Epoche in Sekunden
+
         print(" | ".join(parts))
+
 
 
 class WeightNaNGuard(callbacks.Callback):
