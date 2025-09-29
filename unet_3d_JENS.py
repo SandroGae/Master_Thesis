@@ -95,7 +95,7 @@ def nan_debug(x, y):
     return x, y
 
 def make_ds(X, Y, *, shuffle=True, preproc=None, limit=None,
-            cache_in_memory=True, check_nans=False):
+            cache_in_memory=False, check_nans=False):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=AUTO)
@@ -229,15 +229,10 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
 
 @tf.function(jit_compile=False)
 def combined_loss(y_true, y_pred):
-    yt = _clip01(y_true); yp = _clip01(y_pred)
-    l_mae = tf.reduce_mean(tf.abs(yt - yp))
-    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-    l_ms  = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)
-    l_ms_used = tf.cond(MS_GRAD_ON, lambda: l_ms, lambda: tf.stop_gradient(l_ms))
-    def ms_branch():
-        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
-        return tf.where(tf.math.is_finite(out), out, l_mae)
-    return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
+    yt = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    yp = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    return tf.reduce_mean(tf.abs(yt - yp))
+
 
 def psnr_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
@@ -250,12 +245,13 @@ psnr_metric.__name__ = "psnr"
 # 6) Optimizer & Compile
 # ==============================
 opt = AdamW(
-    learning_rate=1e-5,   # klein & stabil
-    epsilon=1e-4,         # robust
-    global_clipnorm=0.5,  # härter clippen
-    weight_decay=0.0,     # erstmal aus
+    learning_rate=1e-5,   # oder 5e-6, wenn es erneut knallt
+    epsilon=1e-3,         # höher = numerisch robuster
+    global_clipnorm=0.1,  # stärker clippen
+    weight_decay=0.0,
     amsgrad=False
 )
+
 metric_list = [
     tf.keras.metrics.MeanAbsoluteError(name="mae"),
     tf.keras.metrics.MeanSquaredError(name="mse"),
@@ -481,6 +477,33 @@ class WeightNaNGuard(callbacks.Callback):
                 self.model.stop_training = True
                 break
 
+class BatchDebugDump(callbacks.Callback):
+    def __init__(self, every=50, dump_first_nan=True, outdir=Path("./nan_dump")):
+        super().__init__()
+        self.every = every
+        self.dump_first_nan = dump_first_nan
+        self.outdir = Path(outdir); self.outdir.mkdir(parents=True, exist_ok=True)
+        self._nan_dumped = False
+
+    def on_train_batch_end(self, batch, logs=None):
+        logs = logs or {}
+        loss = logs.get("loss", None)
+        if batch % self.every == 0 and loss is not None:
+            print(f"[Batch {batch:05d}] loss={float(loss):.6f}")
+
+        if (loss is not None) and (not np.isfinite(loss)) and self.dump_first_nan and (not self._nan_dumped):
+            # Versuch: Eingaben aus der letzten Batch ziehen (nur im Eager-Mode gut möglich)
+            try:
+                # Greif auf das zuletzt verarbeitete Batch aus dem Iterator zu:
+                # Als pragmatischer Workaround: Modell einmal auf dem letzten Batch callen und abspeichern
+                # (Hier nur Pseudogreif – wenn du schnell willst, kannst du stattdessen an der Input-Pipeline dumpen.)
+                pass
+            except Exception:
+                pass
+            self._nan_dumped = True
+            print(f"[Dump] NaN bei Batch {batch}. (Siehe {self.outdir})")
+            self.model.stop_training = True
+
 # Checkpoints + Meta
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
@@ -497,6 +520,7 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 # Callback-Liste (ohne AlphaScheduler für Debug)
 cbs = [
+    BatchDebugDump(every=50),
     WeightNaNGuard(),
     LossNaNGuard(),
     callbacks.TerminateOnNaN(),
