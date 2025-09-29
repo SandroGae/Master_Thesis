@@ -145,7 +145,7 @@ def conv_block(x, filters, k=(1,3,3), p="same", drop=0.05):
             kernel_regularizer=kr, kernel_constraint=kc
         )(z)
         z = layers.BatchNormalization()(z)
-        z = layers.LeakyReLU(negative_slope=0.1)
+        z = layers.LeakyReLU(negative_slope=0.1)(z)
         return z
 
     y = conv_bn_lrelu(x, filters)
