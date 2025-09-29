@@ -15,12 +15,10 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
 mixed_precision.set_global_policy("float32") # float 32 to test if this was the issue
-from tensorflow.keras import layers, models, callbacks
+from tensorflow.keras import regularizers, constraints, layers, models, callbacksv
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from pathlib import Path
-from tensorflow.keras import regularizers, constraints
-
 import sys, inspect
 import json, socket, getpass, platform, subprocess, time, uuid # for naming files and callbacks
 
@@ -92,25 +90,29 @@ print(">>> Datasets created")
 # %%
 # ========= Defining 3D-U-Net Architecture ========
 
-def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation=None):
+def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     ki  = "glorot_uniform"
     kr  = regularizers.l2(1e-5)
     kc  = constraints.MaxNorm(3.0)
 
+    # 1. Conv
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LeakyReLU(negative_slope=0.1)(x)   # <- statt alpha=0.1
+    x = layers.LayerNormalization()(x)
+    x = layers.ELU()(x)
 
+    # 2. Conv
     x = layers.Conv3D(filters, kernel_size, padding=padding,
                       kernel_initializer=ki, use_bias=True,
                       kernel_regularizer=kr, kernel_constraint=kc)(x)
-    x = layers.LeakyReLU(negative_slope=0.1)(x)   # <- statt alpha=0.1
+    x = layers.LayerNormalization()(x)
+    x = layers.ELU()(x)
+
     return x
 
 
-
-def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
+def unet3d(input_shape=(5, 192, 240, 1), base_filters=16):
     inputs = layers.Input(shape=input_shape)
 
     # Encoder (pool only over H,W)
@@ -127,7 +129,7 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     bn = conv_block(p3, base_filters*8)
 
     # Decoder (upsample only over H,W)
-    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn) # bottleneck
+    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
     u3 = layers.concatenate([u3, c3])
     c4 = conv_block(u3, base_filters*4)
 
@@ -139,8 +141,12 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     u1 = layers.concatenate([u1, c1])
     c6 = conv_block(u1, base_filters)
 
-    outputs = layers.Conv3D(1, (1,1,1), dtype="float32", activation="sigmoid")(c6)
-    return models.Model(inputs, outputs, name="3D_U-Net")
+    # Output Layer: tanh -> [0,1]
+    raw_out = layers.Conv3D(1, (1,1,1), activation="tanh")(c6)
+    outputs = layers.Lambda(lambda z: (z + 1.0) / 2.0, dtype="float32")(raw_out)
+
+    return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
+
 
 
 # %%
@@ -167,35 +173,33 @@ def _safe_imgs_for_ms_ssim(y_true, y_pred):
     tf.debugging.assert_all_finite(yp, "y_pred contains NaN/Inf")
     return yt, yp
 
-K_SLICES = 1
 def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
-    # 1) Safeguards & leichtes Dithering, um exakt konstante Fenster zu vermeiden
-    yt, yp = _safe_imgs_for_ms_ssim(y_true, y_pred)        # schon [MS_EPS,1-MS_EPS]
-    eps_noise = tf.constant(1e-4, yt.dtype)
-    yt = yt + eps_noise * tf.random.normal(tf.shape(yt), dtype=yt.dtype)
-    yp = yp + eps_noise * tf.random.normal(tf.shape(yp), dtype=yp.dtype)
+    yt, yp = _clip01(y_true), _clip01(y_pred)
+    MS_EPS = 1e-5
+    yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
+    yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
+    # leichtes Dithering gegen konstante Fenster
+    noise = tf.constant(1e-4, yt.dtype)
+    yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=yt.dtype)
+    yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=yp.dtype)
 
-    # 2) Energie-basiertes Slice-Sampling (robuster als rein zufällig)
-    #    -> vermeidet "leere" Slices; stop_gradient, damit Sampling nicht in den Graph diffundiert
-    B = tf.shape(yt)[0]
-    D = tf.shape(yt)[1]
-    energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])   # (B,D)
-    idx = tf.math.top_k(energy, k=tf.minimum(k, D)).indices          # (B,k)
+    # energie-basiertes Sampling: vermeidet leere Slices
+    B = tf.shape(yt)[0]; D = tf.shape(yt)[1]
+    energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])  # (B,D)
+    k_eff = tf.minimum(k, D)
+    idx = tf.math.top_k(energy, k=k_eff).indices
     idx = tf.stop_gradient(idx)
 
-    # 3) Gather & reshape nach 2D-Bildern
-    ygt = tf.gather(yt, idx, batch_dims=1)   # (B,k,H,W,C)
-    ypd = tf.gather(yp, idx, batch_dims=1)   # (B,k,H,W,C)
-    yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))  # (B*k,H,W,C)
+    ygt = tf.gather(yt, idx, batch_dims=1)  # (B,k,H,W,C)
+    ypd = tf.gather(yp, idx, batch_dims=1)
+    yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
     yp2 = tf.reshape(ypd, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
 
-    # 4) MS-SSIM mit Schutzgeländern
     ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
-    # numerische Sanitisierung statt harter Assert-Abbrüche
     ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
     ms = tf.clip_by_value(ms, 0.0, 1.0)
-
     return 1.0 - tf.reduce_mean(ms)
+
 
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
@@ -520,10 +524,12 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 
 # ======== Optimizer (etwas konservativer) ========
 opt = tf.keras.optimizers.Adam(
-    learning_rate=1e-5,       # notfalls 5e-6
-    epsilon=1e-6,
-    global_clipnorm=1.0,      # GANZ WICHTIG: global, nicht nur per-layer
+    learning_rate=1e-5,
+    epsilon=1e-5,          # etwas groesser
+    global_clipnorm=0.5,   # staerker clippen
 )
+
+
 model.compile(optimizer=opt, loss=combined_loss,
               metrics=["mae", psnr_metric, ms_ssim_metric], jit_compile=False)
 
