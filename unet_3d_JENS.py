@@ -583,7 +583,7 @@ ckpt_best = callbacks.ModelCheckpoint(
 # Callback-Liste (ohne AlphaScheduler für Debug)
 cbs = [
     AlphaScheduler(
-        target=0.10,        # erstmal nur 0.10 mischen
+        target=0.70,        # erstmal nur 0.10 mischen
         warmup=4,           # 4 Epochen reines MAE
         epochs_to_target=8, # langsam bis 0.10
         ms_enable_epoch=8,  # MS überhaupt erst ab Epoche 8 berechnen
