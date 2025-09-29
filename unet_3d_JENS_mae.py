@@ -245,11 +245,6 @@ opt = AdamW(
     amsgrad=False
 )
 
-metric_list = [
-    tf.keras.metrics.MeanAbsoluteError(name="mae"),
-    tf.keras.metrics.MeanSquaredError(name="mse"),
-    psnr_metric,
-]
 model.compile(
     optimizer=opt,
     loss=mae_loss,
@@ -323,13 +318,15 @@ class BestFinalizeCallback(callbacks.Callback):
             if v:
                 return v
         return "MODEL"
+    
     def on_epoch_end(self, epoch, logs=None):
         if not logs or "val_loss" not in logs: return
         vloss = float(logs["val_loss"])
         if vloss < self.best_val_loss:
             self.best_val_loss = vloss
-            psnr = logs.get("psnr_metric")
+            psnr = logs.get("psnr")  # <-- statt "psnr_metric"
             self.best_psnr = float(psnr) if psnr is not None else None
+
     def on_train_end(self, logs=None):
         vloss_str = f"{self.best_val_loss:.3e}" if np.isfinite(self.best_val_loss) else "nan"
         psnr_part = f"_PSNR_{self.best_psnr:.3g}" if (self.best_psnr is not None and np.isfinite(self.best_psnr)) else ""
@@ -451,12 +448,20 @@ class CompactLogger(callbacks.Callback):
     def on_epoch_begin(self, epoch, logs=None):
         if self.show_time: self._t0 = time.time()
     def on_epoch_end(self, epoch, logs=None):
-        if not logs or "val_loss" not in logs: return
-        vloss = float(logs["val_loss"])
-        if vloss < self.best_val_loss:
-            self.best_val_loss = vloss
-            psnr = logs.get("psnr")
-            self.best_psnr = float(psnr) if psnr is not None else None
+        logs = logs or {}
+        if "val_loss" not in logs: return
+        dt = (time.time() - self._t0) if (self.show_time and self._t0 is not None) else None
+        try: lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
+        except Exception: lr = None
+        parts = [f"E{epoch+1:03d}"]
+        for k in self.cols:
+            v = logs.get(k, None)
+            if v is not None and np.isfinite(v):
+                parts.append(f"{k}={v:7.4f}")
+        if lr is not None: parts.append(f"lr={lr:.1e}")
+        if dt is not None: parts.append(f"time={dt:5.1f}s")
+        print(" | ".join(parts))
+
 
 
 class LossNaNGuard(callbacks.Callback):
@@ -494,10 +499,10 @@ cbs = [
     LossNaNGuard(),
     callbacks.TerminateOnNaN(),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6, verbose=0),
-    callbacks.EarlyStopping(monitor="val_loss", patience=16, restore_best_weights=True, verbose=0),
     ckpt_best, bf,
     CompactLogger(),
 ]
+
 
 # ==============================
 # 9) Train

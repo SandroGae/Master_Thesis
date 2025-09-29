@@ -558,7 +558,7 @@ class AlphaScheduler(callbacks.Callback):
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE, "epochs": EPOCHS,
-    "early_stopping": {"monitor":"val_loss","patience":10},
+    "early_stopping": {"monitor":"val_loss","patience":20},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
     "ALPHA": ALPHA
 }
@@ -572,8 +572,8 @@ ckpt_best = callbacks.ModelCheckpoint(
 cbs = [
     AlphaScheduler(step=0.02, target=0.7, ms_enable_epoch=0, grad_on_epoch=8),
     WeightNaNGuard(), LossNaNGuard(), callbacks.TerminateOnNaN(),
-    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6, verbose=0),
-    callbacks.EarlyStopping(monitor="val_loss", patience=16, restore_best_weights=True, verbose=0),
+    callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=0),
+    callbacks.EarlyStopping(monitor="val_loss", patience=20, restore_best_weights=True, verbose=0),
     ckpt_best, bf, CompactLogger(),
 ]
 
