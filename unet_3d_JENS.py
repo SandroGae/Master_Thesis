@@ -186,52 +186,58 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 # ==============================
 ALPHA_TARGET = 0.7
 ALPHA = 0.0
-K_SLICES     = 5
-MS_EPS       = 1e-5
-ALPHA_TF     = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
-MS_GRAD_ON   = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_grad_on")
+
+ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
+MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool,   name="ms_grad_on")
+
+MS_EPS    = 1e-5
+K_SLICES  = 5
 
 def _clip01(x):
     x = tf.cast(x, tf.float32)
     return tf.clip_by_value(x, 0.0, 1.0)
 
-def _safe_imgs_for_ms_ssim(y_true, y_pred):
+def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
     yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
-    return yt, yp
 
-def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
-    yt, yp = _clip01(y_true), _clip01(y_pred)
-    yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
-    yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
-    # leichtes Dithering
-    noise = tf.constant(1e-4, yt.dtype)
-    yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=yt.dtype)
-    yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=yp.dtype)
-    # Finite-Schutz
-    yt = tf.where(tf.math.is_finite(yt), yt, tf.zeros_like(yt))
-    yp = tf.where(tf.math.is_finite(yp), yp, tf.zeros_like(yp))
+    # leichtes Dithering gegen konstante Fenster
+    noise = tf.constant(1e-4, tf.float32)
+    yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=tf.float32)
+    yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=tf.float32)
+
     # energie-basiertes Slice-Sampling
-    D = tf.shape(yt)[1]
     energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])  # (B,D)
+    D = tf.shape(yt)[1]
     k_eff = tf.minimum(k, D)
     idx = tf.math.top_k(energy, k=k_eff).indices
-    idx = tf.stop_gradient(idx)
-    ygt = tf.gather(yt, idx, batch_dims=1)
-    ypd = tf.gather(yp, idx, batch_dims=1)
-    yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
-    yp2 = tf.reshape(ypd, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
-    ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
+    yt = tf.gather(yt, idx, batch_dims=1)  # (B,k,H,W,C)
+    yp = tf.gather(yp, idx, batch_dims=1)
+    yt = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
+    yp = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
+
+    ms = tf.image.ssim_multiscale(yt, yp, max_val=1.0)  # float32
     ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
-    ms = tf.clip_by_value(ms, 0.0, 1.0)
     return 1.0 - tf.reduce_mean(ms)
 
 @tf.function(jit_compile=False)
 def combined_loss(y_true, y_pred):
-    yt = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    yp = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-    return tf.reduce_mean(tf.abs(yt - yp))
+    yt = _clip01(y_true); yp = _clip01(y_pred)
+    l_mae = tf.reduce_mean(tf.abs(yt - yp))
+    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
+    l_ms  = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)
+
+    l_ms_used = tf.cond(MS_GRAD_ON,
+                        lambda: l_ms,
+                        lambda: tf.stop_gradient(l_ms))
+
+    def ms_branch():
+        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
+        return tf.where(tf.math.is_finite(out), out, l_mae)
+
+    return tf.cond(ALPHA_TF > 0.0, ms_branch, lambda: l_mae)
+
 
 
 def psnr_metric(y_true, y_pred):
@@ -257,7 +263,17 @@ metric_list = [
     tf.keras.metrics.MeanSquaredError(name="mse"),
     psnr_metric,
 ]
-model.compile(optimizer=opt, loss=combined_loss, metrics=metric_list, jit_compile=False)
+model.compile(
+    optimizer=opt,
+    loss=combined_loss,                 # <— statt reines MAE
+    metrics=[                           # (deine Metrics bleiben)
+        tf.keras.metrics.MeanAbsoluteError(name="mae"),
+        tf.keras.metrics.MeanSquaredError(name="mse"),
+        psnr_metric,
+    ],
+    jit_compile=False
+)
+
 
 # Debug: Eager an
 model.run_eagerly = False # Just for debugging
@@ -504,6 +520,26 @@ class BatchDebugDump(callbacks.Callback):
             print(f"[Dump] NaN bei Batch {batch}. (Siehe {self.outdir})")
             self.model.stop_training = True
 
+class AlphaScheduler(callbacks.Callback):
+    def __init__(self, target=0.3, warmup=3, epochs_to_target=10, grad_on_epoch=9999):
+        super().__init__()
+        self.target = float(target)
+        self.warmup = int(warmup)
+        self.epochs_to_target = int(epochs_to_target)
+        self.grad_on_epoch = int(grad_on_epoch)
+
+    def on_epoch_begin(self, epoch, logs=None):
+        if epoch < self.warmup:
+            ALPHA_TF.assign(0.0)
+            MS_GRAD_ON.assign(False)
+        else:
+            t = epoch - self.warmup
+            frac = tf.clip_by_value(tf.cast(t, tf.float32) / float(self.epochs_to_target), 0.0, 1.0)
+            ALPHA_TF.assign(self.target * frac)
+            MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
+        print(f"[AlphaScheduler] epoch={epoch}  alpha={float(ALPHA_TF.numpy()):.3f}  grad_on={bool(MS_GRAD_ON.numpy())}")
+
+
 # Checkpoints + Meta
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
@@ -520,6 +556,7 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 # Callback-Liste (ohne AlphaScheduler für Debug)
 cbs = [
+    AlphaScheduler(target=0.3, warmup=2, epochs_to_target=6, grad_on_epoch=9999),
     #BatchDebugDump(every=50),
     WeightNaNGuard(),
     LossNaNGuard(),
