@@ -196,8 +196,6 @@ ALPHA = 0.0
 ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
 MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool,   name="ms_grad_on")
 
-K_SLICES = 2  # vorerst klein
-
 MS_ENABLE_TF = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_enable")
 
 
@@ -205,52 +203,47 @@ def _clip01(x):
     x = tf.cast(x, tf.float32)
     return tf.clip_by_value(x, 0.0, 1.0)
 
-def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
-    yt = _clip01(y_true); yp = _clip01(y_pred)
+def ms_ssim_loss_all_slices(y_true, y_pred):
+    # Eingabe: (B, D, H, W, C)  -> wir werten alle D-Slices gleichberechtigt aus
+    yt = _clip01(y_true)
+    yp = _clip01(y_pred)
 
     MS_EPS = tf.constant(1e-5, tf.float32)
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
     yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
 
-    # ganz kleines Dithering (ebenfalls float32, detached)
+    # (optional) leichtes Dithering – kann man entfernen, falls du willst
     noise = tf.constant(1e-4, tf.float32)
     yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=tf.float32)
     yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=tf.float32)
 
-    # Energie-basiertes Sampling (robust gegen k > D)
-    energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])  # (B,D)
-    D = tf.shape(yt)[1]
-    k_eff = tf.minimum(k, D)
-    idx = tf.math.top_k(energy, k=k_eff).indices
-    yt = tf.gather(yt, idx, batch_dims=1)
-    yp = tf.gather(yp, idx, batch_dims=1)
-
+    # Alle Slices als 2D-Bilder behandeln: (B*D, H, W, C)
     yt = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
     yp = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
 
-    ms = tf.image.ssim_multiscale(yt, yp, max_val=1.0)  # float32
+    ms = tf.image.ssim_multiscale(yt, yp, max_val=1.0)  # (B*D,)
     ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
-    ms_mean = tf.reduce_mean(ms)
+    ms_mean = tf.reduce_mean(ms)  # Mittelwert über alle Slices und Batch
 
-    # harte Finite-Absicherung
-    ms_mean = tf.where(tf.math.is_finite(ms_mean), ms_mean, tf.constant(0.0, tf.float32))
     return 1.0 - ms_mean
 
 
 @tf.function(jit_compile=False)
 def combined_loss(y_true, y_pred):
-    yt = _clip01(y_true); yp = _clip01(y_pred)
+    yt = _clip01(y_true)
+    yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
 
     def with_ms():
-        l_ms = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-        l_ms = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)  # fallback
+        l_ms = ms_ssim_loss_all_slices(yt, yp)          # <-- NEU
+        l_ms = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)  # Fallback
         l_ms_used = tf.cond(MS_GRAD_ON, lambda: l_ms, lambda: tf.stop_gradient(l_ms))
         out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
         return tf.where(tf.math.is_finite(out), out, l_mae)
 
     use_ms = tf.logical_and(MS_ENABLE_TF, ALPHA_TF > 0.0)
     return tf.cond(use_ms, with_ms, lambda: l_mae)
+
 
 
 
@@ -499,28 +492,25 @@ class WeightNaNGuard(callbacks.Callback):
                 break
 
 class AlphaScheduler(callbacks.Callback):
-    def __init__(self, target=0.3, warmup=2, epochs_to_target=6,
-                 ms_enable_epoch=5, grad_on_epoch=8):
+    def __init__(self, step=0.02, target=0.7, ms_enable_epoch=0, grad_on_epoch=8):
         super().__init__()
+        self.step = float(step)
         self.target = float(target)
-        self.warmup = int(warmup)
-        self.epochs_to_target = int(epochs_to_target)
         self.ms_enable_epoch = int(ms_enable_epoch)
         self.grad_on_epoch = int(grad_on_epoch)
 
     def on_epoch_begin(self, epoch, logs=None):
-        if epoch < self.warmup:
-            ALPHA_TF.assign(0.0)
-            MS_ENABLE_TF.assign(False)
-            MS_GRAD_ON.assign(False)
-        else:
-            t = epoch - self.warmup
-            frac = tf.clip_by_value(tf.cast(t, tf.float32)/float(self.epochs_to_target), 0.0, 1.0)
-            ALPHA_TF.assign(self.target * frac)
-            MS_ENABLE_TF.assign(epoch >= self.ms_enable_epoch)
-            MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
-        print(f"[AlphaScheduler] epoch={epoch}  alpha={float(ALPHA_TF.numpy()):.3f}  ms_enable={bool(MS_ENABLE_TF.numpy())}  grad_on={bool(MS_GRAD_ON.numpy())}")
+        # epoch startet bei 0 -> schon in Epoche 1 (epoch=0) alpha=0.02
+        a = (epoch + 1) * self.step
+        a = min(a, self.target)
+        ALPHA_TF.assign(a)
 
+        # MS-SSIM ab Start erlauben, aber Gradienten z.B. erst ab Ep. 9 (anpassbar)
+        MS_ENABLE_TF.assign(epoch >= self.ms_enable_epoch)
+        MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
+
+        print(f"[AlphaScheduler] epoch={epoch}  alpha={float(ALPHA_TF.numpy()):.3f}  "
+              f"ms_enable={bool(MS_ENABLE_TF.numpy())}  grad_on={bool(MS_GRAD_ON.numpy())}")
 
 # Checkpoints + Meta
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
@@ -538,20 +528,11 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 # Callback-Liste
 cbs = [
-    AlphaScheduler(
-        target=ALPHA_TARGET,        # testing
-        warmup=4,           # 4 Epochen reines MAE
-        epochs_to_target=8, # langsam bis 0.10
-        ms_enable_epoch=8,  # MS überhaupt erst ab Epoche 8 berechnen
-        grad_on_epoch=10  # Grad weiter AUS lassen
-    ),
-    WeightNaNGuard(),
-    LossNaNGuard(),
-    callbacks.TerminateOnNaN(),
+    AlphaScheduler(step=0.02, target=0.7, ms_enable_epoch=0, grad_on_epoch=8),
+    WeightNaNGuard(), LossNaNGuard(), callbacks.TerminateOnNaN(),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6, verbose=0),
     callbacks.EarlyStopping(monitor="val_loss", patience=16, restore_best_weights=True, verbose=0),
-    ckpt_best, bf,
-    CompactLogger(),
+    ckpt_best, bf, CompactLogger(),
 ]
 
 # %%
