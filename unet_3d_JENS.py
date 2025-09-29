@@ -190,7 +190,7 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 # ==============================
 # 5) Loss & Metriken
 # ==============================
-ALPHA_TARGET = 0.1
+ALPHA_TARGET = 0.0
 ALPHA = 0.0
 
 ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
