@@ -587,7 +587,7 @@ cbs = [
         warmup=4,           # 4 Epochen reines MAE
         epochs_to_target=8, # langsam bis 0.10
         ms_enable_epoch=8,  # MS überhaupt erst ab Epoche 8 berechnen
-        grad_on_epoch=9999  # Grad weiter AUS lassen
+        grad_on_epoch=10  # Grad weiter AUS lassen
     ),
     WeightNaNGuard(),
     LossNaNGuard(),
