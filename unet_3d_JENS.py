@@ -64,42 +64,53 @@ preproc_valid_slice = SumScaleNormalizer(
 )
 
 def map_slice_wise(normalizer):
-    # x,y: (D,H,W,C) für ein einzelnes Sample
+    def _finite01(t):
+        t = tf.cast(t, tf.float32)
+        t = tf.where(tf.math.is_finite(t), t, tf.zeros_like(t))
+        return tf.clip_by_value(t, 0.0, 1.0)
+
     def _fn(x, y):
         x_norm, y_norm = normalizer.map(x, y)  # batch_mode=True → pro Slice
+        x_norm = _finite01(x_norm)
+        y_norm = _finite01(y_norm)
         return x_norm, y_norm
     return _fn
 
 
+def nan_debug(x, y):
+    nx = tf.reduce_sum(tf.cast(~tf.math.is_finite(x), tf.int32))
+    ny = tf.reduce_sum(tf.cast(~tf.math.is_finite(y), tf.int32))
+    tf.debugging.assert_equal(nx, 0, message="NaN/Inf in X batch")
+    tf.debugging.assert_equal(ny, 0, message="NaN/Inf in Y batch")
+    return x, y
+
 def make_ds(X, Y, shuffle=True, preproc=None, limit=None, cache_in_memory=True):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
+
+    # 1) Preprocessing pro Sample
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)),
                     num_parallel_calls=tf.data.AUTOTUNE)
+
+    # 2) NaN/Inf-Check NACH dem Preproc (genau hier einfügen)
+    ds = ds.map(nan_debug, num_parallel_calls=tf.data.AUTOTUNE)
+
+    # 3) Rest wie gehabt
     if shuffle:
-        ds = ds.shuffle(buffer_size=X.shape[0])
+        ds = ds.shuffle(buffer_size=X.shape[0], reshuffle_each_iteration=True)
     if limit is not None:
-        ds = ds.take(int(limit))   # <- WICHTIG: vor cache()
+        ds = ds.take(int(limit))
+    ds = ds.batch(BATCH_SIZE, drop_remainder=False)
     if cache_in_memory:
         ds = ds.cache()
-    ds = ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+    ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
 
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(
-    X_train, Y_train,
-    shuffle=True,
-    preproc=map_slice_wise(preproc_train_slice),
-    limit=None  # << volle Trainingsdaten
-)
+val_ds  = make_ds(X_val,  Y_val,  shuffle=False, preproc=map_slice_wise(preproc_valid_slice), check_nans=True)
+test_ds = make_ds(X_test, Y_test, shuffle=False, preproc=map_slice_wise(preproc_valid_slice), check_nans=True)
 
-val_ds = make_ds(
-    X_val, Y_val,
-    shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice),
-    limit=None  # << volle Val-Daten
-)
 
 test_ds = make_ds(
     X_test, Y_test,
@@ -200,19 +211,23 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     MS_EPS = 1e-5
     yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
     yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
-    # leichtes Dithering gegen konstante Fenster
+
     noise = tf.constant(1e-4, yt.dtype)
     yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=yt.dtype)
     yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=yp.dtype)
 
-    # energie-basiertes Sampling: vermeidet leere Slices
+    # --- NEU: Finite-Schutz ---
+    yt = tf.where(tf.math.is_finite(yt), yt, tf.zeros_like(yt))
+    yp = tf.where(tf.math.is_finite(yp), yp, tf.zeros_like(yp))
+    # ---------------------------
+
     B = tf.shape(yt)[0]; D = tf.shape(yt)[1]
     energy = tf.reduce_mean(tf.abs(yt) + tf.abs(yp), axis=[2,3,4])  # (B,D)
     k_eff = tf.minimum(k, D)
     idx = tf.math.top_k(energy, k=k_eff).indices
     idx = tf.stop_gradient(idx)
 
-    ygt = tf.gather(yt, idx, batch_dims=1)  # (B,k,H,W,C)
+    ygt = tf.gather(yt, idx, batch_dims=1)
     ypd = tf.gather(yp, idx, batch_dims=1)
     yt2 = tf.reshape(ygt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
     yp2 = tf.reshape(ypd, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
@@ -221,6 +236,7 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
     ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
     ms = tf.clip_by_value(ms, 0.0, 1.0)
     return 1.0 - tf.reduce_mean(ms)
+
 
 # steuert, ob der MS-SSIM-Term Gradienten liefert (True ab gewuenschtem Zeitpunkt)
 MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_grad_on")
