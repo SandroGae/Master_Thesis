@@ -71,21 +71,24 @@ def map_slice_wise(normalizer):
     return _fn
 
 
-def make_ds(X, Y, shuffle=True, preproc=None):
-    ds = tf.data.Dataset.from_tensor_slices((X, Y))  # Element: (D,H,W,1)
+def make_ds(X, Y, shuffle=True, preproc=None, limit=None, cache_in_memory=True):
+    ds = tf.data.Dataset.from_tensor_slices((X, Y))
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)),
-                    num_parallel_calls=tf.data.AUTOTUNE).cache()
+                    num_parallel_calls=tf.data.AUTOTUNE)
     if shuffle:
         ds = ds.shuffle(buffer_size=X.shape[0])
+    if limit is not None:
+        ds = ds.take(int(limit))   # <- WICHTIG: vor cache()
+    if cache_in_memory:
+        ds = ds.cache()
     ds = ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
     return ds
 
+
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice))
-val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice))
-train_ds = train_ds.take(20)   # nur 20 Batches für schnellen Test
-val_ds   = val_ds.take(5)
+train_ds = make_ds(X_train, Y_train, True,  preproc=map_slice_wise(preproc_train_slice), limit=20)
+val_ds   = make_ds(X_val,   Y_val,   False, preproc=map_slice_wise(preproc_valid_slice), limit=5)
 test_ds  = make_ds(X_test,  Y_test,  False, preproc=map_slice_wise(preproc_valid_slice))
 print(">>> Datasets created")
 
@@ -94,7 +97,7 @@ print(">>> Datasets created")
 # ========= Defining 3D-U-Net Architecture ========
 
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
-    ki  = "glorot_uniform"
+    ki  = "he_normal"
     kr  = regularizers.l2(1e-5)
     kc  = constraints.MaxNorm(3.0)
 
@@ -207,10 +210,12 @@ def ms_ssim_loss_sampled(y_true, y_pred, k=K_SLICES):
 def combined_loss(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     l_mae = tf.reduce_mean(tf.abs(yt - yp))
-    l_ms  = ms_ssim_loss_sampled(yt, yp, k=K_SLICES)
-    if not tf.reduce_all(tf.math.is_finite(l_ms)):
-        return l_mae
-    return (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms
+    return tf.cond(
+        ALPHA_TF > 0.0,
+        lambda: (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * ms_ssim_loss_sampled(yt, yp, k=K_SLICES),
+        lambda: l_mae
+    )
+
 
 
 def mae_metric(y_true, y_pred):
@@ -532,10 +537,11 @@ opt = AdamW(
 )
 
 
+metric_list = ["mae", psnr_metric]  # schlank & stabil
 model.compile(optimizer=opt, loss=combined_loss,
-              metrics=["mae", psnr_metric, ms_ssim_metric], jit_compile=False)
+              metrics=metric_list, jit_compile=False)
 
-model.run_eagerly = True  # nur zum Debuggen, danach wieder False
+model.run_eagerly = False
 
 class LogAlphaAtEnd(callbacks.Callback):
     def on_train_end(self, logs=None):
