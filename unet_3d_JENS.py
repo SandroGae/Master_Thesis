@@ -291,7 +291,9 @@ class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
 # 6) Compile
 # ==============================
 
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(
+
     optimizer=AdamW(learning_rate=1e-4),
     loss=CombinedMAE_SSIM_Loss(alpha=0.7),   # <--- neue Loss-Klasse
     metrics=[
@@ -408,7 +410,7 @@ class BestFinalizeCallback(callbacks.Callback):
             "epochs_planned": self.run_meta.get("epochs"),
             "early_stopping": self.run_meta.get("early_stopping"),
             "data_prep": self.run_meta.get("data_prep"),
-            "alpha_ssim": self.run_meta.get("alpha_ssim"),,
+            "alpha_ssim": self.run_meta.get("alpha_ssim"),
             "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
             "best_psnr_metric": self.best_psnr,
             "input_shape": inp_shape,

@@ -6,6 +6,10 @@
 #       format_name: percent
 #       format_version: '1.3'
 #       jupytext_version: 1.17.3
+#   kernelspec:
+#     display_name: dl
+#     language: python
+#     name: python3
 # ---
 
 # %%
@@ -263,6 +267,7 @@ opt = AdamW(
     amsgrad=False
 )
 
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(
     optimizer=opt,
     loss=mae_loss,
