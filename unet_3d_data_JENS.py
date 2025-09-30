@@ -74,8 +74,10 @@ def _load_hwN(fp):
         low  = f["/low_count/data"][:].transpose(2, 0, 1)
     return high, low
 
-def prepare_in_memory_5to5(data_dir = Path.home() / "data" / "original_data",
-    size=WINDOW_SIZE, group_len=GROUP_LEN, dtype=np.float32, use_vst=False):
+def prepare_in_memory_5to5(
+    data_dir=Path.home() / "data" / "original_data",
+    size=WINDOW_SIZE, group_len=GROUP_LEN, dtype=np.float32
+):  # <- use_vst entfernt
     data = {
         "train": _load_hwN(data_dir / "training_data.hdf5"),
         "val":   _load_hwN(data_dir / "validation_data.hdf5"),
@@ -86,8 +88,8 @@ def prepare_in_memory_5to5(data_dir = Path.home() / "data" / "original_data",
         high, low = data[split]
         X, Y = build_sequential_dataset(low, high, size=size, group_len=group_len, dtype=dtype)
         results[split] = (X, Y)
-    meta = {"use_vst": bool(use_vst), "clip_val": None}
-    return results, meta
+    return results
+
 
 
 # %%
