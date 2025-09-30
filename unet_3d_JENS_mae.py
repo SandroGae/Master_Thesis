@@ -507,7 +507,7 @@ class WeightNaNGuard(callbacks.Callback):
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE, "epochs": EPOCHS,
-    "early_stopping": {"monitor":"val_loss","patience":10},
+    "early_stopping": {"monitor":"val_loss","patience":20},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
 }
 bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta, code_name="AUTO")

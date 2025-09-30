@@ -443,7 +443,7 @@ ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
-    "early_stopping": {"monitor":"val_loss","patience":10},
+    "early_stopping": {"monitor":"val_loss","patience":20},
     "data_prep": {"use_vst": False, "size": 5, "group_len": 41, "dtype": "float32"},
     "ALPHA": ALPHA,
 }
@@ -460,7 +460,7 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 cbs = [
     ckpt_best, bf,
-    callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=0),
+    callbacks.EarlyStopping(monitor="val_loss", patience=20, restore_best_weights=True, verbose=0),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=0),
 ]
 
