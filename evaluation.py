@@ -173,7 +173,7 @@ def main():
     model_path = pick_version(ckpt_dir)
 
     print(f"\n>> Lade Modell: {model_path}")
-    model = tf.keras.models.load_model(model_path, compile=False)
+    model = tf.keras.models.load_model(model_path, compile=False, safe_mode = False)
 
     print(">> Baue Test-Dataset…")
     test_ds, input_shape = build_test_dataset(size=5, group_len=41, dtype=np.float32, batch_size=4)
