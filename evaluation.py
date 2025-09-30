@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from unet_3d_data import prepare_in_memory_5to5
+from unet_3d_data_JENS import prepare_in_memory_5to5
 
 DATA_ROOT = Path.home() / "data"
 EVAL_ROOT = DATA_ROOT  # Verzeichnis für Ausgabe
