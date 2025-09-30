@@ -171,68 +171,58 @@ print(">>> Datasets created")
 
 # %%
 # ==============================
-# 4) Modell-Definition (3D U-Net) – FLACH & STABIL
+# 4) Modell-Definition (3D U-Net)
 # ==============================
-def conv_block(x, filters, k=(1,3,3), p="same", drop=0.05):
-    """Conv3D -> BN -> LeakyReLU (x2) + Residual, optional SpatialDropout3D."""
-    kr = regularizers.l2(1e-6)
-    kc = constraints.MaxNorm(2.0)
 
-    def conv_bn_lrelu(z, f):
-        z = layers.Conv3D(
-            f, k, padding=p, use_bias=False,
-            kernel_initializer="he_normal",
-            kernel_regularizer=kr, kernel_constraint=kc
-        )(z)
-        z = layers.BatchNormalization()(z)
-        z = layers.LeakyReLU(negative_slope=0.1)(z)
-        return z
+def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
+    ki  = "he_normal"                     # passt zu ELU
+    kr  = regularizers.l2(1e-5)
+    kc  = constraints.MaxNorm(3.0)
 
-    y = conv_bn_lrelu(x, filters)
-    y = conv_bn_lrelu(y, filters)
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer=ki, use_bias=False,   # <- bias aus
+                      kernel_regularizer=kr, kernel_constraint=kc)(x)
+    x = layers.LayerNormalization(epsilon=1e-5)(x)              # dtype explizit nicht nötig
+    x = layers.ELU()(x)
 
-    if drop and drop > 0.0:
-        y = layers.SpatialDropout3D(drop)(y)
-
-    # Residual Pfad: falls Kanäle nicht passen, 1x1x1-Projektion
-    if x.shape[-1] != filters:
-        x = layers.Conv3D(filters, (1,1,1), padding=p, use_bias=False)(x)
-        x = layers.BatchNormalization()(x)
-
-    return layers.Add()([x, y])
-
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer=ki, use_bias=False,   # <- bias aus
+                      kernel_regularizer=kr, kernel_constraint=kc)(x)
+    x = layers.LayerNormalization(epsilon=1e-5)(x)
+    x = layers.ELU()(x)
+    return x
 
 def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
-    """Sehr flaches 3D-UNet: 2 Down-/Up-Stufen, nur H/W-Operationen."""
     inputs = layers.Input(shape=input_shape)
 
-    # Encoder (nur H,W poolen)
-    c1 = conv_block(inputs, base_filters,   k=(1,3,3), drop=0.05)
+    c1 = conv_block(inputs, base_filters)
     p1 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c1)
 
-    c2 = conv_block(p1,     base_filters*2, k=(1,3,3), drop=0.05)
+    c2 = conv_block(p1, base_filters*2)
     p2 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c2)
 
-    # Bottleneck
-    bn = conv_block(p2,     base_filters*4, k=(1,3,3), drop=0.05)
+    c3 = conv_block(p2, base_filters*4)
+    p3 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c3)
 
-    # Decoder (nur H,W upsamplen)
-    u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
-    u2 = layers.Concatenate()([u2, c2])
-    c3 = conv_block(u2, base_filters*2, k=(1,3,3), drop=0.05)
+    bn = conv_block(p3, base_filters*8)
 
-    u1 = layers.Conv3DTranspose(base_filters,   kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c3)
-    u1 = layers.Concatenate()([u1, c1])
-    c4 = conv_block(u1, base_filters, k=(1,3,3), drop=0.05)
+    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
+    u3 = layers.Concatenate()()([u3, c3])  # oder layers.Concatenate()([u3, c3])
+    c4 = conv_block(u3, base_filters*4)
 
-    # Output: Sigmoid in [0,1]
-    out = layers.Conv3D(1, (1,1,1), activation="sigmoid")(c4)
-    out = layers.Lambda(lambda z: tf.clip_by_value(tf.cast(z, tf.float32), 0.0, 1.0))(out)
+    u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c4)
+    u2 = layers.Concatenate()()([u2, c2])
+    c5 = conv_block(u2, base_filters*2)
 
-    return models.Model(inputs, out, name="UNet3D")
+    u1 = layers.Conv3DTranspose(base_filters, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c5)
+    u1 = layers.Concatenate()()([u1, c1])
+    c6 = conv_block(u1, base_filters)
 
-# Modell instanziieren – SCHMAL & FLACH
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=8)
+    # Output: direkt [0,1] via sigmoid (keine Lambda nötig)
+    outputs = layers.Conv3D(1, (1,1,1), activation="sigmoid",
+                            kernel_initializer="glorot_uniform")(c6)
+    return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
+
 
 
 # %%
@@ -418,7 +408,7 @@ class BestFinalizeCallback(callbacks.Callback):
             "epochs_planned": self.run_meta.get("epochs"),
             "early_stopping": self.run_meta.get("early_stopping"),
             "data_prep": self.run_meta.get("data_prep"),
-            "alpha_msssim": self.run_meta.get("alpha_msssim"),
+            "alpha_ssim": self.run_meta.get("alpha_ssim"),,
             "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
             "best_psnr_metric": self.best_psnr,
             "input_shape": inp_shape,
@@ -540,9 +530,10 @@ run_meta = {
     "batch_size": BATCH_SIZE, "epochs": EPOCHS,
     "early_stopping": {"monitor":"val_loss","patience":20},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-    "alpha_msssim": 0.7,
-    "loss_components": {"mae": 0.3, "msssim": 0.7}
+    "alpha_ssim": 0.7,
+    "loss_components": {"mae": 0.3, "ssim": 0.7}
 }
+
 
 bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta, code_name="AUTO")
 ckpt_best = callbacks.ModelCheckpoint(

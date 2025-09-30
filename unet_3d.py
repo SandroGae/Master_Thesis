@@ -62,8 +62,8 @@ INPUT_SHAPE = X_train.shape[1:]  # (5, H, W, 1)
 # %%
 # ======== Making Tensorflow dataset =======
 
-BATCH_SIZE = 16
-EPOCHS     = 3
+BATCH_SIZE = 32
+EPOCHS     = 200
 
 # Sanity check for INPUT_SHAPE
 D,H,W,C = INPUT_SHAPE
@@ -90,19 +90,27 @@ print(">>> Datasets created")
 # %%
 # ========= Defining 3D-U-Net Architecture ========
 
-def conv_block(x, filters, kernel_size=(3,3,3), padding="same", activation="relu"):
-    x = layers.Conv3D(filters, kernel_size, padding=padding)(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation(activation)(x)
-    x = layers.Conv3D(filters, kernel_size, padding=padding)(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Activation(activation)(x)
+def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
+    ki  = "he_normal"                     # passt zu ELU
+    kr  = regularizers.l2(1e-5)
+    kc  = constraints.MaxNorm(3.0)
+
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer=ki, use_bias=False,   # <- bias aus
+                      kernel_regularizer=kr, kernel_constraint=kc)(x)
+    x = layers.LayerNormalization(epsilon=1e-5)(x)              # dtype explizit nicht nötig
+    x = layers.ELU()(x)
+
+    x = layers.Conv3D(filters, kernel_size, padding=padding,
+                      kernel_initializer=ki, use_bias=False,   # <- bias aus
+                      kernel_regularizer=kr, kernel_constraint=kc)(x)
+    x = layers.LayerNormalization(epsilon=1e-5)(x)
+    x = layers.ELU()(x)
     return x
 
-def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
+def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
     inputs = layers.Input(shape=input_shape)
 
-    # Encoder (pool only over H,W)
     c1 = conv_block(inputs, base_filters)
     p1 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c1)
 
@@ -112,24 +120,24 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=32):
     c3 = conv_block(p2, base_filters*4)
     p3 = layers.MaxPooling3D(pool_size=(1,2,2), strides=(1,2,2))(c3)
 
-    # Bottleneck
     bn = conv_block(p3, base_filters*8)
 
-    # Decoder (upsample only over H,W)
-    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn) # bottleneck
-    u3 = layers.concatenate([u3, c3])
+    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
+    u3 = layers.Concatenate()()([u3, c3])  # oder layers.Concatenate()([u3, c3])
     c4 = conv_block(u3, base_filters*4)
 
     u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c4)
-    u2 = layers.concatenate([u2, c2])
+    u2 = layers.Concatenate()()([u2, c2])
     c5 = conv_block(u2, base_filters*2)
 
     u1 = layers.Conv3DTranspose(base_filters, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c5)
-    u1 = layers.concatenate([u1, c1])
+    u1 = layers.Concatenate()()([u1, c1])
     c6 = conv_block(u1, base_filters)
 
-    outputs = layers.Conv3D(1, (1,1,1), dtype="float32", activation="sigmoid")(c6)
-    return models.Model(inputs, outputs, name="3D_U-Net")
+    # Output: direkt [0,1] via sigmoid (keine Lambda nötig)
+    outputs = layers.Conv3D(1, (1,1,1), activation="sigmoid",
+                            kernel_initializer="glorot_uniform")(c6)
+    return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
 
 
 
