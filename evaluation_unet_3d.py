@@ -40,11 +40,13 @@ def _auto_script_name() -> str:
     return _sanitize_name(os.path.splitext(os.path.basename(path))[0])
 
 def compute_ms_ssim(Y_true: np.ndarray, Y_pred: np.ndarray) -> float:
-    # (B, D, H, W, C) -> (B*D, H, W, C)
-    yt2 = tf.reshape(tf.convert_to_tensor(Y_true), (-1, Y_true.shape[2], Y_true.shape[3], Y_true.shape[4]))
-    yp2 = tf.reshape(tf.convert_to_tensor(Y_pred), (-1, Y_pred.shape[2], Y_pred.shape[3], Y_pred.shape[4]))
+    yt = tf.convert_to_tensor(Y_true, dtype=tf.float32)
+    yp = tf.convert_to_tensor(Y_pred, dtype=tf.float32)
+    yt2 = tf.reshape(yt, (-1, yt.shape[2], yt.shape[3], yt.shape[4]))
+    yp2 = tf.reshape(yp, (-1, yp.shape[2], yp.shape[3], yp.shape[4]))
     ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
     return float(tf.reduce_mean(ms).numpy())
+
 
 # ========== Auswahl ==========
 def pick_checkpoint_dir() -> Path:
@@ -125,56 +127,43 @@ def collect_preds_and_targets(model, dataset, max_batches=None):
             break
     return np.concatenate(y_true, axis=0), np.concatenate(y_pred, axis=0)
 
-# ========== val_loss aus Meta/Name lesen ==========
-def _read_val_loss_from_meta(model_path: Path) -> Optional[float]:
-    meta_path = model_path.with_suffix(".json")
-    if not meta_path.exists():
-        return None
-    try:
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
-        if isinstance(meta, dict):
-            if "val_loss" in meta: return float(meta["val_loss"])
-            if "best_val_loss" in meta: return float(meta["best_val_loss"])
-            hist = meta.get("history", {})
-            if isinstance(hist, dict) and "val_loss" in hist and hist["val_loss"]:
-                try:
-                    return float(np.min(hist["val_loss"]))
-                except Exception:
-                    return float(hist["val_loss"][-1])
-    except Exception:
-        pass
-    return None
-
-def _read_val_loss_from_name(model_path: Path) -> Optional[float]:
-    stem = model_path.stem.lower()
-    m = re.search(r"(?:val[_-]?loss|valloss)\s*=?\s*([0-9]*\.?[0-9]+(?:e[-+]?\d+)?)", stem)
-    if m:
-        try: return float(m.group(1))
-        except Exception: return None
-    return None
-
-def _build_eval_filename(model_path: Path, psnr_value: float, val_loss_value: Optional[float], prefix: Optional[str] = None) -> str:
+# ========== Erstelle File Namen ==========
+def _build_eval_filename(model_path: Path, mae_value: float, psnr_value: float, prefix: Optional[str] = None) -> str:
+    import re
     stem = model_path.stem
+
+    # 1) Training-Teile aus dem Modellnamen entfernen
+    stem_clean = re.sub(r"_PSNR_[0-9.]+", "", stem)                 # Training-PSNR weg
+    stem_clean = re.sub(r"_val(?:loss)?[0-9.e+-]+", "", stem_clean) # ggf. val/val_loss weg
+
+    # 2) Prefix sauber voranstellen, aber Doppelungen vermeiden
     pref = _sanitize_name(prefix) if prefix else _auto_script_name()
-    if val_loss_value is not None:
-        return f"{pref}_{stem}_val{val_loss_value:.6f}_psnr{psnr_value:.2f}.json"
+    if stem_clean.lower().startswith(pref.lower() + "_"):
+        name = stem_clean
     else:
-        return f"{pref}_{stem}_psnr{psnr_value:.2f}.json"
+        name = f"{pref}_{stem_clean}"
+
+    # 3) Nur Testkennzahlen anhängen
+    return f"{name}_mae{mae_value:.6f}_psnr{psnr_value:.2f}.json"
+
+
 
 # ========== Ergebnisse speichern ==========
 def save_results(model_path: Path, results: dict):
     out_dir = EVAL_ROOT / "model_evaluations"
     out_dir.mkdir(parents=True, exist_ok=True)
-    val_loss = _read_val_loss_from_meta(model_path)
-    if val_loss is None:
-        val_loss = _read_val_loss_from_name(model_path)
+
+    mae_value  = float(results.get("mae", 0.0))
     psnr_value = float(results.get("psnr", 0.0))
-    out_name = _build_eval_filename(model_path, psnr_value, val_loss)
+
+    out_name = _build_eval_filename(model_path, mae_value, psnr_value)  # <— nur Testwerte
     out_path = out_dir / out_name
+
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
+
     print(f"\n>> Ergebnisse gespeichert unter: {out_path}")
+
 
 # ========== Main ==========
 def main():
