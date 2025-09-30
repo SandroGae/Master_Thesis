@@ -17,6 +17,7 @@ import os, sys, inspect, json, socket, getpass, platform, subprocess, time, uuid
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
+tf.config.optimizer.set_jit(False)  # global XLA-JIT aus
 
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 from tensorflow.keras.optimizers import AdamW
@@ -299,12 +300,9 @@ class CombinedMAE_MSSSIM_Loss(tf.keras.losses.Loss):
 model.compile(
     optimizer=AdamW(learning_rate=1e-4),
     loss=CombinedMAE_MSSSIM_Loss(alpha=0.7),
-    metrics=[
-        msssim_metric,
-        tf.keras.metrics.MeanAbsoluteError(name="mae"),
-        tf.keras.metrics.MeanSquaredError(name="mse"),
-        psnr_metric,
-    ]
+    metrics=[msssim_metric, tf.keras.metrics.MeanAbsoluteError(name="mae"),
+             tf.keras.metrics.MeanSquaredError(name="mse"), psnr_metric],
+    jit_compile=False,   # <<< XLA aus
 )
 
 
