@@ -22,7 +22,7 @@ mixed_precision.set_global_policy("mixed_float16") # Increases performance witho
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models, callbacks
-from unet_3d_data import prepare_in_memory_5to5
+from unet_3d_data import prepare_in_memory
 from pathlib import Path
 
 import sys, inspect
@@ -43,7 +43,7 @@ AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depend
 # ===== Loading Data in RAM =====
 
 print(">>> Phase 1: Starting data prep on CPU...")
-(results, size) = prepare_in_memory_5to5(
+(results, size) = prepare_in_memory(
     data_dir=Path.home() / "data" / "original_data",
     use_vst=False, # No anscombe transform
     size=5,

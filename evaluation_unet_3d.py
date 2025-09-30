@@ -6,24 +6,24 @@
 #       format_name: percent
 #       format_version: '1.3'
 #       jupytext_version: 1.17.3
-#   kernelspec:
-#     display_name: dl
-#     language: python
-#     name: python3
 # ---
 
 # %%
-# evaluation.py
+# evaluation_other.py
 import os, sys, re, json
 from typing import Optional, Tuple
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
-from unet_3d_data_JENS import prepare_in_memory_5to5
+# --- robust import: neue oder alte Funktionsnamen ---
+try:
+    from unet_3d_data import prepare_in_memory  # du sagtest, du hast umbenannt
+except ImportError:
+    from unet_3d_data import prepare_in_memory_5to5 as prepare_in_memory  # fallback
 
 DATA_ROOT = Path.home() / "data"
-EVAL_ROOT = DATA_ROOT  # Verzeichnis für Ausgabe
+EVAL_ROOT = DATA_ROOT  # Ausgabeverzeichnis
 
 # ========== Helfer ==========
 def _sanitize_name(s: str) -> str:
@@ -46,7 +46,7 @@ def compute_ms_ssim(Y_true: np.ndarray, Y_pred: np.ndarray) -> float:
     ms = tf.image.ssim_multiscale(yt2, yp2, max_val=1.0)
     return float(tf.reduce_mean(ms).numpy())
 
-# ========== Auswahl der Dateien ==========
+# ========== Auswahl ==========
 def pick_checkpoint_dir() -> Path:
     if not DATA_ROOT.exists():
         print(f"{DATA_ROOT} existiert nicht."); sys.exit(1)
@@ -76,10 +76,8 @@ def pick_version(ckpt_dir: Path) -> Path:
         print(f"Keine Modelle mit 'V<Zahl>' im Namen in {ckpt_dir} gefunden.")
         sys.exit(1)
 
-    # Sortieren nach der ersten gefundenen V-Zahl
     def extract_vnum(name: str) -> int:
-        m = pat.search(name)
-        return int(m.group(1)) if m else 999999
+        m = pat.search(name); return int(m.group(1)) if m else 10**9
     models.sort(key=lambda p: extract_vnum(p.name))
 
     print(f"Wähle Modell in {ckpt_dir.name}:")
@@ -92,20 +90,31 @@ def pick_version(ckpt_dir: Path) -> Path:
             if 1 <= idx <= len(models):
                 return models[idx - 1]
 
-
 # ========== Test-Dataset ==========
-def build_test_dataset(size=5, group_len=41, dtype=np.float32, batch_size=4) -> Tuple[tf.data.Dataset, Tuple[int,int,int,int]]:
-    results = prepare_in_memory_5to5(
+def _call_prepare_in_memory(size=5, group_len=41, dtype=np.float32):
+    """
+    Robust gegen verschiedene Rückgabe-Signaturen deiner Prep-Funktion.
+    - Neuer Stil: returns (results, meta)
+    - Alter Stil: returns results
+    """
+    out = prepare_in_memory(
         data_dir=Path.home() / "data" / "original_data",
-        size=size,
-        group_len=group_len,
-        dtype=dtype,
+        size=size, group_len=group_len, dtype=dtype,  # weitere kwargs werden ignoriert, falls nicht vorhanden
     )
+    if isinstance(out, tuple) and len(out) == 2 and isinstance(out[0], dict):
+        results = out[0]
+    else:
+        results = out
+    return results
+
+def build_test_dataset(size=5, group_len=41, dtype=np.float32, batch_size=4) -> Tuple[tf.data.Dataset, Tuple[int,int,int,int]]:
+    results = _call_prepare_in_memory(size=size, group_len=group_len, dtype=dtype)
     X_test, Y_test = results["test"]
-    ds = tf.data.Dataset.from_tensor_slices((X_test, Y_test)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    ds = tf.data.Dataset.from_tensor_slices((X_test, Y_test))
+    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return ds, X_test.shape[1:]  # (D,H,W,C)
 
-# ========== Vorhersagen sammeln ==========
+# ========== Vorhersagen ==========
 def collect_preds_and_targets(model, dataset, max_batches=None):
     y_true, y_pred = [], []
     for b, (xb, yb) in enumerate(dataset):
@@ -116,7 +125,7 @@ def collect_preds_and_targets(model, dataset, max_batches=None):
             break
     return np.concatenate(y_true, axis=0), np.concatenate(y_pred, axis=0)
 
-# ========== val_loss aus Meta/Name lesen (optional für Dateinamen) ==========
+# ========== val_loss aus Meta/Name lesen ==========
 def _read_val_loss_from_meta(model_path: Path) -> Optional[float]:
     meta_path = model_path.with_suffix(".json")
     if not meta_path.exists():
@@ -139,7 +148,7 @@ def _read_val_loss_from_meta(model_path: Path) -> Optional[float]:
 
 def _read_val_loss_from_name(model_path: Path) -> Optional[float]:
     stem = model_path.stem.lower()
-    m = re.search(r"(?:val[_-]?loss|valloss)\s*=?\s*([0-9]*\.?[0-9]+)", stem)
+    m = re.search(r"(?:val[_-]?loss|valloss)\s*=?\s*([0-9]*\.?[0-9]+(?:e[-+]?\d+)?)", stem)
     if m:
         try: return float(m.group(1))
         except Exception: return None
@@ -173,26 +182,24 @@ def main():
     model_path = pick_version(ckpt_dir)
 
     print(f"\n>> Lade Modell: {model_path}")
-    model = tf.keras.models.load_model(model_path, compile=False, safe_mode = False)
+    # safe_mode=False wegen Lambda/Custom Layers im gespeicherten Modell
+    model = tf.keras.models.load_model(model_path, compile=False, safe_mode=False)
 
     print(">> Baue Test-Dataset…")
     test_ds, input_shape = build_test_dataset(size=5, group_len=41, dtype=np.float32, batch_size=4)
 
     Y_true, Y_pred = collect_preds_and_targets(model, test_ds, max_batches=None)
 
-    # Direkt im [0,1]-Raum auswerten (keine VST/Anscombe mehr)
-    Y_true_m = Y_true
-    Y_pred_m = Y_pred
-
-    yt = Y_true_m.ravel()
-    yp = Y_pred_m.ravel()
+    # Auswertung direkt im [0,1]-Raum (keine Anscombe/SumScale)
+    yt = Y_true.ravel()
+    yp = Y_pred.ravel()
     mse  = float(np.mean((yt - yp) ** 2))
     mae  = float(np.mean(np.abs(yt - yp)))
     rmse = float(np.sqrt(mse))
-    psnr = float(tf.image.psnr(Y_true_m, Y_pred_m, max_val=1.0).numpy().mean())
-    ms_ssim = compute_ms_ssim(Y_true_m, Y_pred_m)
+    psnr = float(tf.image.psnr(Y_true, Y_pred, max_val=1.0).numpy().mean())
+    ms_ssim = compute_ms_ssim(Y_true, Y_pred)
 
-    print("\n=== Evaluation auf Test Set ===")
+    print("\n=== Evaluation auf Test Set (Other Model) ===")
     print(f"Modell       : {model_path.name}")
     print(f"INPUT_SHAPE  : {input_shape}")
     print(f"MSE          : {mse:.6f}")

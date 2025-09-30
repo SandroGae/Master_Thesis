@@ -99,7 +99,7 @@ def build_sequential_dataset(low_data, high_data, size, group_len, dtype=np.floa
 
 
 # %%
-def prepare_in_memory_5to5(
+def prepare_in_memory(
     data_dir=Path("data") / "original_data",
     size=5,
     group_len=41,
