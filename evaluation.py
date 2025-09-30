@@ -66,15 +66,21 @@ def pick_checkpoint_dir() -> Path:
 
 def pick_version(ckpt_dir: Path) -> Path:
     """
-    Listet NUR Modelle, deren Name mit 'V<Zahl>_' beginnt, z.B. V1_..., V12_..., und auf .keras endet.
+    Listet alle .keras-Modelle, die irgendwo im Namen ein 'V<Zahl>' enthalten.
+    Beispiel: V1_..., unet3d_V12_valloss..., fooV3bar.keras
     """
-    pat = re.compile(r"^V(\d+)_.*\.keras$", re.IGNORECASE)
-    models = [p for p in ckpt_dir.iterdir() if p.is_file() and p.suffix == ".keras" and pat.match(p.name)]
+    pat = re.compile(r"V(\d+)", re.IGNORECASE)
+    models = [p for p in ckpt_dir.iterdir()
+              if p.is_file() and p.suffix == ".keras" and pat.search(p.name)]
     if not models:
-        print(f"Keine Modelle der Form 'V<Zahl>_*.keras' in {ckpt_dir} gefunden."); sys.exit(1)
+        print(f"Keine Modelle mit 'V<Zahl>' im Namen in {ckpt_dir} gefunden.")
+        sys.exit(1)
 
-    # Nach der V-Nummer sortieren
-    models.sort(key=lambda p: int(re.match(r"^V(\d+)_", p.name, re.IGNORECASE).group(1)))
+    # Sortieren nach der ersten gefundenen V-Zahl
+    def extract_vnum(name: str) -> int:
+        m = pat.search(name)
+        return int(m.group(1)) if m else 999999
+    models.sort(key=lambda p: extract_vnum(p.name))
 
     print(f"Wähle Modell in {ckpt_dir.name}:")
     for i, p in enumerate(models, 1):
@@ -85,6 +91,7 @@ def pick_version(ckpt_dir: Path) -> Path:
             idx = int(s)
             if 1 <= idx <= len(models):
                 return models[idx - 1]
+
 
 # ========== Test-Dataset ==========
 def build_test_dataset(size=5, group_len=41, dtype=np.float32, batch_size=4) -> Tuple[tf.data.Dataset, Tuple[int,int,int,int]]:
