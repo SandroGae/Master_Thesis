@@ -20,7 +20,6 @@ import numpy as np
 # import matplotlib.pyplot as plt
 
 import tensorflow as tf
-from jens_stuff import SumScaleNormalizer, reset_random_seeds
 
 # %%
 # ================= Function for building 3D Datasets =================
