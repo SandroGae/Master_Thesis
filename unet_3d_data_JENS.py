@@ -13,8 +13,6 @@
 # ---
 
 # %%
-# WICHTIG: KEINE DATENAUGMENTATION in diesem code!!!!
-
 # ====== Imports ===
 import h5py
 from pathlib import Path
@@ -22,21 +20,20 @@ import numpy as np
 # import matplotlib.pyplot as plt
 
 import tensorflow as tf
-from jens_stuff import DatasetGenerator, SumScaleNormalizer, reset_random_seeds
+from jens_stuff import SumScaleNormalizer, reset_random_seeds
 
+# %%
+# ================= Function for building 3D Datasets =================
 
 # Variables
 WINDOW_SIZE = 5
 GROUP_LEN = 41
 
-
-# ================= Function for building 3D Datasets =================
-
 def build_sequential_dataset(low_data, high_data, size, group_len, dtype=np.float32):
     """
     Generates training data:
-      X: (B, size, H, W) = window of `size` Low-Count images
-      Y: (B, size, H, W) = Ground truth = window of `size` High-Count images (3D output)
+      X: (B, size, H, W) = Training data
+      Y: (B, size, H, W) = Ground truth
       N: Number of Pictrues in total
       H: Height of each image
       W: Width of each image
@@ -44,13 +41,13 @@ def build_sequential_dataset(low_data, high_data, size, group_len, dtype=np.floa
       group_len: Length of each block (41 for training/test/val)
     """
     assert low_data.shape == high_data.shape, "low/high must have identical shapes"
-    N, H, W = low_data.shape
+    train_size = low_data.shape[0]
     if size % 2 == 0 or size < 1:
         raise ValueError("`size` must be odd and >= 1 (e.g., 3, 5, 7)")
-    if N % group_len != 0:
-        raise ValueError(f"N={N} is not a multiple of group_len={group_len}.")
+    if train_size % group_len != 0:
+        raise ValueError(f"train_size = {train_size} is not a multiple of group_len = {group_len}.")
 
-    num_groups = N // group_len
+    num_groups = train_size // group_len
     X_list, Y_list = [], []
 
     for group_index in range(num_groups):
@@ -77,12 +74,8 @@ def _load_hwN(fp):
         low  = f["/low_count/data"][:].transpose(2, 0, 1)
     return high, low
 
-def prepare_in_memory_5to5(
-    data_dir = Path.home() / "data" / "original_data",
-    size=WINDOW_SIZE,
-    group_len=GROUP_LEN,
-    dtype=np.float32,
-):
+def prepare_in_memory_5to5(data_dir = Path.home() / "data" / "original_data",
+    size=WINDOW_SIZE, group_len=GROUP_LEN, dtype=np.float32):
     data = {
         "train": _load_hwN(data_dir / "training_data.hdf5"),
         "val":   _load_hwN(data_dir / "validation_data.hdf5"),
@@ -98,6 +91,7 @@ def prepare_in_memory_5to5(
 
 # %%
 # ===== Visualization of some samples =====
+
 """
 def show_window_pair_3d(X, Y, sample_idx, size=5, group_len=41):
 

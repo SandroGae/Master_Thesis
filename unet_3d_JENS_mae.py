@@ -25,9 +25,11 @@ from tensorflow.keras.optimizers import AdamW
 from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 
-# --- Repro & GPU ---
+# Making results reproducible
 seed = 0
 reset_random_seeds(seed)
+
+# Allocating VRAM as needed
 for g in tf.config.list_physical_devices('GPU'):
     try: tf.config.experimental.set_memory_growth(g, True)
     except: pass
@@ -39,11 +41,14 @@ AUTO = tf.data.AUTOTUNE
 # 1) Daten laden (CPU)
 # ==============================
 print(">>> Phase 1: Starting data prep on CPU...")
+
 results = prepare_in_memory_5to5(
     data_dir=Path.home() / "data" / "original_data",
     size=5, group_len=41, dtype=np.float32,
 )
+
 print(">>> Data preperation finished, all data in RAM")
+
 X_train, Y_train = results["train"]
 X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
@@ -59,15 +64,15 @@ EPOCHS     = 200
 preproc_train_slice = SumScaleNormalizer(
     scale_range=[5000, 15001], pre_offset=0.0,
     normalize_label=True,
-    axis=(1, 2, 3),      # reduziert H,W,C — NICHT D
-    batch_mode=True,     # pro Slice
+    batch_mode=True, 
+    axis=(1, 2, 3),      # To only normalize over H, W, Channel = 1
     clip_before=[0., float("inf")], clip_after=[0., 1.]
 )
 preproc_valid_slice = SumScaleNormalizer(
     scale_range=[5000, 5001], pre_offset=0.0,
     normalize_label=True,
+    batch_mode=True, 
     axis=(1, 2, 3),
-    batch_mode=True,
     clip_before=[0., float("inf")], clip_after=[0., 1.]
 )
 
@@ -477,6 +482,7 @@ class CompactLogger(callbacks.Callback):
         if lr is not None: parts.append(f"lr={lr:.1e}")
         if dt is not None: parts.append(f"time={dt:5.1f}s")
         print(" | ".join(parts))
+
 
 
 

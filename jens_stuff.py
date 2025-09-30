@@ -80,89 +80,45 @@ class SumScaleNormalizer(Normalizer):
     """
     Divide by sum, then multiply with random scale factor.
     """
-
-    def __init__(self, scale_range, pre_offset, normalize_label, axis=None,
-                 batch_mode=False, clip_before=False, clip_after=False):
+    def __init__(self, scale_range, pre_offset, normalize_label,
+                 axis=None, clip_before=False, clip_after=False,
+                 batch_mode=False):  # <--- ergänzt
         super().__init__("SumScaleNormalizer", axis, clip_before, clip_after)
         self.scale_range = list(scale_range)
         self.pre_offset = float(pre_offset)
         self.normalize_label = normalize_label
-        self._batch_mode = batch_mode
         self._min_scale = min(scale_range)
         self._max_scale = max(scale_range)
+        self.batch_mode = batch_mode            # <--- neu
         self._denorm_pars = {'pre_offset': self.pre_offset}
+
 
     def map(self, *args):
         args = list(super().map(*args))
         eps = tf.constant(1e-12, dtype=args[0].dtype)
 
-        # Features
-        args[0] = self._pre_clipping(args[0] + self.pre_offset)
-        scale = tf.random.uniform(shape=(1,), minval=self._min_scale, maxval=self._max_scale)
-        sum_feature = tf.math.reduce_sum(args[0], axis=self.axis, keepdims=True)
-        sum_feature = tf.maximum(sum_feature, eps)
-        args[0] = args[0] / sum_feature * scale
-        args[0] = self._post_clipping(args[0])
+        x, y = args[0], args[1]
 
+        # --- Achsenwahl ---
+        if self.batch_mode and tf.rank(x) == 5:
+            # Eingabe-Shape: (B, D, H, W, C)
+            reduce_axes = (2, 3, 4)   # normiere pro Sample über HWC
+        else:
+            # Eingabe-Shape: (D, H, W, C)
+            reduce_axes = (1, 2, 3)
+
+        # --- Features ---
+        x = self._pre_clipping(x + self.pre_offset)
+        scale = tf.random.uniform((1,), minval=self._min_scale, maxval=self._max_scale)
+        sum_feature = tf.maximum(tf.reduce_sum(x, axis=reduce_axes, keepdims=True), eps)
+        x = self._post_clipping(x / sum_feature * scale)
+
+        # --- Labels (optional) ---
         if self.normalize_label:
-            args[1] = self._pre_clipping(args[1] + self.pre_offset)
-            sum_label = tf.math.reduce_sum(args[1], axis=self.axis, keepdims=True)
-            sum_label = tf.maximum(sum_label, eps)
-            args[1] = args[1] / sum_label * scale
-            args[1] = self._post_clipping(args[1])
+            y = self._pre_clipping(y + self.pre_offset)
+            sum_label = tf.maximum(tf.reduce_sum(y, axis=reduce_axes, keepdims=True), eps)
+            y = self._post_clipping(y / sum_label * scale)
 
         self._denorm_pars['scale'] = scale
         self._denorm_pars['sum'] = sum_feature
-        return tuple(args)   # <<< WICHTIG: Tuple, nicht List
-
-    def inverse_map(self, tensor):
-        tensor = super().inverse_map(tensor, length=3)
-        return tensor / self._denorm_pars['scale'] * self._denorm_pars['sum'] - self._denorm_pars['pre_offset']
-
-
-# ============ DATASET GENERATOR ============
-
-class DatasetGenerator:
-    """
-    Simplified version of Jens' DatasetGenerator.
-    Works with in-memory features & labels and optional preprocessor.
-    """
-
-    def __init__(self, preprocessor=None, augmenter=None,
-                 features=None, labels=None, weights=None):
-        self.preprocessor = preprocessor
-        self.augmenter = augmenter
-        self._features = features
-        self._labels = labels
-        self._weights = weights
-        self._provided_tensors = True
-
-        # Define mapping funcs
-        self._pp_map = (lambda *args: self.preprocessor.map(*args)) if self.preprocessor else None
-        self._aug_map = (lambda *args: self.augmenter.map(*args)) if self.augmenter else None
-
-    def create_dataset(self, input_shape, batch_size, seed, shuffle=True):
-        if input_shape != self._features.shape[1:]:
-            raise Exception(f"Input shape {input_shape} does not match features {self._features.shape[1:]}")
-
-        if self._weights is not None:
-            dataset = tf.data.Dataset.from_tensor_slices((self._features, self._labels, self._weights))
-        else:
-            dataset = tf.data.Dataset.from_tensor_slices((self._features, self._labels))
-
-        if self._pp_map is not None:
-            def _pp(*t):
-                out = self.preprocessor.map(*t)
-                return tuple(out)
-            dataset = dataset.map(_pp, num_parallel_calls=tf.data.AUTOTUNE).cache()
-
-        if self._aug_map is not None:
-            dataset = dataset.map(self._aug_map, num_parallel_calls=tf.data.AUTOTUNE)
-
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=self._features.shape[0],
-                                      reshuffle_each_iteration=True,
-                                      seed=seed)
-
-        dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
-        return dataset
+        return (x, y)
