@@ -133,18 +133,24 @@ def _build_eval_filename(model_path: Path, mae_value: float, psnr_value: float, 
     stem = model_path.stem
 
     # 1) Training-Teile aus dem Modellnamen entfernen
-    stem_clean = re.sub(r"_PSNR_[0-9.]+", "", stem)                 # Training-PSNR weg
-    stem_clean = re.sub(r"_val(?:loss)?[0-9.e+-]+", "", stem_clean) # ggf. val/val_loss weg
+    stem_clean = re.sub(r"_PSNR_[0-9.]+", "", stem)                  # Training-PSNR weg
+    stem_clean = re.sub(r"_val(?:loss)?[0-9.e+-]+", "", stem_clean)  # evtl. val/val_loss weg
 
-    # 2) Prefix sauber voranstellen, aber Doppelungen vermeiden
-    pref = _sanitize_name(prefix) if prefix else _auto_script_name()
-    if stem_clean.lower().startswith(pref.lower() + "_"):
+    # 2) Prefix bestimmen und "evaluation_" abstreifen
+    pref_full = _sanitize_name(prefix) if prefix else _auto_script_name()
+    model_pref = re.sub(r"^evaluation[_-]?", "", pref_full, flags=re.I)  # z.B. "evaluation_unet_3d_JENS" -> "unet_3d_JENS"
+
+    # 3) Doppelungen vermeiden: wenn stem_clean schon mit pref_full_ ODER model_pref_ beginnt, kein Prefix voranstellen
+    stem_l = stem_clean.lower()
+    if stem_l.startswith((pref_full.lower() + "_")) or stem_l.startswith((model_pref.lower() + "_")):
         name = stem_clean
     else:
-        name = f"{pref}_{stem_clean}"
+        # lieber das "kurze" Modell-Prefix nehmen
+        name = f"{model_pref}_{stem_clean}"
 
-    # 3) Nur Testkennzahlen anhängen
+    # 4) Nur Testkennzahlen anhängen (kein val_loss)
     return f"{name}_mae{mae_value:.6f}_psnr{psnr_value:.2f}.json"
+
 
 
 
