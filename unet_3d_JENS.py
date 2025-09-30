@@ -68,14 +68,16 @@ preproc_train_slice = SumScaleNormalizer(
     normalize_label=True,
     axis=(1, 2, 3),      # reduziert H,W,C — NICHT D
     batch_mode=True,     # pro Slice
-    clip_before=[0., float("inf")], clip_after=[0., 1.]
+    clip_before=[0., float("inf")], 
+    clip_after=[0., 1.]
 )
 preproc_valid_slice = SumScaleNormalizer(
     scale_range=[5000, 5001], pre_offset=0.0,
     normalize_label=True,
     axis=(1, 2, 3),
     batch_mode=True,
-    clip_before=[0., float("inf")], clip_after=[0., 1.]
+    clip_before=[0., float("inf")], 
+    clip_after=[0., 1.]
 )
 
 def map_slice_wise(normalizer):
@@ -236,87 +238,73 @@ model = unet3d(input_shape=INPUT_SHAPE, base_filters=8)
 # ==============================
 # 5) Loss & Metriken
 # ==============================
-ALPHA_TARGET = 0.0
-ALPHA = 0.0
-
-ALPHA_TF   = tf.Variable(0.0, trainable=False, dtype=tf.float32, name="alpha_ms_ssim")
-MS_GRAD_ON = tf.Variable(False, trainable=False, dtype=tf.bool,   name="ms_grad_on")
-
-MS_ENABLE_TF = tf.Variable(False, trainable=False, dtype=tf.bool, name="ms_enable")
-
 
 def _clip01(x):
     x = tf.cast(x, tf.float32)
     return tf.clip_by_value(x, 0.0, 1.0)
 
-def ms_ssim_loss_all_slices(y_true, y_pred):
-    # Eingabe: (B, D, H, W, C)  -> wir werten alle D-Slices gleichberechtigt aus
+def _to_4d(yt, yp):
+    # Expect [B,D,H,W,C] -> [B*D, H, W, C]
+    b,d,h,w,c = tf.unstack(tf.shape(yt))
+    return (tf.reshape(yt, (b*d, h, w, c)),
+            tf.reshape(yp, (b*d, h, w, c)))
+
+def ms_ssim_3d_mean_safe(y_true, y_pred, max_val=1.0,
+                         power_factors=(0.0448, 0.2856, 0.3001),
+                         filter_size=7, filter_sigma=1.5, k1=0.01, k2=0.03):
+    # Robust: clamp auf [0,1], 5D->4D, mean über B*D
     yt = _clip01(y_true)
     yp = _clip01(y_pred)
+    yt4, yp4 = _to_4d(yt, yp)
+    v = tf.image.ssim_multiscale(
+        yp4, yt4,
+        max_val=max_val,
+        power_factors=power_factors,
+        filter_size=filter_size,
+        filter_sigma=filter_sigma,
+        k1=k1, k2=k2
+    )  # shape [B*D]
+    return tf.reduce_mean(v)
 
-    MS_EPS = tf.constant(1e-5, tf.float32)
-    yt = tf.clip_by_value(yt, MS_EPS, 1.0 - MS_EPS)
-    yp = tf.clip_by_value(yp, MS_EPS, 1.0 - MS_EPS)
+# Metric (name fix)
+def msssim_metric(y_true, y_pred):
+    return ms_ssim_3d_mean_safe(y_true, y_pred, max_val=1.0)
 
-    # (optional) leichtes Dithering – kann man entfernen, falls du willst
-    noise = tf.constant(1e-4, tf.float32)
-    yt = yt + noise * tf.random.normal(tf.shape(yt), dtype=tf.float32)
-    yp = yp + noise * tf.random.normal(tf.shape(yp), dtype=tf.float32)
-
-    # Alle Slices als 2D-Bilder behandeln: (B*D, H, W, C)
-    yt = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
-    yp = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
-
-    ms = tf.image.ssim_multiscale(yt, yp, max_val=1.0)  # (B*D,)
-    ms = tf.where(tf.math.is_finite(ms), ms, tf.zeros_like(ms))
-    ms_mean = tf.reduce_mean(ms)  # Mittelwert über alle Slices und Batch
-
-    return 1.0 - ms_mean
-
-
-@tf.function(jit_compile=False)
-def combined_loss(y_true, y_pred):
-    yt = _clip01(y_true)
-    yp = _clip01(y_pred)
-    l_mae = tf.reduce_mean(tf.abs(yt - yp))
-
-    def with_ms():
-        l_ms = ms_ssim_loss_all_slices(yt, yp)          # <-- NEU
-        l_ms = tf.where(tf.math.is_finite(l_ms), l_ms, l_mae)  # Fallback
-        l_ms_used = tf.cond(MS_GRAD_ON, lambda: l_ms, lambda: tf.stop_gradient(l_ms))
-        out = (1.0 - ALPHA_TF) * l_mae + ALPHA_TF * l_ms_used
-        return tf.where(tf.math.is_finite(out), out, l_mae)
-
-    use_ms = tf.logical_and(MS_ENABLE_TF, ALPHA_TF > 0.0)
-    return tf.cond(use_ms, with_ms, lambda: l_mae)
-
-
-
-
-
+# PSNR metric (du hast schon eine; behalte eine Variante)
 def psnr_metric(y_true, y_pred):
     yt = _clip01(y_true); yp = _clip01(y_pred)
     return tf.image.psnr(yt, yp, max_val=1.0)
 psnr_metric.__name__ = "psnr"
 
+# Loss: (1 - alpha)*MAE + alpha*(1 - MS-SSIM), alpha fix 0.7
+class CombinedMAE_MSSSIM_Loss(tf.keras.losses.Loss):
+    def __init__(self, alpha=0.7, name="mae_msssim"):
+        super().__init__(name=name)
+        self.alpha = float(alpha)
+
+    def call(self, y_true, y_pred):
+        yt = _clip01(y_true)
+        yp = _clip01(y_pred)
+        mae = tf.reduce_mean(tf.abs(yt - yp))
+        msssim = ms_ssim_3d_mean_safe(yt, yp, max_val=1.0)
+        return (1.0 - self.alpha) * mae + self.alpha * (1.0 - msssim)
+
+
 
 # %%
 # ==============================
-# 6) Optimizer & Compile
+# 6) Compile
 # ==============================
-opt = AdamW(learning_rate=5e-6, epsilon=1e-3,
-            global_clipnorm=0.05, weight_decay=1e-4, amsgrad=True)
-
 
 model.compile(
-    optimizer=opt,
-    loss=combined_loss,                 # <— statt reines MAE
-    metrics=[                           # (deine Metrics bleiben)
+    optimizer=AdamW(learning_rate=1e-4),
+    loss=CombinedMAE_MSSSIM_Loss(alpha=0.7),
+    metrics=[
+        msssim_metric,
         tf.keras.metrics.MeanAbsoluteError(name="mae"),
         tf.keras.metrics.MeanSquaredError(name="mse"),
         psnr_metric,
-    ],
-    jit_compile=False
+    ]
 )
 
 
@@ -424,7 +412,7 @@ class BestFinalizeCallback(callbacks.Callback):
             "epochs_planned": self.run_meta.get("epochs"),
             "early_stopping": self.run_meta.get("early_stopping"),
             "data_prep": self.run_meta.get("data_prep"),
-            "alpha_ms_ssim": self.run_meta.get("ALPHA"),
+            "alpha_msssim": self.run_meta.get("alpha_msssim"),
             "best_val_loss": float(self.best_val_loss) if np.isfinite(self.best_val_loss) else None,
             "best_psnr_metric": self.best_psnr,
             "input_shape": inp_shape,
@@ -498,7 +486,14 @@ class BestFinalizeCallback(callbacks.Callback):
 class CompactLogger(callbacks.Callback):
     def __init__(self, cols=None, show_time=True):
         super().__init__()
-        self.cols = cols or ["loss","val_loss","mae","val_mae","mse","val_mse","psnr","val_psnr"]
+        # MSE bleibt drin (jetzt vorhanden), MS-SSIM metriken hinzu
+        self.cols = cols or [
+            "loss","val_loss",
+            "mae","val_mae",
+            "mse","val_mse",
+            "msssim_metric","val_msssim_metric",
+            "psnr","val_psnr",
+        ]
         self.show_time = show_time
         self._t0 = None
     def on_epoch_begin(self, epoch, logs=None):
@@ -533,35 +528,16 @@ class WeightNaNGuard(callbacks.Callback):
                 self.model.stop_training = True
                 break
 
-class AlphaScheduler(callbacks.Callback):
-    def __init__(self, step=0.02, target=0.7, ms_enable_epoch=0, grad_on_epoch=8):
-        super().__init__()
-        self.step = float(step)
-        self.target = float(target)
-        self.ms_enable_epoch = int(ms_enable_epoch)
-        self.grad_on_epoch = int(grad_on_epoch)
-
-    def on_epoch_begin(self, epoch, logs=None):
-        # epoch startet bei 0 -> schon in Epoche 1 (epoch=0) alpha=0.02
-        a = (epoch + 1) * self.step
-        a = min(a, self.target)
-        ALPHA_TF.assign(a)
-
-        # MS-SSIM ab Start erlauben, aber Gradienten z.B. erst ab Ep. 9 (anpassbar)
-        MS_ENABLE_TF.assign(epoch >= self.ms_enable_epoch)
-        MS_GRAD_ON.assign(epoch >= self.grad_on_epoch)
-
-        print(f"[AlphaScheduler] epoch={epoch}  alpha={float(ALPHA_TF.numpy()):.3f}  "
-              f"ms_enable={bool(MS_ENABLE_TF.numpy())}  grad_on={bool(MS_GRAD_ON.numpy())}")
-
 # Checkpoints + Meta
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE, "epochs": EPOCHS,
     "early_stopping": {"monitor":"val_loss","patience":20},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-    "ALPHA": ALPHA
+    "alpha_msssim": 0.7,
+    "loss_components": {"mae": 0.3, "msssim": 0.7}
 }
+
 bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta, code_name="AUTO")
 ckpt_best = callbacks.ModelCheckpoint(
     filepath=str(bf.tmp_path), monitor="val_loss",
@@ -570,7 +546,6 @@ ckpt_best = callbacks.ModelCheckpoint(
 
 # Callback-Liste
 cbs = [
-    AlphaScheduler(step=0.02, target=0.7, ms_enable_epoch=0, grad_on_epoch=8),
     WeightNaNGuard(), LossNaNGuard(), callbacks.TerminateOnNaN(),
     callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=0),
     callbacks.EarlyStopping(monitor="val_loss", patience=20, restore_best_weights=True, verbose=0),
