@@ -13,14 +13,13 @@
 # ---
 
 # %%
+# unet_3d.py
+
 # ======== Imports =======
 import os
-
-from tensorflow.keras import mixed_precision
-mixed_precision.set_global_policy("mixed_float16") # Increases performance without loss of quality (calculations still done with float_32 precision)
-
 import numpy as np
 import tensorflow as tf
+tf.config.optimizer.set_jit(False)
 from tensorflow.keras import regularizers, constraints, layers, models, callbacks
 
 from unet_3d_data import prepare_in_memory
@@ -44,6 +43,7 @@ AUTO = tf.data.AUTOTUNE # Chooses optimal number of threads automatically depend
 # ===== Loading Data in RAM =====
 
 print(">>> Phase 1: Starting data prep on CPU...")
+
 (results, size) = prepare_in_memory(
     data_dir=Path.home() / "data" / "original_data",
     use_vst=False, # No anscombe transform
@@ -123,23 +123,23 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
 
     bn = conv_block(p3, base_filters*8)
 
-    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
-    u3 = layers.Concatenate()()([u3, c3])  # oder layers.Concatenate()([u3, c3])
+    u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(bn)
+    u3 = layers.Concatenate()([u3, c3])
     c4 = conv_block(u3, base_filters*4)
 
-    u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c4)
-    u2 = layers.Concatenate()()([u2, c2])
+    u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c4)
+    u2 = layers.Concatenate()([u2, c2])
     c5 = conv_block(u2, base_filters*2)
 
-    u1 = layers.Conv3DTranspose(base_filters, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c5)
-    u1 = layers.Concatenate()()([u1, c1])
+    u1 = layers.Conv3DTranspose(base_filters, (1,2,2), (1,2,2), padding="same")(c5)
+    u1 = layers.Concatenate()([u1, c1])
     c6 = conv_block(u1, base_filters)
+
 
     # Output: direkt [0,1] via sigmoid (keine Lambda nötig)
     outputs = layers.Conv3D(1, (1,1,1), activation="sigmoid",
                             kernel_initializer="glorot_uniform")(c6)
     return models.Model(inputs, outputs, name="3D_U-Net-ELU-LN")
-
 
 
 # %%
@@ -155,49 +155,50 @@ def _sample_depth_indices(batch_size, depth, k=1, seed=42):
     topk = tf.math.top_k(rnd, k=k).indices                                 # Search for 2 highest values per row
     return topk
 
+def _clip01(x):
+    x = tf.cast(x, tf.float32)
+    return tf.clip_by_value(x, 0.0, 1.0)
+
 def ms_ssim_loss_sampled(y_true, y_pred, k=1):
-    """
-    Defining MS-SSIM for the loss function equivalently as in the paper
-    """
     # y: (B, D, H, W, C)
-    batch_size = tf.shape(y_true)[0]
-    depth = tf.shape(y_true)[1]                               # Number of 2D slices
-    idx = _sample_depth_indices(batch_size, depth, k=k)       # (B,k)
-    # gathering chosen slices
-    y_groundtruth = tf.gather(y_true, idx, batch_dims=1)      # (B,k,H,W,C)
-    y_model = tf.gather(y_pred, idx, batch_dims=1)            # (B,k,H,W,C)
-    # flatten to 2D pictures
-    y_groundtruth_2 = tf.reshape(y_groundtruth, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    y_model_2 = tf.reshape(y_model, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
-    ms  = tf.image.ssim_multiscale(y_groundtruth_2, y_model_2, max_val=1.0)     # (B*k,)
+    b = tf.shape(y_true)[0]
+    d = tf.shape(y_true)[1]
+    idx = _sample_depth_indices(b, d, k=k)             # (B,k)
+
+    # Gather
+    yt = tf.gather(y_true, idx, batch_dims=1)          # (B,k,H,W,C)
+    yp = tf.gather(y_pred, idx, batch_dims=1)          # (B,k,H,W,C)
+
+    # 5D -> 4D
+    H = tf.shape(y_true)[2]; W = tf.shape(y_true)[3]; C = tf.shape(y_true)[4]
+    yt4 = tf.reshape(yt, (-1, H, W, C))
+    yp4 = tf.reshape(yp, (-1, H, W, C))
+
+    # robust: cast + clip
+    yt4 = _clip01(yt4)
+    yp4 = _clip01(yp4)
+
+    ms = tf.image.ssim_multiscale(yt4, yp4, max_val=1.0)   # (B*k,)
     return 1.0 - tf.reduce_mean(ms)
 
 def combined_loss(y_true, y_pred, k_slices=1):
-    """
-    Combining the loss composite of MAE and MS-SSIM
-    (MAE stable and useful for strong signals --> Bragg peaks)
-    (MS-SSIM focuses on structure --> CDW satellite signals)
-    """
-    l_mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    l_ms  = ms_ssim_loss_sampled(y_true, y_pred, k=k_slices)  # K=1
+    yt = _clip01(y_true)
+    yp = _clip01(y_pred)
+    l_mae = tf.reduce_mean(tf.abs(yt - yp))
+    l_ms  = ms_ssim_loss_sampled(yt, yp, k=k_slices)
     return (1.0 - ALPHA) * l_mae + ALPHA * l_ms
 
+
 def ms_ssim_metric(y_true, y_pred):
-    """
-    Showing MS-SSIM metric during training
-    """
-    yt2 = tf.reshape(y_true, (-1, tf.shape(y_true)[2], tf.shape(y_true)[3], tf.shape(y_true)[4]))
-    yp2 = tf.reshape(y_pred, (-1, tf.shape(y_pred)[2], tf.shape(y_pred)[3], tf.shape(y_pred)[4]))
-    yt2 = tf.cast(yt2, tf.float32)
-    yp2 = tf.cast(yp2, tf.float32)
+    yt = _clip01(y_true)
+    yp = _clip01(y_pred)
+    yt2 = tf.reshape(yt, (-1, tf.shape(yt)[2], tf.shape(yt)[3], tf.shape(yt)[4]))
+    yp2 = tf.reshape(yp, (-1, tf.shape(yp)[2], tf.shape(yp)[3], tf.shape(yp)[4]))
     return tf.reduce_mean(tf.image.ssim_multiscale(yt2, yp2, max_val=1.0))
 
 def psnr_metric(y_true, y_pred):
-    """
-    Showing PSNR metric during training
-    """
-    return tf.image.psnr(tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32), max_val=1.0)
-
+    yt = _clip01(y_true); yp = _clip01(y_pred)
+    return tf.image.psnr(yt, yp, max_val=1.0)
 
 
 # %%
@@ -432,12 +433,11 @@ print(">>> Phase 3: GPU training starts now!")
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(1e-3),
+    optimizer=tf.keras.optimizers.Adam(1e-4),
     loss=combined_loss,
     metrics=["mae", "mse", psnr_metric, ms_ssim_metric],
-    jit_compile=False # Would be false per default, but just to be sure
+    jit_compile=False
 )
-# model.summary()
 
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {

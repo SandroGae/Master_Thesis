@@ -13,6 +13,8 @@
 # ---
 
 # %%
+# unet_3d_JENS_mae.py
+
 # ==============================
 # 0) Imports & global setup
 # ==============================
@@ -220,17 +222,18 @@ def unet3d(input_shape=(5, 192, 240, 1), base_filters=8):
 
     bn = conv_block(p3, base_filters*8)
 
-    u3 = layers.Conv3DTranspose(base_filters*4, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(bn)
-    u3 = layers.Concatenate()()([u3, c3])  # oder layers.Concatenate()([u3, c3])
+    u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(bn)
+    u3 = layers.Concatenate()([u3, c3])
     c4 = conv_block(u3, base_filters*4)
 
-    u2 = layers.Conv3DTranspose(base_filters*2, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c4)
-    u2 = layers.Concatenate()()([u2, c2])
+    u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c4)
+    u2 = layers.Concatenate()([u2, c2])
     c5 = conv_block(u2, base_filters*2)
 
-    u1 = layers.Conv3DTranspose(base_filters, kernel_size=(1,2,2), strides=(1,2,2), padding="same")(c5)
-    u1 = layers.Concatenate()()([u1, c1])
+    u1 = layers.Conv3DTranspose(base_filters, (1,2,2), (1,2,2), padding="same")(c5)
+    u1 = layers.Concatenate()([u1, c1])
     c6 = conv_block(u1, base_filters)
+
 
     # Output: direkt [0,1] via sigmoid (keine Lambda nötig)
     outputs = layers.Conv3D(1, (1,1,1), activation="sigmoid",
@@ -278,10 +281,6 @@ model.compile(
     ],
     jit_compile=False
 )
-
-
-# Debug: Eager an
-model.run_eagerly = False # Just for debugging
 
 
 # %%
