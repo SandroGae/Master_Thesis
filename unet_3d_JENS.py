@@ -250,26 +250,30 @@ def _to_4d(yt, yp):
     return (tf.reshape(yt, (b*d, h, w, c)),
             tf.reshape(yp, (b*d, h, w, c)))
 
-def ms_ssim_3d_mean_safe(y_true, y_pred, max_val=1.0,
-                         power_factors=(0.0448, 0.2856, 0.3001),
-                         filter_size=7, filter_sigma=1.5, k1=0.01, k2=0.03):
-    # Robust: clamp auf [0,1], 5D->4D, mean über B*D
+def ssim_3d_mean_safe(y_true, y_pred, max_val=1.0,
+                      filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03):
+    """
+    SSIM über Depth gemittelt, robust:
+    - clamp auf [0,1]
+    - 5D -> 4D
+    - mean über B*D
+    """
     yt = _clip01(y_true)
     yp = _clip01(y_pred)
     yt4, yp4 = _to_4d(yt, yp)
-    v = tf.image.ssim_multiscale(
+    v = tf.image.ssim(
         yp4, yt4,
         max_val=max_val,
-        power_factors=power_factors,
         filter_size=filter_size,
         filter_sigma=filter_sigma,
         k1=k1, k2=k2
-    )  # shape [B*D]
+    )  # [B*D]
     return tf.reduce_mean(v)
 
 # Metric (name fix)
-def msssim_metric(y_true, y_pred):
-    return ms_ssim_3d_mean_safe(y_true, y_pred, max_val=1.0)
+def ssim_metric(y_true, y_pred):
+    return ssim_3d_mean_safe(y_true, y_pred, max_val=1.0)
+ssim_metric.__name__ = "ssim"   # schöner Name im Logge
 
 # PSNR metric (du hast schon eine; behalte eine Variante)
 def psnr_metric(y_true, y_pred):
@@ -277,18 +281,18 @@ def psnr_metric(y_true, y_pred):
     return tf.image.psnr(yt, yp, max_val=1.0)
 psnr_metric.__name__ = "psnr"
 
-# Loss: (1 - alpha)*MAE + alpha*(1 - MS-SSIM), alpha fix 0.7
-class CombinedMAE_MSSSIM_Loss(tf.keras.losses.Loss):
-    def __init__(self, alpha=0.7, name="mae_msssim"):
+# Loss: (1 - alpha)*MAE + alpha*(1 - SSIM), alpha fix 0.7
+class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
+    def __init__(self, alpha=0.7, name="mae_ssim"):
         super().__init__(name=name)
         self.alpha = float(alpha)
 
     def call(self, y_true, y_pred):
         yt = _clip01(y_true)
         yp = _clip01(y_pred)
-        mae = tf.reduce_mean(tf.abs(yt - yp))
-        msssim = ms_ssim_3d_mean_safe(yt, yp, max_val=1.0)
-        return (1.0 - self.alpha) * mae + self.alpha * (1.0 - msssim)
+        mae   = tf.reduce_mean(tf.abs(yt - yp))
+        ssimv = ssim_3d_mean_safe(yt, yp, max_val=1.0)
+        return (1.0 - self.alpha) * mae + self.alpha * (1.0 - ssimv)
 
 
 
@@ -299,10 +303,14 @@ class CombinedMAE_MSSSIM_Loss(tf.keras.losses.Loss):
 
 model.compile(
     optimizer=AdamW(learning_rate=1e-4),
-    loss=CombinedMAE_MSSSIM_Loss(alpha=0.7),
-    metrics=[msssim_metric, tf.keras.metrics.MeanAbsoluteError(name="mae"),
-             tf.keras.metrics.MeanSquaredError(name="mse"), psnr_metric],
-    jit_compile=False,   # <<< XLA aus
+    loss=CombinedMAE_SSIM_Loss(alpha=0.7),   # <--- neue Loss-Klasse
+    metrics=[
+        ssim_metric,                         # <--- SSIM statt MSSSIM
+        tf.keras.metrics.MeanAbsoluteError(name="mae"),
+        tf.keras.metrics.MeanSquaredError(name="mse"),
+        psnr_metric,
+    ],
+    jit_compile=False                        # XLA auslassen bis alles läuft
 )
 
 
@@ -489,7 +497,7 @@ class CompactLogger(callbacks.Callback):
             "loss","val_loss",
             "mae","val_mae",
             "mse","val_mse",
-            "msssim_metric","val_msssim_metric",
+            "ssim","val_ssim",     # <--- statt msssim_metric
             "psnr","val_psnr",
         ]
         self.show_time = show_time
