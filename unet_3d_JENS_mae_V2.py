@@ -102,13 +102,16 @@ def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
     if preproc is not None:
         ds = ds.map(lambda x,y: tuple(preproc(x,y)), num_parallel_calls=num_calls)
-    if cache_in_memory: ds = ds.cache()
+    if cache_in_memory: 
+        ds = ds.cache()
     if augmenter is not None:
         ds = ds.map(lambda x,y: augmenter(x,y), num_parallel_calls=num_calls)
-    if check_nans: ds = ds.map(nan_debug, num_parallel_calls=num_calls)
+    if check_nans: 
+        ds = ds.map(nan_debug, num_parallel_calls=num_calls)
     if shuffle:
         ds = ds.shuffle(buffer_size=min(shuffle_buf, X.shape[0]), reshuffle_each_iteration=True)
-    if limit is not None: ds = ds.take(int(limit))
+    if limit is not None: 
+        ds = ds.take(int(limit))
     ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(prefetch_n)
     return ds
 

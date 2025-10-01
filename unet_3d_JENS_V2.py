@@ -98,21 +98,22 @@ def nan_debug(x, y):
     return x, y
 
 def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
-            limit=None, cache_in_memory=False, check_nans=False):
+            limit=None, cache_in_memory=False, check_nans=False,
+            shuffle_buf=512, prefetch_n=2, num_calls=2):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
     if preproc is not None:
-        ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=AUTO)
+        ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=num_calls)
     if cache_in_memory:
         ds = ds.cache()
     if augmenter is not None:
-        ds = ds.map(lambda x, y: augmenter(x, y), num_parallel_calls=AUTO)
+        ds = ds.map(lambda x, y: augmenter(x, y), num_parallel_calls=num_calls)
     if check_nans:
-        ds = ds.map(nan_debug, num_parallel_calls=AUTO)
+        ds = ds.map(nan_debug, num_parallel_calls=num_calls)
     if shuffle:
-        ds = ds.shuffle(buffer_size=X.shape[0], reshuffle_each_iteration=True)
+        ds = ds.shuffle(buffer_size=min(shuffle_buf, X.shape[0]), reshuffle_each_iteration=True)
     if limit is not None:
         ds = ds.take(int(limit))
-    ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
+    ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(prefetch_n)
     return ds
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
