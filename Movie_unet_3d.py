@@ -162,17 +162,56 @@ def main(
     print(">>> Vorhersage...")
     pred = model.predict(X_test, batch_size=8, verbose=1)
 
-    print(">>> Frames bauen...")
-    frames = build_center_frames(
+    print(">>> Frames bauen (20 Serien mit Trenner)...")
+    # Wie viele Fenster/Gruppe und wie viele Gruppen gibt's im Testset?
+    windows_per_group = group_len - size + 1  # 37 bei 41/5
+    B = X_test.shape[0]
+    num_groups_total = B // windows_per_group
+    use_groups = min(20, num_groups_total)  # die ersten 20
+
+    # Erstmal eine Serie bauen, um die Frame-Größe zu kennen
+    frames_first = build_center_frames(
         low=X_test, pred=pred, high=Y_test,
-        size=size, group_len=group_len, group_index=group_index,
+        size=size, group_len=group_len, group_index=0,
+        # Sichtbarkeit/Look:
         p_low=1.0, p_high=99.5, gamma=0.8,
         layout="h", upscale=2, pad_px=12,
     )
 
+    # Falls leer (sollte nie passieren), abbrechen
+    if not frames_first:
+        raise RuntimeError("Keine Frames erzeugt – prüfe Eingaben/Shapes.")
+
+    # Grünen Spacer vorbereiten (0.5s bei gegebener FPS)
+    fps = int(fps) if fps else 10
+    spacer_frames = max(1, int(round(0.5 * fps)))  # 0.5 Sekunden
+    H, W, _ = frames_first[0].shape
+    spacer = np.zeros((H, W, 3), dtype=np.uint8)
+    spacer[..., 1] = 255  # knallgrün
+
+    # Alle Frames sammeln
+    frames_all = []
+    for g in range(use_groups):
+        if g == 0:
+            frames_all.extend(frames_first)
+        else:
+            frames_g = build_center_frames(
+                low=X_test, pred=pred, high=Y_test,
+                size=size, group_len=group_len, group_index=g,
+                p_low=1.0, p_high=99.5, gamma=0.8,
+                layout="h", upscale=2, pad_px=12,
+            )
+            frames_all.extend(frames_g)
+
+        # Nach jeder Serie (außer der letzten) Spacer einfügen
+        if g < use_groups - 1:
+            for _ in range(spacer_frames):
+                frames_all.append(spacer)
+
+    # Speichern
     out_dir = Path(out_dir)
-    stem = Path(model_path).with_suffix("").name   # <-- erst definieren, dann benutzen
-    save_mp4(frames, out_dir / f"{stem}_group{group_index}_center.mp4", fps=fps)
+    stem = Path(model_path).with_suffix("").name
+    save_mp4(frames_all, out_dir / f"{stem}_groups0to{use_groups-1}_center.mp4", fps=fps)
 
     if save_counts:
         print(">>> Speichere denoiste Original-Counts (npy)...")
