@@ -159,7 +159,9 @@ class BestFinalizeCallback(callbacks.Callback):
         self.root = Path(root); self.root.mkdir(parents=True, exist_ok=True)
         auto = _auto_code_name() if (code_name is None or str(code_name).upper() == "AUTO") else code_name
         self.code = self._sanitize_code(auto)
-        self.tmp_path = self.root / (tmp_name or f"{self.code}_TEMP_{uuid.uuid4().hex}.keras")
+        temp_dir = self.root / "TEMP"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        self.tmp_path = temp_dir / (tmp_name or f"{self.code}_TEMP_{uuid.uuid4().hex}.keras")
         self.best_val_loss = np.inf
         self.best_psnr = None
         self.run_meta = run_meta or {}
