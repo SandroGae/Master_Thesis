@@ -5,6 +5,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import callbacks
 
+import atexit, signal
+
 # ---------- kleine Helfer ----------
 def _timestamp() -> str:
     return time.strftime("%Y-%m-%dT%H-%M-%S")
@@ -48,6 +50,44 @@ def _auto_code_name() -> str:
         if v:
             return v
     return "MODEL"
+
+def _safe_unlink(p: Path):
+    try:
+        if p and Path(p).exists():
+            Path(p).unlink()
+    except Exception:
+        pass
+
+def purge_stale_temps(ckpt_root: Path, code_prefix: str):
+    """
+    Entfernt alle *_TEMP_*.keras fuer den gegebenen Code-Prefix.
+    Sinnvoll zu Beginn eines Trainingslaufs.
+    """
+    ckpt_root = Path(ckpt_root)
+    for p in ckpt_root.glob(f"{code_prefix}_TEMP_*.keras"):
+        _safe_unlink(p)
+
+def register_temp_cleanup(tmp_path: Path):
+    """
+    Registriert Aufraeum-Routinen fuer Exit & Signale, damit TEMP bei Abbruch nicht liegen bleibt.
+    """
+    def _cleanup(*_args, **_kwargs):
+        _safe_unlink(tmp_path)
+    # bei normalem Prozessende
+    atexit.register(_cleanup)
+    # bei Ctrl+C / kill
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            old = signal.getsignal(sig)
+            def handler(sig_, frame):
+                _cleanup()
+                # alten Handler (falls vorhanden) weiter aufrufen
+                if callable(old):
+                    old(sig_, frame)
+            signal.signal(sig, handler)
+        except Exception:
+            # z.B. in manchen Umgebungen nicht erlaubt – ignorieren
+            pass
 
 # ---------- Logging ----------
 class CompactLogger(callbacks.Callback):
@@ -144,7 +184,7 @@ class BestFinalizeCallback(callbacks.Callback):
     def on_train_end(self, logs=None):
         vloss_str = f"{self.best_val_loss:.3e}" if np.isfinite(self.best_val_loss) else "nan"
         psnr_part = f"_PSNR_{self.best_psnr:.3g}" if (self.best_psnr is not None and np.isfinite(self.best_psnr)) else ""
-        new_model = self.root / f"{self.code}_NEW_valloss_{vloss_str}{psnr_part}.keras"
+        new_model = self.root / f"{self.code}_valloss_{vloss_str}{psnr_part}.keras"
         if self.tmp_path.exists() and self.tmp_path.stat().st_size > 0:
             try:
                 os.replace(self.tmp_path, new_model)
@@ -270,16 +310,21 @@ def build_standard_callbacks(
     reduce_factor: float = 0.5,
     reduce_patience: int = 10,
     min_lr: float = 1e-6,
-    include_nan_guards: bool = True,
-    include_logger: bool = True,
+    include_nan_guards: bool = True, # Training bricht ab sobald NaN in Loss oder weights auftaucht
+    include_logger: bool = True,     # Besseres Log als verbose
     code_name: str = "AUTO",
     verbose_ckpt: int = 1
 ):
-    """
-    Baut die gleiche Callback-Liste für alle Trainingsskripte und gibt zusätzlich
-    (bf, ckpt_best) zurück, falls du die einzeln brauchst.
-    """
+    # --- NEU: vor dem Training alte TEMP-Files fuer diesen Prefix loeschen
+    prefix = _auto_code_name() if (code_name is None or str(code_name).upper() == "AUTO") else code_name
+    prefix = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (prefix or "").strip()) or "MODEL"
+    purge_stale_temps(ckpt_root, prefix)
+
     bf = BestFinalizeCallback(ckpt_root, run_meta=run_meta, code_name=code_name)
+
+    # --- NEU: falls der Lauf abgebrochen wird, TEMP-Datei aufraeumen
+    register_temp_cleanup(bf.tmp_path)
+
     ckpt_best = callbacks.ModelCheckpoint(
         filepath=str(bf.tmp_path),
         monitor=monitor, mode="min", save_best_only=True, verbose=verbose_ckpt,
@@ -298,6 +343,7 @@ def build_standard_callbacks(
         cb_list += [CompactLogger()]
 
     return cb_list, bf, ckpt_best
+
 
 # Optional: universeller Clamper (nützlich für Loss/Metric-Helfer)
 def clip01(x: tf.Tensor) -> tf.Tensor:

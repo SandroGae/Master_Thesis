@@ -235,7 +235,7 @@ cbs, bf, ckpt_best = build_standard_callbacks(
     min_lr=1e-6,
     include_nan_guards=True,
     include_logger=True,
-    code_name="AUTO",
+    code_name="unet_3d_JENS",
     verbose_ckpt=1
 )
 
