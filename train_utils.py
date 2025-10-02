@@ -215,6 +215,10 @@ class BestFinalizeCallback(callbacks.Callback):
             metrics_list = [getattr(m, "__name__", str(m)) for m in (self.model.metrics or [])]
         except Exception:
             metrics_list = None
+        try:
+            arch_json = self.model.to_json()
+        except Exception:
+            arch_json = None
 
         meta = {
             "timestamp": _timestamp(),
@@ -236,6 +240,7 @@ class BestFinalizeCallback(callbacks.Callback):
             "loss": loss_name,
             "metrics": metrics_list,
             "optimizer": _serialize_optimizer(getattr(self.model, "optimizer", None)),
+            "architecture_json": arch_json,
         }
         try:
             with open(json_path, "w") as f:
