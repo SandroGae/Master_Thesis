@@ -28,6 +28,7 @@ logs/
 *.pkl
 *.joblib
 *.mat
+*.mp4
 
 # --- Komprimierte Archive ---
 *.zip

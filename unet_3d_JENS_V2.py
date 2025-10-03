@@ -36,6 +36,7 @@ for g in tf.config.list_physical_devices('GPU'):
 
 AUTO = tf.data.AUTOTUNE
 
+# %%
 # ==============================
 # 1) Daten laden (CPU)
 # ==============================
@@ -52,8 +53,9 @@ X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
 BATCH_SIZE = 32
-EPOCHS     = 200
+EPOCHS     = 0
 
+# %%
 # ==============================
 # 2) Preprocessing & Augmentation
 # ==============================
@@ -87,8 +89,10 @@ def augment_5stack_flips(x, y):
     y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
     return x, y
 
+
+# %%
 # ==============================
-# 3) Datasets (mit NaN-Guard)
+# 3) Erstelle Datenset (mit NaN-Guard)
 # ==============================
 def nan_debug(x, y):
     nx = tf.reduce_sum(tf.cast(~tf.math.is_finite(x), tf.int32))
@@ -128,9 +132,12 @@ test_ds  = make_ds(X_test, Y_test, shuffle=False,
                    augmenter=None, check_nans=True)
 print(">>> Datasets created")
 
+
+# %%
 # ==============================
-# 4) Model (3D U-Net)
+# 4) Model Architektur
 # ==============================
+
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     ki  = "he_normal"; kr = regularizers.l2(1e-5); kc = constraints.MaxNorm(3.0)
     x = layers.Conv3D(filters, kernel_size, padding=padding,
@@ -157,8 +164,10 @@ def unet3d(input_shape=(5,192,240,1), base_filters=8):
     u1 = layers.Concatenate()([u1, c1]);     c6 = conv_block(u1, base_filters)
     out = layers.Conv3D(1, (1,1,1), activation="sigmoid",
                         kernel_initializer="glorot_uniform")(c6)
-    return models.Model(inputs, out, name="3D_U-Net-ELU-LN")
+    return models.Model(inputs, out, name="3D_U-Net_JENS")
 
+
+# %%
 # ==============================
 # 5) Loss & Metrics  (MAE + SSIM)
 # ==============================
@@ -192,9 +201,13 @@ class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
         ssimv = ssim_3d_mean_safe(yt, yp, max_val=1.0)
         return (1.0 - self.alpha) * mae + self.alpha * (1.0 - ssimv)
 
+
+
+# %%
 # ==============================
 # 6) Compile
 # ==============================
+
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(
     optimizer=AdamW(learning_rate=1e-4),
@@ -204,16 +217,11 @@ model.compile(
     jit_compile=False
 )
 
+# %%
 # ==============================
-# 7) Naming pipeline (einheitlich)
+# 7) Callbacks
 # ==============================
 
-
-
-
-# ==============================
-# 8) Callbacks (gemeinsam)
-# ==============================
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
@@ -239,18 +247,188 @@ cbs, bf, ckpt_best = build_standard_callbacks(
     verbose_ckpt=1
 )
 
+# %%
 # ==============================
-# 9) Train
+# 8) Training + kurze Evaluierung
 # ==============================
+
 print(">>> Phase 3: GPU training starts now!")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=cbs, verbose=0)
 print(">>> Phase 3: Training complete!")
 
-# ==============================
-# 10) Evaluate
-# ==============================
 final_val = model.evaluate(val_ds, return_dict=True, verbose=0)
 print("FINAL VAL:", {k: float(v) for k, v in final_val.items()})
 final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
 print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
+
+
+# %%
+# ==============================
+# 11) Mini-Sweep: Tiefe, Base-Filters, Norm/Act, Output-Activation, Loss
+#      -> je Run max. 10 Epochen, JSON-Report
+# ==============================
+
+import json, datetime
+from itertools import product
+
+EVAL_DIR = Path.home() / "data" / "model_evaluations"
+EVAL_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- (A) kleine Hilfen: norm + act ohne dein conv_block umzuschreiben ---
+def conv_block_param(x, filters, *, norm="LN", act="ELU"):
+    # nutzt dein conv_block intern (ELU+LN). Fuer BN/LReLU weichen wir minimal ab.
+    if norm.upper() == "LN" and act.upper() == "ELU":
+        return conv_block(x, filters)  # exakt dein Block
+    # leichte Variante mit BN/LReLU ohne deinen Originalblock zu aendern:
+    ki  = "he_normal"; kr = regularizers.l2(1e-5); kc = constraints.MaxNorm(3.0)
+    y = layers.Conv3D(filters, (3,3,3), padding="same",
+                      kernel_initializer=ki, use_bias=False,
+                      kernel_regularizer=kr, kernel_constraint=kc)(x)
+    y = (layers.LayerNormalization(epsilon=1e-5)(y) if norm.upper()=="LN"
+         else layers.BatchNormalization()(y))
+    y = (layers.ELU()(y) if act.upper()=="ELU" else layers.LeakyReLU(alpha=0.1)(y))
+
+    y = layers.Conv3D(filters, (3,3,3), padding="same",
+                      kernel_initializer=ki, use_bias=False,
+                      kernel_regularizer=kr, kernel_constraint=kc)(y)
+    y = (layers.LayerNormalization(epsilon=1e-5)(y) if norm.upper()=="LN"
+         else layers.BatchNormalization()(y))
+    y = (layers.ELU()(y) if act.upper()=="ELU" else layers.LeakyReLU(alpha=0.1)(y))
+    return y
+
+# --- (B) U-Net mit variabler Tiefe (depth_levels = Anzahl Downsamplings) ---
+def build_unet3d_depth(input_shape,
+                       *, base_filters=16, depth_levels=3,
+                       norm="LN", act="ELU",
+                       output_activation="sigmoid",
+                       name=None):
+    inputs = layers.Input(shape=input_shape)
+
+    # Encoder
+    skips = []
+    x = inputs
+    filters = base_filters
+    for level in range(depth_levels):
+        x = conv_block_param(x, filters, norm=norm, act=act)
+        skips.append(x)
+        x = layers.MaxPooling3D((1,2,2))(x)
+        filters *= 2
+
+    # Bottleneck
+    x = conv_block_param(x, filters, norm=norm, act=act)
+
+    # Decoder
+    for level in reversed(range(depth_levels)):
+        filters //= 2
+        x = layers.Conv3DTranspose(filters, (1,2,2), (1,2,2), padding="same")(x)
+        x = layers.Concatenate()([x, skips[level]])
+        x = conv_block_param(x, filters, norm=norm, act=act)
+
+    out = layers.Conv3D(1, (1,1,1),
+                        activation=output_activation,
+                        kernel_initializer="glorot_uniform")(x)
+    model_name = name or f"UNet3D_d{depth_levels}_bf{base_filters}_{act}_{norm}_out{output_activation}"
+    return models.Model(inputs, out, name=model_name)
+
+# --- (C) Loss-Optionen (kompatibel mit unterschiedlichen Output-Aktivierungen) ---
+class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
+    def __init__(self, alpha=0.7, name="mae_ssim"): super().__init__(name=name); self.alpha=float(alpha)
+    def call(self, y_true, y_pred):
+        yt = clip01(y_true); yp = clip01(y_pred)
+        mae = tf.reduce_mean(tf.abs(yt - yp))
+        ssimv = ssim_3d_mean_safe(yt, yp, max_val=1.0)
+        return (1.0 - self.alpha) * mae + self.alpha * (1.0 - ssimv)
+
+def get_loss_by_name(name: str):
+    k = name.lower()
+    if k == "mae": return tf.keras.losses.MeanAbsoluteError()
+    if k == "mse": return tf.keras.losses.MeanSquaredError()
+    if k == "ssim":
+        class SSIMOnly(tf.keras.losses.Loss):
+            def call(self, y_true, y_pred):
+                yt = clip01(y_true); yp = clip01(y_pred)
+                return 1.0 - ssim_3d_mean_safe(yt, yp, max_val=1.0)
+        return SSIMOnly(name="ssim_only")
+    if k.startswith("mae+ssim"):
+        alpha = 0.7
+        parts = name.split(":")
+        if len(parts)==2:
+            try: alpha = float(parts[1])
+            except: pass
+        return CombinedMAE_SSIM_Loss(alpha=alpha, name=f"mae_ssim_{alpha}")
+    raise ValueError(f"Unknown loss: {name}")
+
+# --- (D) Suchraum klein, aber gezielt ---
+DEPTHS      = [2, 3, 4]                 # Architektur-Tiefe
+BASE_FILTER = [8, 16, 24]               # Start-Kanaele
+NORMS       = ["LN"]                    # LN = exakt wie bei dir; BN optional zusaetzlich
+ACTS        = ["ELU"]                   # ELU = wie bei dir; "LReLU" optional
+OUT_ACTS    = ["sigmoid", "tanh", "linear"]     # Output-Aktivierung
+LOSSES      = ["mae+ssim:0.7"]    # stabil und sinnvoll fuer Denoising
+
+MAX_EPOCHS_SCOUT = 10
+
+def run_mini_sweep():
+    runs = 0
+    for depth, bf, nm, ac, outa, loss_name in product(DEPTHS, BASE_FILTER, NORMS, ACTS, OUT_ACTS, LOSSES):
+        runs += 1
+        tag = f"d{depth}_bf{bf}_{ac}_{nm}_out{outa}__{loss_name}"
+
+        # Hinweis: fuer "linear"/"tanh" clampen die Metriken ohnehin via clip01()
+        model = build_unet3d_depth(INPUT_SHAPE,
+                                   base_filters=bf, depth_levels=depth,
+                                   norm=nm, act=ac,
+                                   output_activation=outa,
+                                   name=f"Scout_{tag}")
+
+        model.compile(
+            optimizer=AdamW(learning_rate=1e-4),
+            loss=get_loss_by_name(loss_name),
+            metrics=[ssim_metric,
+                     tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                     tf.keras.metrics.MeanSquaredError(name="mse"),
+                     psnr_metric],
+            jit_compile=False
+        )
+
+        es   = callbacks.EarlyStopping(monitor="val_loss", patience=3, restore_best_weights=True, verbose=0)
+        rlrp = callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=2, min_lr=1e-6, verbose=0)
+
+        print(f"\n[SWEEP] Run {runs}: {tag}")
+        hist = model.fit(train_ds, validation_data=val_ds,
+                         epochs=MAX_EPOCHS_SCOUT, callbacks=[es, rlrp], verbose=0)
+
+        val_res  = model.evaluate(val_ds,  return_dict=True, verbose=0)
+        test_res = model.evaluate(test_ds, return_dict=True, verbose=0)
+
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = {
+            "timestamp": stamp,
+            "run_tag": tag,
+            "model_name": model.name,
+            "config": {
+                "depth_levels": depth,
+                "base_filters": bf,
+                "norm": nm, "act": ac,
+                "output_activation": outa
+            },
+            "loss_name": loss_name,
+            "epochs_trained": int(len(hist.history.get("loss", []))),
+            "final_val":  {k: float(v) for k, v in val_res.items()},
+            "final_test": {k: float(v) for k, v in test_res.items()}
+        }
+        vloss = out["final_val"].get("loss", None)
+        vpsnr = out["final_val"].get("psnr", None)
+        fname = (
+            f"sweep_{stamp}_{tag}_valloss_{vloss:.4e}_valpsnr_{vpsnr:.2f}.json"
+            if (vloss is not None and vpsnr is not None) else
+            f"sweep_{stamp}_{tag}.json"
+        )
+        with open(EVAL_DIR / fname, "w") as f:
+            json.dump(out, f, indent=2)
+
+    print(f"\n[SWEEP] Completed {runs} runs. JSONs in {EVAL_DIR}")
+
+# Start
+run_mini_sweep()
 
