@@ -145,7 +145,7 @@ print(">>> Datasets created")
 
 # %%
 # ==============================
-# 4) Model Architektur
+# 4) Model Architektur (Depth=4)
 # ==============================
 
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
@@ -160,21 +160,46 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     x = layers.LayerNormalization(epsilon=1e-5)(x); x = layers.ELU()(x)
     return x
 
-def unet3d(input_shape=(5,192,240,1), base_filters=16, output_activation="tanh"):
+def unet3d(input_shape=(5,192,240,1), base_filters=16, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape)
-    c1 = conv_block(inputs, base_filters);           p1 = layers.MaxPooling3D((1,2,2))(c1)
-    c2 = conv_block(p1, base_filters*2);             p2 = layers.MaxPooling3D((1,2,2))(c2)
-    c3 = conv_block(p2, base_filters*4);             p3 = layers.MaxPooling3D((1,2,2))(c3)
-    bn = conv_block(p3, base_filters*8)
-    u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(bn)
-    u3 = layers.Concatenate()([u3, c3]);             c4 = conv_block(u3, base_filters*4)
-    u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c4)
-    u2 = layers.Concatenate()([u2, c2]);             c5 = conv_block(u2, base_filters*2)
-    u1 = layers.Conv3DTranspose(base_filters,   (1,2,2), (1,2,2), padding="same")(c5)
-    u1 = layers.Concatenate()([u1, c1]);             c6 = conv_block(u1, base_filters)
+
+    # Encoder (4 Downsamplings)
+    c1 = conv_block(inputs,            base_filters)        # bf
+    p1 = layers.MaxPooling3D((1,2,2))(c1)
+
+    c2 = conv_block(p1,                base_filters*2)      # 2bf
+    p2 = layers.MaxPooling3D((1,2,2))(c2)
+
+    c3 = conv_block(p2,                base_filters*4)      # 4bf
+    p3 = layers.MaxPooling3D((1,2,2))(c3)
+
+    c4 = conv_block(p3,                base_filters*8)      # 8bf
+    p4 = layers.MaxPooling3D((1,2,2))(c4)
+
+    # Bottleneck
+    bn = conv_block(p4,                base_filters*16)     # 16bf
+
+    # Decoder
+    u4 = layers.Conv3DTranspose(base_filters*8, (1,2,2), (1,2,2), padding="same")(bn)
+    u4 = layers.Concatenate()([u4, c4])
+    c5 = conv_block(u4, base_filters*8)
+
+    u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(c5)
+    u3 = layers.Concatenate()([u3, c3])
+    c6 = conv_block(u3, base_filters*4)
+
+    u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c6)
+    u2 = layers.Concatenate()([u2, c2])
+    c7 = conv_block(u2, base_filters*2)
+
+    u1 = layers.Conv3DTranspose(base_filters,   (1,2,2), (1,2,2), padding="same")(c7)
+    u1 = layers.Concatenate()([u1, c1])
+    c8 = conv_block(u1, base_filters)
+
     out = layers.Conv3D(1, (1,1,1), activation=output_activation,
-                        kernel_initializer="glorot_uniform")(c6)
-    return models.Model(inputs, out, name=f"3D_U-Net_JENS_d3_bf{base_filters}_out{output_activation}")
+                        kernel_initializer="glorot_uniform")(c8)
+
+    return models.Model(inputs, out, name=f"3D_U-Net_JENS_d4_bf{{base_filters}}_out{output_activation}")
 
 
 
@@ -235,7 +260,7 @@ ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
-    "early_stopping": {"monitor": "val_loss", "patience": 20},
+    "early_stopping": {"monitor": "val_loss", "patience": 30},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
     "alpha": 0.7,                             # Gewichte für kombinierten Loss
     "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
@@ -245,7 +270,7 @@ cbs, bf, ckpt_best = build_standard_callbacks(
     ckpt_root=ckpt_root,
     run_meta=run_meta,
     monitor="val_loss",
-    patience_es=20,
+    patience_es=30,
     reduce_on_plateau=True,
     reduce_factor=0.5,
     reduce_patience=10,
