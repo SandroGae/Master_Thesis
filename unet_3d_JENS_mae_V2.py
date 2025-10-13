@@ -9,10 +9,23 @@
 # ---
 
 # %%
+"""
+Durchsuchter Raum:
+DEPTHS      = [2, 3, 4]                         Architektur-Tiefe
+BASE_FILTER = [8, 16, 24]                       Start-Kanaele
+OUT_ACTS    = ["sigmoid", "tanh", "linear"]     Output-Aktivierung
+MAX_EPOCHS_SCOUT = 10
+
+Bestes Ergebnis:
+depth 3, base_filters 16, output_activation tanh
+"""
+
+# %%
 # unet_3d_JENS_mae.py
 # ==============================
 # 0) Imports & global setup
 # ==============================
+
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
@@ -39,6 +52,7 @@ AUTO = tf.data.AUTOTUNE
 # ==============================
 # 1) Daten laden (CPU)
 # ==============================
+
 print(">>> Phase 1: Starting data prep on CPU...")
 results = prepare_in_memory_5to5(
     data_dir=Path.home() / "data" / "original_data",
@@ -51,13 +65,14 @@ X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
+EPOCHS     = 0
 BATCH_SIZE = 32
-EPOCHS     = 200
 
 # %%
 # ==============================
 # 2) Preprocessing & Augment
 # ==============================
+
 preproc_train_slice = SumScaleNormalizer(
     scale_range=[5000, 15001], pre_offset=0.0, normalize_label=True,
     axis=(1,2,3), batch_mode=True, clip_before=[0., float("inf")], clip_after=[0.,1.]
@@ -93,6 +108,7 @@ def augment_5stack_flips(x, y):
 # ==============================
 # 3) Datasets
 # ==============================
+
 def nan_debug(x, y):
     nx = tf.reduce_sum(tf.cast(~tf.math.is_finite(x), tf.int32))
     ny = tf.reduce_sum(tf.cast(~tf.math.is_finite(y), tf.int32))
@@ -136,6 +152,7 @@ print(">>> Datasets created")
 # ==============================
 # 4) Model
 # ==============================
+
 def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     ki  = "he_normal"; kr = regularizers.l2(1e-5); kc = constraints.MaxNorm(3.0)
     x = layers.Conv3D(filters, kernel_size, padding=padding,
@@ -183,6 +200,7 @@ psnr_metric.__name__ = "psnr"
 # ==============================
 # 6) Compile
 # ==============================
+
 opt = AdamW(learning_rate=1e-5, epsilon=1e-3, global_clipnorm=0.1, weight_decay=0.0, amsgrad=False)
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(
@@ -198,6 +216,7 @@ model.compile(
 # ==============================
 # 7) Callbacks (gemeinsam)
 # ==============================
+
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
@@ -227,6 +246,7 @@ cbs, bf, ckpt_best = build_standard_callbacks(
 # ==============================
 # 8) Train & Evaluate
 # ==============================
+
 print(">>> Phase 3: GPU training starts now!")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=cbs, verbose=0)
 print(">>> Phase 3: Training complete!")
@@ -235,3 +255,163 @@ final_val = model.evaluate(val_ds, return_dict=True, verbose=0)
 print("FINAL VAL:", {k: float(v) for k, v in final_val.items()})
 final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
 print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
+
+# %%
+# ==============================
+# 9) Mini-Sweep (MAE): Depth, Base-Filters, Output-Aktivierung
+#      -> je Run max. 10 Epochen, JSON-Report, sauberer Logger
+# ==============================
+
+import json, datetime, re
+from itertools import product
+
+EVAL_DIR = Path.home() / "data" / "model_evaluations"
+EVAL_DIR.mkdir(parents=True, exist_ok=True)
+
+def _safe_tag(s: str) -> str:
+    """Nur A-Za-z0-9_.\\/>- erlauben; Rest -> '_'."""
+    t = re.sub(r"[^A-Za-z0-9_.\\/>-]", "_", s)
+    if not re.match(r"^[A-Za-z0-9.]", t):
+        t = "A" + t
+    return t
+
+# U-Net mit variabler Tiefe (Layer/Norm/Aktivierung identisch zu deinem conv_block)
+def build_unet3d_depth(input_shape,
+                       *, base_filters=16, depth_levels=3,
+                       output_activation="sigmoid",
+                       name=None):
+    inputs = layers.Input(shape=input_shape)
+    # Encoder
+    skips = []
+    x = inputs
+    filters = base_filters
+    for _ in range(depth_levels):
+        x = conv_block(x, filters)                  # exakt dein Block: LN+ELU
+        skips.append(x)
+        x = layers.MaxPooling3D((1,2,2))(x)
+        filters *= 2
+    # Bottleneck
+    x = conv_block(x, filters)
+    # Decoder
+    for level in reversed(range(depth_levels)):
+        filters //= 2
+        x = layers.Conv3DTranspose(filters, (1,2,2), (1,2,2), padding="same")(x)
+        x = layers.Concatenate()([x, skips[level]])
+        x = conv_block(x, filters)
+    out = layers.Conv3D(1, (1,1,1),
+                        activation=output_activation,
+                        kernel_initializer="glorot_uniform")(x)
+    model_name = name or f"UNet3D_d{depth_levels}_bf{base_filters}_out{output_activation}"
+    model_name = _safe_tag(model_name)
+    return models.Model(inputs, out, name=model_name)
+
+# Suchraum
+DEPTHS      = [2, 3, 4]
+BASE_FILTER = [8, 16, 24]
+OUT_ACTS    = ["sigmoid", "tanh", "linear"]
+
+MAX_EPOCHS_SCOUT = 10
+
+def run_mini_sweep_mae():
+    runs = 0
+    ckpt_root_scout = Path.home() / "data" / "checkpoints_3d_unet_scout_mae"
+
+    for depth, bf, outa in product(DEPTHS, BASE_FILTER, OUT_ACTS):
+        runs += 1
+        raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}__mae"
+        tag = _safe_tag(raw_tag)
+
+        # Modell
+        model = build_unet3d_depth(INPUT_SHAPE,
+                                   base_filters=bf,
+                                   depth_levels=depth,
+                                   output_activation=outa,
+                                   name=f"Scout_{tag}")
+
+        # Compile (MAE wie im Hauptmodell)
+        opt_scout = AdamW(learning_rate=1e-4, epsilon=1e-3,
+                          global_clipnorm=0.0, weight_decay=0.0, amsgrad=False)
+        model.compile(
+            optimizer=opt_scout,
+            loss=mae_loss,
+            metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                     tf.keras.metrics.MeanSquaredError(name="mse"),
+                     psnr_metric],
+            jit_compile=False
+        )
+
+        # Callbacks/Logger (dein Style)
+        run_meta_scout = {
+            "batch_size": BATCH_SIZE,
+            "epochs": MAX_EPOCHS_SCOUT,
+            "early_stopping": {"monitor": "val_loss", "patience": 3},
+            "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+            "alpha": None,
+            "loss_components": {"mae": 1.0}
+        }
+        cbs_scout, _, _ = build_standard_callbacks(
+            ckpt_root=ckpt_root_scout,
+            run_meta=run_meta_scout,
+            monitor="val_loss",
+            patience_es=3,
+            reduce_on_plateau=True,
+            reduce_factor=0.5,
+            reduce_patience=2,
+            min_lr=1e-6,
+            include_nan_guards=True,
+            include_logger=True,
+            code_name=f"sweep_mae_{tag}",
+            verbose_ckpt=0
+        )
+
+        print(f"\n[SWEEP] Run {runs}: {raw_tag}")
+
+        # Train (einmal, mit Logger) – 10 Epochen max, early stopping greift ggf. frueher
+        history = model.fit(
+            train_ds, validation_data=val_ds,
+            epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0
+        )
+
+        # Eval
+        val_res  = model.evaluate(val_ds,  return_dict=True, verbose=0)
+        test_res = model.evaluate(test_ds, return_dict=True, verbose=0)
+
+        # JSON schreiben
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = {
+            "timestamp": stamp,
+            "run_tag": raw_tag,
+            "run_tag_safe": tag,
+            "model_name": model.name,
+            "config": {
+                "depth_levels": depth,
+                "base_filters": bf,
+                "norm": "LN", "act": "ELU",
+                "output_activation": outa
+            },
+            "loss_name": "mae",
+            "epochs_trained": int(len(history.history.get("loss", []))),
+            "final_val":  {k: float(v) for k, v in val_res.items()},
+            "final_test": {k: float(v) for k, v in test_res.items()}
+        }
+        vloss = out["final_val"].get("loss", None)
+        vpsnr = out["final_val"].get("psnr", None)
+        fname_core = f"sweep_mae_{stamp}_{tag}"
+        fname = (
+            f"{fname_core}_valloss_{vloss:.4e}_valpsnr_{vpsnr:.2f}.json"
+            if (vloss is not None and vpsnr is not None) else
+            f"{fname_core}.json"
+        )
+        with open(EVAL_DIR / fname, "w") as f:
+            json.dump(out, f, indent=2)
+
+        # Speicher freigeben
+        tf.keras.backend.clear_session()
+
+    print(f"\n[SWEEP] Completed {runs} runs. JSONs in {EVAL_DIR}")
+
+# Falls du direkt nach dem Null-Training loslegen willst:
+# EPOCHS = 0 oben setzen, bestehendes fit laeuft ohne Training,
+# danach den Sweep starten:
+# run_mini_sweep_mae()
+
