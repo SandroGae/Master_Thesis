@@ -189,7 +189,8 @@ def unet3d(input_shape=(5,192,240,1), base_filters=16, output_activation="tanh")
                         kernel_initializer="glorot_uniform")(c8)
 
     return models.Model(inputs, out,
-                        name=f"3D_U-Net_JENS_d4_bf{base_filters}_out{output_activation}")
+    name=f"3D_U-Net_JENS_d4_bf{base_filters}_out{output_activation}"
+)
 
 
 # %%
