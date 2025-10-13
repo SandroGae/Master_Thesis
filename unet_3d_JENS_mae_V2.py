@@ -269,7 +269,7 @@ EVAL_DIR = Path.home() / "data" / "model_evaluations"
 EVAL_DIR.mkdir(parents=True, exist_ok=True)
 
 def _safe_tag(s: str) -> str:
-    """Nur A-Za-z0-9_.\\/>- erlauben; Rest -> '_'."""
+    # Nur A-Za-z0-9_.\\/>- erlauben; Rest -> '_'.
     t = re.sub(r"[^A-Za-z0-9_.\\/>-]", "_", s)
     if not re.match(r"^[A-Za-z0-9.]", t):
         t = "A" + t
@@ -413,5 +413,4 @@ def run_mini_sweep_mae():
 # Falls du direkt nach dem Null-Training loslegen willst:
 # EPOCHS = 0 oben setzen, bestehendes fit laeuft ohne Training,
 # danach den Sweep starten:
-# run_mini_sweep_mae()
-
+run_mini_sweep_mae()
