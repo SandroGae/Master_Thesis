@@ -131,19 +131,7 @@ def psnr_metric(y_true, y_pred):
     return tf.image.psnr(yt, yp, max_val=1.0)
 
 # ==============================
-# 4) Naming pipeline (einheitlich)
-# ==============================
-
-
-
-
-# ==============================
-# 5) Callbacks (gemeinsam)
-# ==============================
-
-
-# ==============================
-# 6) Compile + Training
+# 4) Compile + Training
 # ==============================
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(

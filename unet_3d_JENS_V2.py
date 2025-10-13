@@ -9,10 +9,23 @@
 # ---
 
 # %%
+"""
+Durchsuchter Raum:
+DEPTHS      = [2, 3, 4]                         Architektur-Tiefe
+BASE_FILTER = [8, 16, 24]                       Start-Kanaele
+OUT_ACTS    = ["sigmoid", "tanh", "linear"]     Output-Aktivierung
+MAX_EPOCHS_SCOUT = 10
+
+Bestes Ergebnis:
+depth 3, base_filters 16, output_activation tanh
+"""
+
+# %%
 # unet_3d_JENS.py
 # ==============================
 # 0) Imports & global setup
 # ==============================
+
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
@@ -40,6 +53,7 @@ AUTO = tf.data.AUTOTUNE
 # ==============================
 # 1) Daten laden (CPU)
 # ==============================
+
 print(">>> Phase 1: Starting data prep on CPU...")
 results = prepare_in_memory_5to5(
     data_dir=Path.home() / "data" / "original_data",
@@ -53,12 +67,13 @@ X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
 BATCH_SIZE = 32
-EPOCHS     = 0
+EPOCHS     = 200
 
 # %%
 # ==============================
 # 2) Preprocessing & Augmentation
 # ==============================
+
 preproc_train_slice = SumScaleNormalizer(
     scale_range=[5000, 15001], pre_offset=0.0, normalize_label=True,
     axis=(1, 2, 3), batch_mode=True, clip_before=[0., float("inf")], clip_after=[0., 1.]
@@ -94,6 +109,7 @@ def augment_5stack_flips(x, y):
 # ==============================
 # 3) Erstelle Datenset (mit NaN-Guard)
 # ==============================
+
 def nan_debug(x, y):
     nx = tf.reduce_sum(tf.cast(~tf.math.is_finite(x), tf.int32))
     ny = tf.reduce_sum(tf.cast(~tf.math.is_finite(y), tf.int32))
@@ -121,15 +137,9 @@ def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
     return ds
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, shuffle=True,
-                   preproc=map_slice_wise(preproc_train_slice),
-                   augmenter=augment_5stack_flips, check_nans=True)
-val_ds   = make_ds(X_val, Y_val, shuffle=False,
-                   preproc=map_slice_wise(preproc_valid_slice),
-                   augmenter=None, check_nans=True)
-test_ds  = make_ds(X_test, Y_test, shuffle=False,
-                   preproc=map_slice_wise(preproc_valid_slice),
-                   augmenter=None, check_nans=True)
+train_ds = make_ds(X_train, Y_train, shuffle=True, preproc=map_slice_wise(preproc_train_slice), augmenter=augment_5stack_flips, check_nans=True)
+val_ds   = make_ds(X_val, Y_val, shuffle=False, preproc=map_slice_wise(preproc_valid_slice), augmenter=None, check_nans=True)
+test_ds  = make_ds(X_test, Y_test, shuffle=False, preproc=map_slice_wise(preproc_valid_slice), augmenter=None, check_nans=True)
 print(">>> Datasets created")
 
 
@@ -150,21 +160,22 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     x = layers.LayerNormalization(epsilon=1e-5)(x); x = layers.ELU()(x)
     return x
 
-def unet3d(input_shape=(5,192,240,1), base_filters=8):
+def unet3d(input_shape=(5,192,240,1), base_filters=16, output_activation="tanh"):
     inputs = layers.Input(shape=input_shape)
-    c1 = conv_block(inputs, base_filters);   p1 = layers.MaxPooling3D((1,2,2))(c1)
-    c2 = conv_block(p1, base_filters*2);     p2 = layers.MaxPooling3D((1,2,2))(c2)
-    c3 = conv_block(p2, base_filters*4);     p3 = layers.MaxPooling3D((1,2,2))(c3)
+    c1 = conv_block(inputs, base_filters);           p1 = layers.MaxPooling3D((1,2,2))(c1)
+    c2 = conv_block(p1, base_filters*2);             p2 = layers.MaxPooling3D((1,2,2))(c2)
+    c3 = conv_block(p2, base_filters*4);             p3 = layers.MaxPooling3D((1,2,2))(c3)
     bn = conv_block(p3, base_filters*8)
     u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(bn)
-    u3 = layers.Concatenate()([u3, c3]);     c4 = conv_block(u3, base_filters*4)
+    u3 = layers.Concatenate()([u3, c3]);             c4 = conv_block(u3, base_filters*4)
     u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c4)
-    u2 = layers.Concatenate()([u2, c2]);     c5 = conv_block(u2, base_filters*2)
+    u2 = layers.Concatenate()([u2, c2]);             c5 = conv_block(u2, base_filters*2)
     u1 = layers.Conv3DTranspose(base_filters,   (1,2,2), (1,2,2), padding="same")(c5)
-    u1 = layers.Concatenate()([u1, c1]);     c6 = conv_block(u1, base_filters)
-    out = layers.Conv3D(1, (1,1,1), activation="sigmoid",
+    u1 = layers.Concatenate()([u1, c1]);             c6 = conv_block(u1, base_filters)
+    out = layers.Conv3D(1, (1,1,1), activation=output_activation,
                         kernel_initializer="glorot_uniform")(c6)
-    return models.Model(inputs, out, name="3D_U-Net_JENS")
+    return models.Model(inputs, out, name=f"3D_U-Net_JENS_d3_bf{base_filters}_out{output_activation}")
+
 
 
 # %%
@@ -208,12 +219,10 @@ class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
 # 6) Compile
 # ==============================
 
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
-model.compile(
-    optimizer=AdamW(learning_rate=1e-4),
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16, output_activation="tanh")
+model.compile(optimizer=AdamW(learning_rate=1e-4),
     loss=CombinedMAE_SSIM_Loss(alpha=0.7),
-    metrics=[ssim_metric, tf.keras.metrics.MeanAbsoluteError(name="mae"),
-             tf.keras.metrics.MeanSquaredError(name="mse"), psnr_metric],
+    metrics=[ssim_metric, tf.keras.metrics.MeanAbsoluteError(name="mae"), tf.keras.metrics.MeanSquaredError(name="mse"), psnr_metric],
     jit_compile=False
 )
 
@@ -263,6 +272,8 @@ print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 
 
 # %%
+"""
+
 # ==============================
 # 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss (fix)
 #      -> je Run max. 10 Epochen, JSON-Report, sauberer Logger
@@ -275,10 +286,8 @@ EVAL_DIR = Path.home() / "data" / "model_evaluations"
 EVAL_DIR.mkdir(parents=True, exist_ok=True)
 
 def _safe_tag(s: str) -> str:
-    """
-    Erlaubt nur A-Za-z0-9_.\\/>- ; ersetze andere Zeichen durch '_'.
-    Garantiert, dass der erste Char gueltig ist (A-Za-z oder Ziffer oder '.').
-    """
+    # Erlaubt nur A-Za-z0-9_.\\/>- ; ersetze andere Zeichen durch '_'.
+    # Garantiert, dass der erste Char gueltig ist (A-Za-z oder Ziffer oder '.').
     # Ersetze unerlaubte Zeichen
     t = re.sub(r"[^A-Za-z0-9_.\\/>-]", "_", s)
     # falls erster Char ungueltig, prefix mit 'A'
@@ -456,3 +465,4 @@ def run_mini_sweep():
 # Start
 run_mini_sweep()
 
+"""

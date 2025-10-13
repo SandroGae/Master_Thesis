@@ -35,6 +35,7 @@ for g in tf.config.list_physical_devices('GPU'):
 
 AUTO = tf.data.AUTOTUNE
 
+# %%
 # ==============================
 # 1) Daten laden (CPU)
 # ==============================
@@ -53,6 +54,7 @@ INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
 BATCH_SIZE = 32
 EPOCHS     = 200
 
+# %%
 # ==============================
 # 2) Preprocessing & Augment
 # ==============================
@@ -86,6 +88,8 @@ def augment_5stack_flips(x, y):
     y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
     return x, y
 
+
+# %%
 # ==============================
 # 3) Datasets
 # ==============================
@@ -127,6 +131,8 @@ test_ds  = make_ds(X_test, Y_test, shuffle=False,
                    augmenter=None, check_nans=True, prefetch_n=1, num_calls=1)
 print(">>> Datasets created")
 
+
+# %%
 # ==============================
 # 4) Model
 # ==============================
@@ -158,6 +164,8 @@ def unet3d(input_shape=(5,192,240,1), base_filters=8):
                         kernel_initializer="glorot_uniform")(c6)
     return models.Model(inputs, out, name="3D_U-Net-ELU-LN")
 
+
+# %%
 # ==============================
 # 5) Loss & Metrics (MAE)
 # ==============================
@@ -171,6 +179,7 @@ def psnr_metric(y_true, y_pred):
     return tf.image.psnr(yt, yp, max_val=1.0)
 psnr_metric.__name__ = "psnr"
 
+# %%
 # ==============================
 # 6) Compile
 # ==============================
@@ -185,14 +194,9 @@ model.compile(
     jit_compile=False
 )
 
+# %%
 # ==============================
-# 7) Naming pipeline (einheitlich)
-# ==============================
-
-
-
-# ==============================
-# 8) Callbacks (gemeinsam)
+# 7) Callbacks (gemeinsam)
 # ==============================
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
@@ -219,8 +223,9 @@ cbs, bf, ckpt_best = build_standard_callbacks(
     verbose_ckpt=1
 )
 
+# %%
 # ==============================
-# 9) Train & Evaluate
+# 8) Train & Evaluate
 # ==============================
 print(">>> Phase 3: GPU training starts now!")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=cbs, verbose=0)
@@ -230,4 +235,3 @@ final_val = model.evaluate(val_ds, return_dict=True, verbose=0)
 print("FINAL VAL:", {k: float(v) for k, v in final_val.items()})
 final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
 print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
-

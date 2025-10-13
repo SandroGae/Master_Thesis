@@ -143,6 +143,7 @@ def main(
     group_index: int = 0,
     fps: int = 12,
     save_counts: bool = False,
+    spacer_seconds=0.25, spacer_color=(0,0,0)
 ):
     print(">>> Lade Testdaten (ALT-Pipeline, kein VST)...")
     (results, meta) = prepare_in_memory(
@@ -184,10 +185,12 @@ def main(
 
     # Grünen Spacer vorbereiten (0.5s bei gegebener FPS)
     fps = int(fps) if fps else 10
-    spacer_frames = max(1, int(round(0.5 * fps)))  # 0.5 Sekunden
+    spacer_frames = max(1, int(round(spacer_seconds * fps)))
     H, W, _ = frames_first[0].shape
     spacer = np.zeros((H, W, 3), dtype=np.uint8)
-    spacer[..., 1] = 255  # knallgrün
+    spacer[..., 0] = spacer_color[0]
+    spacer[..., 1] = spacer_color[1]
+    spacer[..., 2] = spacer_color[2]
 
     # Alle Frames sammeln
     frames_all = []
