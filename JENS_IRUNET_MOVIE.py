@@ -28,14 +28,15 @@ def build_irunet(input_shape=(192,240,1), n_filters=64, kernel_initializer="he_n
         x2 = layers.Concatenate()([a,b,c])
         x2 = layers.Conv2D(nf,1,padding="same")(x2)
         return layers.Add()([x,x2])
-    def inc_red(x,nf):
-        sc = layers.Conv2D(nf,2,strides=2,padding="same")(x)
-        a = layers.Conv2D(nf,3,strides=2,padding="same",activation="relu",kernel_initializer=kernel_initializer)(x)
-        b = layers.Conv2D(nf*2,3,strides=2,padding="same",activation="relu",kernel_initializer=kernel_initializer)(x)
-        c = layers.AveragePooling2D(padding="same")(x)
-        x2 = layers.Concatenate()([a,b,c])
-        x2 = layers.Conv2D(nf,1,padding="same")(x2)
-        return layers.Add()([sc,x2])
+    def inc_red(x, nf):
+        sc = layers.Conv2D(nf, 2, strides=2, padding="same")(x)
+        a  = layers.Conv2D(nf,   3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        b  = layers.Conv2D(nf*2, 3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        c  = layers.AveragePooling2D(pool_size=2, strides=2, padding="same")(x)   # ← FIX
+        x2 = layers.Concatenate()([a, b, c])
+        x2 = layers.Conv2D(nf, 1, padding="same")(x2)
+        return layers.Add()([sc, x2])
+
 
     h = layers.Conv2D(n_filters,3,padding="same",activation="relu",kernel_initializer=kernel_initializer)(inp)
     c1 = inc_red(h,n_filters);  c1 = inc(c1,n_filters)
