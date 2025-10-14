@@ -165,21 +165,38 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     x = layers.LayerNormalization(epsilon=1e-5)(x); x = layers.ELU()(x)
     return x
 
-def unet3d(input_shape=(5,192,240,1), base_filters=8):
+def unet3d(input_shape=(5,192,240,1), base_filters=16, output_activation="tanh"):
     inputs = layers.Input(shape=input_shape)
-    c1 = conv_block(inputs, base_filters);   p1 = layers.MaxPooling3D((1,2,2))(c1)
-    c2 = conv_block(p1, base_filters*2);     p2 = layers.MaxPooling3D((1,2,2))(c2)
-    c3 = conv_block(p2, base_filters*4);     p3 = layers.MaxPooling3D((1,2,2))(c3)
-    bn = conv_block(p3, base_filters*8)
-    u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(bn)
-    u3 = layers.Concatenate()([u3, c3]);     c4 = conv_block(u3, base_filters*4)
-    u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c4)
-    u2 = layers.Concatenate()([u2, c2]);     c5 = conv_block(u2, base_filters*2)
-    u1 = layers.Conv3DTranspose(base_filters,   (1,2,2), (1,2,2), padding="same")(c5)
-    u1 = layers.Concatenate()([u1, c1]);     c6 = conv_block(u1, base_filters)
-    out = layers.Conv3D(1, (1,1,1), activation="sigmoid",
-                        kernel_initializer="glorot_uniform")(c6)
-    return models.Model(inputs, out, name="3D_U-Net-ELU-LN")
+
+    # Encoder (Depth=4)
+    c1 = conv_block(inputs, base_filters)            ; p1 = layers.MaxPooling3D((1,2,2))(c1)
+    c2 = conv_block(p1, base_filters*2)              ; p2 = layers.MaxPooling3D((1,2,2))(c2)
+    c3 = conv_block(p2, base_filters*4)              ; p3 = layers.MaxPooling3D((1,2,2))(c3)
+    c4 = conv_block(p3, base_filters*8)              ; p4 = layers.MaxPooling3D((1,2,2))(c4)
+
+    # Bottleneck
+    bn = conv_block(p4, base_filters*16)
+
+    # Decoder
+    u4 = layers.Conv3DTranspose(base_filters*8, (1,2,2), (1,2,2), padding="same")(bn)
+    u4 = layers.Concatenate()([u4, c4])              ; c5 = conv_block(u4, base_filters*8)
+
+    u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(c5)
+    u3 = layers.Concatenate()([u3, c3])              ; c6 = conv_block(u3, base_filters*4)
+
+    u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c6)
+    u2 = layers.Concatenate()([u2, c2])              ; c7 = conv_block(u2, base_filters*2)
+
+    u1 = layers.Conv3DTranspose(base_filters,   (1,2,2), (1,2,2), padding="same")(c7)
+    u1 = layers.Concatenate()([u1, c1])              ; c8 = conv_block(u1, base_filters)
+
+    out = layers.Conv3D(1, (1,1,1), activation=output_activation,
+                        kernel_initializer="glorot_uniform")(c8)
+    
+    return models.Model(inputs, out,
+        name=f"UNet3D_JENS_mae_d4_bf{base_filters}_out{output_activation}"
+    )
+
 
 
 # %%
@@ -202,7 +219,7 @@ psnr_metric.__name__ = "psnr"
 # ==============================
 
 opt = AdamW(learning_rate=1e-5, epsilon=1e-3, global_clipnorm=0.1, weight_decay=0.0, amsgrad=False)
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16, output_activation="tanh")
 model.compile(
     optimizer=opt,
     loss=mae_loss,
@@ -257,6 +274,7 @@ final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
 print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 
 # %%
+"""
 # ==============================
 # 9) Mini-Sweep (MAE): Depth, Base-Filters, Output-Aktivierung
 #      -> je Run max. 10 Epochen, JSON-Report, sauberer Logger
@@ -414,3 +432,4 @@ def run_mini_sweep_mae():
 # EPOCHS = 0 oben setzen, bestehendes fit laeuft ohne Training,
 # danach den Sweep starten:
 run_mini_sweep_mae()
+"""
