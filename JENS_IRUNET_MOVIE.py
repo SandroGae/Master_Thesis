@@ -11,8 +11,7 @@
 # %%
 # #!/usr/bin/env python3
 # JENS_IRUNET_MOVIE.py
-# Baut ein MP4-Video mit Low | Denoised (IRUNet) | High für 2D-Daten.
-# Nutzt dasselbe Layout- und Stretching-System wie eval_make_movie_unet3d.py.
+# Lädt das IRUNet-Modell, lädt Gewichte aus .hdf5, erstellt Denoising-Videos.
 
 import os
 from pathlib import Path
@@ -21,9 +20,67 @@ import tensorflow as tf
 import imageio.v2 as imageio
 from PIL import Image, ImageDraw, ImageFont
 
-from unet_3d_data import prepare_in_memory  # wird auch für 2D-Slices verwendet
+from unet_3d_data_JENS import prepare_in_memory_5to5
 
-# ---------- Anzeige-Helfer ----------
+
+# ==========================================================
+# 1) IRUNet-Definition direkt hier integriert
+# ==========================================================
+import keras.layers as layers
+
+def build_irunet(input_shape=(192, 240, 1), n_filters=64, kernel_initializer="he_normal"):
+    """Erstellt das IRUNet-Model wie in JENS_IRUNET.py"""
+    inputs = tf.keras.Input(shape=input_shape)
+
+    def inception_block(x, nf):
+        a = layers.Conv2D(nf, 3, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        b = layers.Conv2D(nf*2, 3, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        c = layers.Conv2D(nf, 3, padding="same", activation="relu", dilation_rate=2, kernel_initializer=kernel_initializer)(x)
+        concat = layers.Concatenate()([a, b, c])
+        red = layers.Conv2D(nf, 1, padding="same")(concat)
+        out = layers.Add()([x, red])
+        return out
+
+    def inception_block_reduction(x, nf):
+        shortcut = layers.Conv2D(nf, 2, strides=2, padding="same")(x)
+        a = layers.Conv2D(nf, 3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        b = layers.Conv2D(nf*2, 3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        c = layers.AveragePooling2D(padding="same")(x)
+        concat = layers.Concatenate()([a, b, c])
+        red = layers.Conv2D(nf, 1, padding="same")(concat)
+        out = layers.Add()([shortcut, red])
+        return out
+
+    # Encoder
+    head = layers.Conv2D(n_filters, 3, padding="same", activation="relu", kernel_initializer=kernel_initializer)(inputs)
+    conv1 = inception_block_reduction(head, n_filters)
+    conv1 = inception_block(conv1, n_filters)
+    conv2 = inception_block_reduction(conv1, n_filters)
+    conv2 = inception_block(conv2, n_filters)
+    conv3 = inception_block_reduction(conv2, n_filters)
+    conv3 = inception_block(conv3, n_filters)
+    body  = inception_block_reduction(conv3, n_filters)
+    body  = inception_block(body, n_filters)
+
+    # Decoder
+    d3 = layers.Conv2DTranspose(n_filters, 2, strides=2, padding="same", activation="relu")(body)
+    d3 = inception_block(d3, n_filters)
+    d2 = layers.Conv2DTranspose(n_filters, 2, strides=2, padding="same", activation="relu")(d3)
+    d2 = inception_block(d2, n_filters)
+    d2 = layers.Add()([conv2, d2])
+    d1 = layers.Conv2DTranspose(n_filters, 2, strides=2, padding="same", activation="relu")(d2)
+    d1 = inception_block(d1, n_filters)
+    d1 = layers.Add()([conv1, d1])
+    tail = layers.Conv2DTranspose(n_filters, 2, strides=2, padding="same", activation="relu")(d1)
+    tail = inception_block(tail, n_filters)
+    tail = layers.Conv2D(1, 1, padding="same", activation="sigmoid")(tail)
+
+    return tf.keras.Model(inputs, tail, name="IRUNet")
+
+
+# ==========================================================
+# 2) Anzeige-Helfer (aus deinem alten Movie-Code)
+# ==========================================================
 def stretch_local_uint8(img01, p_low=1.0, p_high=99.5, gamma=0.8):
     x = np.clip(img01.astype(np.float32), 0.0, 1.0)
     lo, hi = np.percentile(x, [p_low, p_high])
@@ -42,8 +99,7 @@ def make_rgb_labeled(panel_gray, label_text, pad=6):
     panel_img = Image.fromarray(panel_gray, mode="L").convert("RGB")
     canvas.paste(panel_img, (0, bar_h))
     draw = ImageDraw.Draw(canvas)
-    font = ImageFont.load_default()
-    draw.text((6, 4), label_text, fill=(255, 255, 255), font=font)
+    draw.text((6, 4), label_text, fill=(255, 255, 255), font=ImageFont.load_default())
     return np.asarray(canvas)
 
 def hstack_same_height(imgs, pad_px=8, pad_color=(0, 0, 0)):
@@ -73,91 +129,62 @@ def upscale_rgb(img_rgb, scale=2):
     h, w = img_rgb.shape[:2]
     return np.asarray(Image.fromarray(img_rgb).resize((w*scale, h*scale), Image.BILINEAR))
 
-# ---------- Frames bauen ----------
-def build_frames_2d(low, pred, high, *, p_low=1.0, p_high=99.5, gamma=0.8, layout="h", upscale=2, pad_px=12):
+def build_frames_2d(low, pred, high, p_low=1.0, p_high=99.5, gamma=0.8, layout="h", upscale=2, pad_px=12):
     assert low.shape == pred.shape == high.shape, "Shape mismatch!"
     frames = []
     for i in range(low.shape[0]):
         l = low[i, ..., 0]
         p = pred[i, ..., 0]
         h = high[i, ..., 0]
-
         l8 = stretch_local_uint8(l, p_low=p_low, p_high=p_high, gamma=gamma)
         p8 = stretch_local_uint8(p, p_low=p_low, p_high=p_high, gamma=gamma)
         h8 = stretch_local_uint8(h, p_low=p_low, p_high=p_high, gamma=gamma)
-
         l_rgb = make_rgb_labeled(l8, "Low-count")
         p_rgb = make_rgb_labeled(p8, "Denoised (IRUNet)")
         h_rgb = make_rgb_labeled(h8, "High-count")
-
-        if layout == "h":
-            frame_rgb = hstack_same_height([l_rgb, p_rgb, h_rgb], pad_px=pad_px)
-        else:
-            frame_rgb = np.concatenate([l_rgb, p_rgb, h_rgb], axis=0)
-
-        frame_rgb = upscale_rgb(frame_rgb, scale=upscale)
-        frames.append(frame_rgb)
+        frame_rgb = hstack_same_height([l_rgb, p_rgb, h_rgb], pad_px=pad_px) if layout == "h" else np.concatenate([l_rgb, p_rgb, h_rgb], axis=0)
+        frames.append(upscale_rgb(frame_rgb, scale=upscale))
     return frames
 
-# ---------- Speichern ----------
 def save_mp4(frames_rgb, out_path, fps=12):
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with imageio.get_writer(out_path.as_posix(), fps=fps, quality=8) as w:
         for fr in frames_rgb:
             w.append_data(fr)
-    print(f"[OK] MP4: {out_path}")
+    print(f"[OK] MP4 gespeichert: {out_path}")
 
-# ---------- Main ----------
-def main(
-    model_path: Path,
-    data_dir: Path = Path.home() / "data" / "original_data",
-    out_dir: Path = Path.home() / "data" / "movies",
-    fps: int = 12,
-    p_low=1.0, p_high=99.5, gamma=0.8,
-    upscale=2
-):
-    print(">>> Lade Testdaten (ALT-Pipeline)...")
-    (results, meta) = prepare_in_memory(
-        data_dir=data_dir,
-        size=1,         # 2D -> keine Sliding-Window-Logik
-        group_len=1,
-        percentile=99.9,
-        dtype=np.float32,
+
+# ==========================================================
+# 3) Hauptfunktion
+# ==========================================================
+def main(model_weights: Path, data_dir: Path, out_dir: Path, fps=12):
+    print(">>> Lade Testdaten...")
+    (results, meta) = prepare_in_memory_5to5(
+        data_dir=data_dir, size=1, group_len=1, percentile=99.9, dtype=np.float32
     )
     X_test, Y_test = results["test"]
-    clip_val_train = float(meta["clip_val"])
-    print(f"[INFO] clip_val_train={clip_val_train:.4g}, shape={X_test.shape}")
+    print(f"[INFO] Testshape: {X_test.shape}")
 
-    print(f">>> Lade Modell: {model_path}")
-    model = tf.keras.models.load_model(model_path, compile=False)
-    print(model.summary())
+    print(f">>> Baue IRUNet und lade Gewichte aus {model_weights.name}")
+    model = build_irunet(input_shape=(192, 240, 1))
+    model.load_weights(model_weights)
+    print("[OK] Gewichte geladen.")
+    model.summary()
 
     print(">>> Vorhersage...")
     pred = model.predict(X_test, batch_size=8, verbose=1)
 
     print(">>> Frames bauen...")
-    frames_all = build_frames_2d(
-        low=X_test, pred=pred, high=Y_test,
-        p_low=p_low, p_high=p_high, gamma=gamma,
-        layout="h", upscale=upscale, pad_px=12,
-    )
+    frames = build_frames_2d(X_test, pred, Y_test)
+    out_file = out_dir / f"{Path(model_weights).stem}_movie.mp4"
+    save_mp4(frames, out_file, fps=fps)
 
-    out_dir = Path(out_dir)
-    out_file = out_dir / f"{Path(model_path).stem}_movie.mp4"
-    save_mp4(frames_all, out_file, fps=fps)
-
-    print(">>> Fertig! Film gespeichert unter:")
-    print(out_file)
 
 if __name__ == "__main__":
-    model_path = Path(__file__).parent / "JENS_IRUNET.hdf5"
-    main(
-        model_path=model_path,
-        data_dir=Path.home() / "data" / "original_data",
-        out_dir=Path.home() / "data" / "movies",
-        fps=12,
-        p_low=1.0, p_high=99.5, gamma=0.8,
-        upscale=2,
-    )
+    model_weights = Path(__file__).parent / "JENS_IRUNET.hdf5"
+    data_dir = Path.home() / "data" / "original_data"
+    out_dir = Path.home() / "data" / "movies"
+
+    main(model_weights, data_dir, out_dir, fps=12)
 
