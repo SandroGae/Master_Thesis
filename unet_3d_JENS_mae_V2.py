@@ -65,7 +65,7 @@ X_val,   Y_val   = results["val"]
 X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
-EPOCHS     = 0
+EPOCHS     = 200
 BATCH_SIZE = 32
 
 # %%
