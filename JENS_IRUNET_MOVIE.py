@@ -17,6 +17,7 @@ import imageio.v2 as imageio
 from PIL import Image, ImageDraw, ImageFont
 import keras.layers as layers
 import h5py
+from unet_3d_data_JENS import prepare_in_memory_5to5
 
 # ---------- IRUNet (2D) ----------
 def build_irunet(input_shape=(192,240,1), n_filters=64, kernel_initializer="he_normal"):
@@ -127,20 +128,29 @@ def main(model_weights: Path,
          out_dir:  Path = Path.home()/ "data"/"movies",
          fps:int=12, spacer_seconds=0.25):
 
-    # 1) Rohdaten laden
-    splits = load_all_splits(data_dir)
-    high, low = splits["test"]       # (N,H,W) jeweils
-    N, H, W = low.shape
-    print(f"[INFO] Test N={N}, HxW={H}x{W} (41er Serien)")
+    # 1) 5-zu-5 Datasets bauen (wie JENS es nutzt)
+    results = prepare_in_memory_5to5(
+        data_dir=data_dir,
+        size=5,          # 5er Fenster
+        group_len=41,
+        dtype=np.float32
+    )
 
-    # 2) Indices 2..38 je Serie ziehen (entspricht Zentren 3..39 1-basiert)
-    X_test, Y_test = select_center_range_2D(low, high, group_len=41, start=2, end=38)  # (B,H,W,1)
-    print(f"[INFO] Ausgewaehlt: {X_test.shape[0]} Frames (= 37 pro Serie)")
+    X5_test, Y5_test = results["test"]   # (B, 5, H, W, 1), Rohwerte (Counts) je nach Pipeline
+    B, D, H, W, C = X5_test.shape
+    assert D == 5 and C == 1, f"Unerwartete Shape: {X5_test.shape}"
 
-    # 3) Modell bauen und Gewichte laden
-    model = build_irunet(input_shape=(H,W,1))
-    model.load_weights(model_weights)
-    print("[OK] Gewichte geladen.")
+    # 2) Mittleres Bild je 5er-Fenster (Index 2) extrahieren -> 2D-Frames fuer IRUNet
+    X2d = X5_test[:, 2, ...]   # (B, H, W, 1)
+    Y2d = Y5_test[:, 2, ...]   # (B, H, W, 1)
+
+    # 3) Pro 41er Serie nur die zentralen 37 Fenster nehmen (Fensterstarts 2..38)
+    windows_per_group = 41 - 5 + 1   # = 37
+    num_groups_total  = B // windows_per_group
+    idx = np.concatenate([np.arange(g*windows_per_group, g*windows_per_group + windows_per_group) 
+                        for g in range(num_groups_total)])
+    X_test = X2d[idx]   # (37*num_groups, H, W, 1)
+    Y_test = Y2d[idx]
 
     # 4) Vorhersage
     pred = model.predict(X_test, batch_size=8, verbose=1)
