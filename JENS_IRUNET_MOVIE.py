@@ -9,7 +9,7 @@
 # ---
 
 # %%
-# JENS_IRUNET_MOVIE_2D_normalized_like_training.py
+# JENS_IRUNET_MOVIE.py
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
@@ -102,16 +102,13 @@ def select_center_frames_2_thru_38(X, Y, group_len=41):
     return X[idx], Y[idx], (N//group_len)
 
 # ---------- Anzeige-Helfer (identisch zu deinem Movie) ----------
-def stretch_local_uint8(x01, p_low=1.0, p_high=99.5, gamma=0.8):
+def stretch_with_window(x01, lo, hi, gamma=0.8):
     x = np.clip(x01.astype(np.float32), 0.0, 1.0)
-    lo, hi = np.percentile(x, [p_low, p_high])
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         lo, hi = float(x.min()), float(x.max() if x.max() > x.min() else 1.0)
-    x = (x - lo) / (hi - lo + 1e-8)
-    x = np.clip(x, 0.0, 1.0)
-    if gamma and gamma > 0:
-        x = np.power(x, gamma)
-    return (x * 255.0 + 0.5).astype(np.uint8)
+    x = np.clip((x - lo) / (hi - lo + 1e-8), 0, 1)
+    if gamma and gamma > 0: x = np.power(x, gamma)
+    return (x*255.0 + 0.5).astype(np.uint8)
 
 def make_rgb_labeled(panel_gray, label):
     h, w = panel_gray.shape; bar_h = 26
@@ -140,12 +137,19 @@ def upscale_rgb(img_rgb, scale=2):
 def build_frames(low, pred, high, *, p_low=1.0, p_high=99.5, gamma=0.8, upscale=2, pad_px=12):
     frames=[]
     for i in range(low.shape[0]):
-        l8 = stretch_local_uint8(low [i,...,0], p_low, p_high, gamma)
-        p8 = stretch_local_uint8(pred[i,...,0], p_low, p_high, gamma)
-        h8 = stretch_local_uint8(high[i,...,0], p_low, p_high, gamma)
-        l = make_rgb_labeled(l8, "Low-count")
-        p = make_rgb_labeled(p8, "Denoised (IRUNet)")
-        h = make_rgb_labeled(h8, "High-count")
+        # gemeinsames Fenster – nimm High (oder die Vereinigung)
+        # Option A: nur High als Referenz
+        lo, hi = np.percentile(high[i,...,0], [p_low, p_high])
+        # Option B (streng gleich): Vereinigung aller drei
+        # all_vals = np.concatenate([low[i,...,0].ravel(), pred[i,...,0].ravel(), high[i,...,0].ravel()])
+        # lo, hi = np.percentile(all_vals, [p_low, p_high])
+
+        l8 = stretch_with_window(low [i,...,0], lo, hi, gamma)
+        p8 = stretch_with_window(pred[i,...,0], lo, hi, gamma)
+        h8 = stretch_with_window(high[i,...,0], lo, hi, gamma)
+        l = make_rgb_labeled(l8,"Low-count")
+        p = make_rgb_labeled(p8,"Denoised (Model)")
+        h = make_rgb_labeled(h8,"High-count")
         frames.append(upscale_rgb(hstack_same_height([l,p,h], pad_px=pad_px), scale=upscale))
     return frames
 

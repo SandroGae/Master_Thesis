@@ -9,7 +9,7 @@
 # ---
 
 # %%
-# eval_make_movie_unet3d.py
+# MOVIE_unet_3d.py
 # Baut ein MP4: Low-count | Denoised (Model) | High-count, mittleres Slice je 5er-Fenster.
 # Nutzt exakt dieselbe ALT-Pipeline (kein VST) wie im Training.
 
@@ -23,16 +23,13 @@ from PIL import Image, ImageDraw, ImageFont
 from unet_3d_data import prepare_in_memory
 
 # ---------- Anzeige-Helfer ----------
-def stretch_local_uint8(img01, p_low=1.0, p_high=99.5, gamma=0.8):
-    x = np.clip(img01.astype(np.float32), 0.0, 1.0)
-    lo, hi = np.percentile(x, [p_low, p_high])
+def stretch_with_window(x01, lo, hi, gamma=0.8):
+    x = np.clip(x01.astype(np.float32), 0.0, 1.0)
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         lo, hi = float(x.min()), float(x.max() if x.max() > x.min() else 1.0)
-    x = (x - lo) / (hi - lo + 1e-8)
-    x = np.clip(x, 0.0, 1.0)
-    if gamma is not None and gamma > 0:
-        x = np.power(x, gamma)  # gamma<1 -> heller
-    return (x * 255.0 + 0.5).astype(np.uint8)
+    x = np.clip((x - lo) / (hi - lo + 1e-8), 0, 1)
+    if gamma and gamma > 0: x = np.power(x, gamma)
+    return (x*255.0 + 0.5).astype(np.uint8)
 
 def make_rgb_labeled(panel_gray, label_text, pad=6):
     h, w = panel_gray.shape
@@ -76,46 +73,59 @@ def upscale_rgb(img_rgb, scale=2):
     return np.asarray(Image.fromarray(img_rgb).resize((w*scale, h*scale), Image.BILINEAR))
 
 # ---------- Frames bauen ----------
-def build_center_frames(
-    low, pred, high, *,
-    size=5, group_len=41, group_index=0,
-    p_low=1.0, p_high=99.5, gamma=0.8,
-    layout="h",    # "h": nebeneinander, "v": untereinander
-    upscale=2,
-    pad_px=12,
-):
-    assert low.shape == pred.shape == high.shape, "low/pred/high shape mismatch"
+def build_frames(low, pred, high, *, p_low=1.0, p_high=99.5, gamma=0.8, upscale=2, pad_px=12):
+    frames=[]
+    for i in range(low.shape[0]):
+        # gemeinsames Fenster – nimm High (oder die Vereinigung)
+        # Option A: nur High als Referenz
+        lo, hi = np.percentile(high[i,...,0], [p_low, p_high])
+        # Option B (streng gleich): Vereinigung aller drei
+        # all_vals = np.concatenate([low[i,...,0].ravel(), pred[i,...,0].ravel(), high[i,...,0].ravel()])
+        # lo, hi = np.percentile(all_vals, [p_low, p_high])
+
+        l8 = stretch_with_window(low [i,...,0], lo, hi, gamma)
+        p8 = stretch_with_window(pred[i,...,0], lo, hi, gamma)
+        h8 = stretch_with_window(high[i,...,0], lo, hi, gamma)
+        l = make_rgb_labeled(l8,"Low-count")
+        p = make_rgb_labeled(p8,"Denoised (Model)")
+        h = make_rgb_labeled(h8,"High-count")
+        frames.append(upscale_rgb(hstack_same_height([l,p,h], pad_px=pad_px), scale=upscale))
+    return frames
+
+def build_center_frames(low, pred, high, *, size=5, group_len=41, group_index=0,
+                        p_low=1.0, p_high=99.5, gamma=0.8, layout="h",
+                        upscale=2, pad_px=12):
+    # low/pred/high: (B, D, H, W, 1)
+    assert low.shape == pred.shape == high.shape
     B, D, H, W, C = low.shape
-    assert C == 1
+    assert C == 1 and size % 2 == 1
     k = size // 2
-    windows_per_group = group_len - size + 1  # 37 bei 41/5
+    windows_per_group = group_len - size + 1  # 37
     num_groups = B // windows_per_group
-    if group_index < 0 or group_index >= num_groups:
+    if not (0 <= group_index < num_groups):
         raise ValueError(f"group_index {group_index} out of range [0,{num_groups-1}]")
     start = group_index * windows_per_group
     end   = start + windows_per_group
 
     frames = []
     for b in range(start, end):
-        l = low [b, k, ..., 0]
+        l = low [b, k, ..., 0]   # (H,W)
         p = pred[b, k, ..., 0]
         h = high[b, k, ..., 0]
 
-        l8 = stretch_local_uint8(l, p_low=p_low, p_high=p_high, gamma=gamma)
-        p8 = stretch_local_uint8(p, p_low=p_low, p_high=p_high, gamma=gamma)
-        h8 = stretch_local_uint8(h, p_low=p_low, p_high=p_high, gamma=gamma)
+        # gemeinsames Fenster pro Triple (vom High-Frame)
+        lo, hi = np.percentile(h, [p_low, p_high])
+        l8 = stretch_with_window(l, lo, hi, gamma)
+        p8 = stretch_with_window(p, lo, hi, gamma)
+        h8 = stretch_with_window(h, lo, hi, gamma)
 
         l_rgb = make_rgb_labeled(l8, "Low-count")
         p_rgb = make_rgb_labeled(p8, "Denoised (Model)")
         h_rgb = make_rgb_labeled(h8, "High-count")
 
-        if layout == "h":
-            frame_rgb = hstack_same_height([l_rgb, p_rgb, h_rgb], pad_px=pad_px)
-        else:
-            frame_rgb = np.concatenate([l_rgb, p_rgb, h_rgb], axis=0)
-
-        frame_rgb = upscale_rgb(frame_rgb, scale=upscale)
-        frames.append(frame_rgb)
+        frame_rgb = hstack_same_height([l_rgb, p_rgb, h_rgb], pad_px=pad_px) if layout=="h" \
+                    else np.concatenate([l_rgb, p_rgb, h_rgb], axis=0)
+        frames.append(upscale_rgb(frame_rgb, scale=upscale))
     return frames
 
 # ---------- Speichern ----------
