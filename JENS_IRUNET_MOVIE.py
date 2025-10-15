@@ -9,7 +9,7 @@
 # ---
 
 # %%
-# JENS_IRUNET_MOVIE.py
+# JENS_IRUNET_MOVIE_2D_normalized_like_training.py
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
@@ -17,7 +17,10 @@ import imageio.v2 as imageio
 from PIL import Image, ImageDraw, ImageFont
 import keras.layers as layers
 import h5py
-from unet_3d_data_JENS import prepare_in_memory_5to5
+
+# === Aus deinem Code ===
+from jens_stuff import SumScaleNormalizer   # gleiche Normalisierung wie im Training
+# =======================
 
 # ---------- IRUNet (2D) ----------
 def build_irunet(input_shape=(192,240,1), n_filters=64, kernel_initializer="he_normal"):
@@ -26,157 +29,182 @@ def build_irunet(input_shape=(192,240,1), n_filters=64, kernel_initializer="he_n
         a = layers.Conv2D(nf,3,padding="same",activation="relu",kernel_initializer=kernel_initializer)(x)
         b = layers.Conv2D(nf*2,3,padding="same",activation="relu",kernel_initializer=kernel_initializer)(x)
         c = layers.Conv2D(nf,3,padding="same",activation="relu",dilation_rate=2,kernel_initializer=kernel_initializer)(x)
-        x2 = layers.Concatenate()([a,b,c])
+        x2 = tf.keras.layers.Concatenate()([a,b,c])
         x2 = layers.Conv2D(nf,1,padding="same")(x2)
-        return layers.Add()([x,x2])
+        return tf.keras.layers.Add()([x,x2])
     def inc_red(x, nf):
         sc = layers.Conv2D(nf, 2, strides=2, padding="same")(x)
         a  = layers.Conv2D(nf,   3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
         b  = layers.Conv2D(nf*2, 3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
-        c  = layers.AveragePooling2D(pool_size=2, strides=2, padding="same")(x)   # ← FIX
-        x2 = layers.Concatenate()([a, b, c])
+        c  = layers.AveragePooling2D(pool_size=2, strides=2, padding="same")(x)
+        x2 = tf.keras.layers.Concatenate()([a, b, c])
         x2 = layers.Conv2D(nf, 1, padding="same")(x2)
-        return layers.Add()([sc, x2])
+        return tf.keras.layers.Add()([sc, x2])
 
-
-    h = layers.Conv2D(n_filters,3,padding="same",activation="relu",kernel_initializer=kernel_initializer)(inp)
+    h  = layers.Conv2D(n_filters,3,padding="same",activation="relu",kernel_initializer=kernel_initializer)(inp)
     c1 = inc_red(h,n_filters);  c1 = inc(c1,n_filters)
     c2 = inc_red(c1,n_filters); c2 = inc(c2,n_filters)
     c3 = inc_red(c2,n_filters); c3 = inc(c3,n_filters)
     b  = inc_red(c3,n_filters); b  = inc(b,n_filters)
     d3 = layers.Conv2DTranspose(n_filters,2,strides=2,padding="same",activation="relu")(b);  d3 = inc(d3,n_filters)
-    d2 = layers.Conv2DTranspose(n_filters,2,strides=2,padding="same",activation="relu")(d3); d2 = inc(d2,n_filters); d2 = layers.Add()([c2,d2])
-    d1 = layers.Conv2DTranspose(n_filters,2,strides=2,padding="same",activation="relu")(d2); d1 = inc(d1,n_filters); d1 = layers.Add()([c1,d1])
+    d2 = layers.Conv2DTranspose(n_filters,2,strides=2,padding="same",activation="relu")(d3); d2 = inc(d2,n_filters); d2 = tf.keras.layers.Add()([c2,d2])
+    d1 = layers.Conv2DTranspose(n_filters,2,strides=2,padding="same",activation="relu")(d2); d1 = inc(d1,n_filters); d1 = tf.keras.layers.Add()([c1,d1])
     t  = layers.Conv2DTranspose(n_filters,2,strides=2,padding="same",activation="relu")(d1); t  = inc(t,n_filters)
-    out = layers.Conv2D(1,1,padding="same",activation="sigmoid")(t)
+    out= layers.Conv2D(1,1,padding="same",activation="sigmoid")(t)
     return tf.keras.Model(inp,out,name="IRUNet")
 
-# ---------- Daten laden (roh, ohne Fenster) ----------
-def load_hwN(fp):
+# ---------- Daten laden (roh) ----------
+def load_hwN(fp: Path):
     with h5py.File(fp,"r") as f:
         high = f["/high_count/data"][:].transpose(2,0,1)  # (N,H,W)
         low  = f["/low_count/data"] [:].transpose(2,0,1)
     return high, low
 
-def load_all_splits(data_dir: Path):
-    data = {
+def load_splits(data_dir: Path):
+    return {
         "train": load_hwN(data_dir/"training_data.hdf5"),
         "val":   load_hwN(data_dir/"validation_data.hdf5"),
         "test":  load_hwN(data_dir/"test_data.hdf5"),
     }
-    return data
 
-# ---------- Aus 41er-Serien die zentralen 37 ziehen (2..38) ----------
-def select_center_range_2D(low_NHW, high_NHW, group_len=41, start=2, end=38):
-    # low/high: (N,H,W), N vielfaches von 41
-    N, H, W = low_NHW.shape
-    assert N % group_len == 0, "N ist kein Vielfaches von group_len"
-    idxs = []
-    for g in range(N // group_len):
-        base = g*group_len
-        idxs.extend(range(base + start, base + end + 1))  # inkl. end
-    idxs = np.array(idxs, dtype=np.int64)
-    X = low_NHW [idxs][..., None].astype(np.float32)   # (B,H,W,1)
-    Y = high_NHW[idxs][..., None].astype(np.float32)
-    return X, Y
+# ---------- Jens-Normalisierung (wie im Training) ----------
+# Wir spiegeln die *Valid/Test*-Normalisierung aus deinem Training:
+# SumScaleNormalizer(scale_range=[5000,5001], pre_offset=0, normalize_label=True,
+#                    axis=(H,W,C), clip_before=[0,inf], clip_after=[0,1])
+def normalize_with_jens(x_nhw, y_nhw):
+    # x_nhw, y_nhw: (N,H,W) in float32 (Counts, >=0)
+    X = x_nhw[..., None].astype(np.float32)   # (N,H,W,1)
+    Y = y_nhw[..., None].astype(np.float32)
+    normalizer = SumScaleNormalizer(
+        scale_range=[5000, 5001], pre_offset=0.0, normalize_label=True,
+        axis=(0,1,2), batch_mode=False,    # 2D-Frame: (H,W,C)
+        clip_before=[0., float("inf")], clip_after=[0., 1.]
+    )
+    # per-Frame map (identisch wie val/test im Training – fester Zielbereich)
+    Xn = np.empty_like(X, dtype=np.float32)
+    Yn = np.empty_like(Y, dtype=np.float32)
+    for i in range(X.shape[0]):
+        xi = tf.convert_to_tensor(X[i], tf.float32)
+        yi = tf.convert_to_tensor(Y[i], tf.float32)
+        xo, yo = normalizer.map(xi, yi)            # -> [0,1], gleiche Skala fuer X und Y
+        # finite & clip (wie map_slice_wise bei dir)
+        xo = tf.where(tf.math.is_finite(xo), xo, tf.zeros_like(xo))
+        yo = tf.where(tf.math.is_finite(yo), yo, tf.zeros_like(yo))
+        Xn[i] = tf.clip_by_value(xo, 0.0, 1.0).numpy()
+        Yn[i] = tf.clip_by_value(yo, 0.0, 1.0).numpy()
+    return Xn, Yn
 
-# ---------- Anzeige-Helfer (wie bei dir) ----------
-def stretch_local_uint8(x, p_low=1.0, p_high=99.5, gamma=0.8):
-    x = np.clip(x.astype(np.float32),0.0,1.0)
-    lo, hi = np.percentile(x,[p_low,p_high])
-    if not np.isfinite(lo) or not np.isfinite(hi) or hi<=lo:
-        lo, hi = float(x.min()), float(x.max() if x.max()>x.min() else 1.0)
-    x = np.clip((x-lo)/(hi-lo+1e-8),0,1)
-    if gamma and gamma>0: x = np.power(x,gamma)
-    return (x*255.0+0.5).astype(np.uint8)
+# ---------- Auswahl: zentrale 37 Frames pro 41er Serie ----------
+def select_center_frames_2_thru_38(X, Y, group_len=41):
+    # X,Y: (N,H,W,1), N Vielfaches von 41
+    N = X.shape[0]; assert N % group_len == 0, "N kein Vielfaches von 41"
+    idx = np.concatenate([np.arange(g*group_len+2, g*group_len+39) for g in range(N//group_len)])
+    return X[idx], Y[idx], (N//group_len)
 
-from PIL import Image, ImageDraw, ImageFont
+# ---------- Anzeige-Helfer (identisch zu deinem Movie) ----------
+def stretch_local_uint8(x01, p_low=1.0, p_high=99.5, gamma=0.8):
+    x = np.clip(x01.astype(np.float32), 0.0, 1.0)
+    lo, hi = np.percentile(x, [p_low, p_high])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = float(x.min()), float(x.max() if x.max() > x.min() else 1.0)
+    x = (x - lo) / (hi - lo + 1e-8)
+    x = np.clip(x, 0.0, 1.0)
+    if gamma and gamma > 0:
+        x = np.power(x, gamma)
+    return (x * 255.0 + 0.5).astype(np.uint8)
+
 def make_rgb_labeled(panel_gray, label):
-    h,w = panel_gray.shape; bar_h=26
-    canvas = Image.new("RGB",(w,h+bar_h),(0,0,0))
-    canvas.paste(Image.fromarray(panel_gray,"L").convert("RGB"),(0,bar_h))
-    d = ImageDraw.Draw(canvas); d.text((6,4),label,fill=(255,255,255),font=ImageFont.load_default())
+    h, w = panel_gray.shape; bar_h = 26
+    canvas = Image.new("RGB", (w, h + bar_h), (0, 0, 0))
+    canvas.paste(Image.fromarray(panel_gray, "L").convert("RGB"), (0, bar_h))
+    ImageDraw.Draw(canvas).text((6, 4), label, fill=(255,255,255), font=ImageFont.load_default())
     return np.asarray(canvas)
-def hstack_same_height(imgs,pad_px=12):
-    H = max(im.shape[0] for im in imgs); out_w = sum(int(round(im.shape[1]*H/im.shape[0])) for im in imgs) + pad_px*(len(imgs)-1)
-    out = np.zeros((H,out_w,3),np.uint8); x=0
-    for i,im in enumerate(imgs):
-        if im.shape[0]!=H:
-            new_w = int(round(im.shape[1]*H/im.shape[0])); im = np.asarray(Image.fromarray(im).resize((new_w,H), Image.BILINEAR))
-        out[:,x:x+im.shape[1],:] = im; x += im.shape[1] + (pad_px if i<len(imgs)-1 else 0)
-    return out
-def upscale_rgb(img,scale=2):
-    return np.asarray(Image.fromarray(img).resize((img.shape[1]*scale,img.shape[0]*scale), Image.BILINEAR)) if scale!=1 else img
 
-def build_frames(low, pred, high, upscale=2):
+def hstack_same_height(imgs, pad_px=12):
+    H = max(im.shape[0] for im in imgs)
+    out_w = sum(int(round(im.shape[1]*H/im.shape[0])) for im in imgs) + pad_px*(len(imgs)-1)
+    out = np.zeros((H, out_w, 3), np.uint8); x=0
+    for i, im in enumerate(imgs):
+        if im.shape[0] != H:
+            new_w = int(round(im.shape[1]*H/im.shape[0]))
+            im = np.asarray(Image.fromarray(im).resize((new_w, H), Image.BILINEAR))
+        out[:, x:x+im.shape[1], :] = im
+        x += im.shape[1] + (pad_px if i < len(imgs)-1 else 0)
+    return out
+
+def upscale_rgb(img_rgb, scale=2):
+    if scale == 1: return img_rgb
+    h, w = img_rgb.shape[:2]
+    return np.asarray(Image.fromarray(img_rgb).resize((w*scale, h*scale), Image.BILINEAR))
+
+def build_frames(low, pred, high, *, p_low=1.0, p_high=99.5, gamma=0.8, upscale=2, pad_px=12):
     frames=[]
     for i in range(low.shape[0]):
-        l8 = stretch_local_uint8(low [i,...,0]);  p8 = stretch_local_uint8(pred[i,...,0]);  h8 = stretch_local_uint8(high[i,...,0])
-        l = make_rgb_labeled(l8,"Low-count"); p = make_rgb_labeled(p8,"Denoised (IRUNet)"); h = make_rgb_labeled(h8,"High-count")
-        frames.append(upscale_rgb(hstack_same_height([l,p,h]),scale=upscale))
+        l8 = stretch_local_uint8(low [i,...,0], p_low, p_high, gamma)
+        p8 = stretch_local_uint8(pred[i,...,0], p_low, p_high, gamma)
+        h8 = stretch_local_uint8(high[i,...,0], p_low, p_high, gamma)
+        l = make_rgb_labeled(l8, "Low-count")
+        p = make_rgb_labeled(p8, "Denoised (IRUNet)")
+        h = make_rgb_labeled(h8, "High-count")
+        frames.append(upscale_rgb(hstack_same_height([l,p,h], pad_px=pad_px), scale=upscale))
     return frames
 
-def save_mp4(frames, out_path, fps=12):
+def save_mp4(frames_rgb, out_path, fps=12):
     out_path = Path(out_path); out_path.parent.mkdir(parents=True, exist_ok=True)
     with imageio.get_writer(out_path.as_posix(), fps=int(fps), quality=8) as w:
-        for fr in frames: w.append_data(fr)
+        for fr in frames_rgb: w.append_data(fr)
     print(f"[OK] MP4: {out_path}")
 
 # ---------- Main ----------
 def main(model_weights: Path,
          data_dir: Path = Path.home()/ "data"/"original_data",
          out_dir:  Path = Path.home()/ "data"/"movies",
-         fps:int=12, spacer_seconds=0.25):
+         fps: int = 12,
+         spacer_seconds=0.25,
+         p_low=1.0, p_high=99.5, gamma=0.8):
 
-    # 1) 5-zu-5 Datasets bauen (wie JENS es nutzt)
-    results = prepare_in_memory_5to5(
-        data_dir=data_dir,
-        size=5,          # 5er Fenster
-        group_len=41,
-        dtype=np.float32
-    )
+    # 1) Rohdaten laden
+    splits = load_splits(data_dir)
+    (high_train, low_train) = splits["train"]   # nur fuer evtl. Checks; Normalisierung ist per-frame (fixed scale)
+    (high_test,  low_test ) = splits["test"]
+    N, H, W = low_test.shape
+    print(f"[INFO] Test N={N}, HxW={H}x{W} (41er-Serien)")
 
-    X5_test, Y5_test = results["test"]   # (B, 5, H, W, 1), Rohwerte (Counts) je nach Pipeline
-    B, D, H, W, C = X5_test.shape
-    assert D == 5 and C == 1, f"Unerwartete Shape: {X5_test.shape}"
+    # 2) Jens-Normalisierung *wie im Training* (val/test-Setup: fester Zielbereich 5000..5001)
+    X_all, Y_all = normalize_with_jens(low_test, high_test)   # -> (N,H,W,1) in [0,1]
 
-    # 2) Mittleres Bild je 5er-Fenster (Index 2) extrahieren -> 2D-Frames fuer IRUNet
-    X2d = X5_test[:, 2, ...]   # (B, H, W, 1)
-    Y2d = Y5_test[:, 2, ...]   # (B, H, W, 1)
+    # 3) Pro 41er Serie die zentralen 37 Frames: 2..38 (entspricht 3..39 1-basiert)
+    X, Y, num_groups_total = select_center_frames_2_thru_38(X_all, Y_all, group_len=41)
 
-    # 3) Pro 41er Serie nur die zentralen 37 Fenster nehmen (Fensterstarts 2..38)
-    windows_per_group = 41 - 5 + 1   # = 37
-    num_groups_total  = B // windows_per_group
-    idx = np.concatenate([np.arange(g*windows_per_group, g*windows_per_group + windows_per_group) 
-                        for g in range(num_groups_total)])
-    X_test = X2d[idx]   # (37*num_groups, H, W, 1)
-    Y_test = Y2d[idx]
+    # 4) IRUNet bauen + Gewichte laden
+    model = build_irunet(input_shape=(H, W, 1))
+    model.load_weights(model_weights)
 
-    # 4) Vorhersage
-    pred = model.predict(X_test, batch_size=8, verbose=1)
+    # 5) Vorhersage
+    pred = model.predict(X, batch_size=8, verbose=1)
 
-    # 5) Frames bauen und Spacer zwischen Serien einfuegen
+    # 6) Frames bauen + Spacer zwischen Serien (genau wie im 3D-Movie)
     frames_all = []
-    windows_per_group = 37
-    spacer_frames = max(1, int(round(spacer_seconds*fps)))
-    # Dummy-frame fuer Spacer (schwarz)
-    tmp = build_frames(X_test[:1], pred[:1], Y_test[:1])[0]
+    spacer_frames = max(1, int(round(spacer_seconds * fps)))
+    # Dummy-Frame fuer Spacer
+    tmp = build_frames(X[:1], pred[:1], Y[:1], p_low=p_low, p_high=p_high, gamma=gamma)[0]
     spacer = np.zeros_like(tmp)
 
-    total_groups = (N // 41)
-    for g in range(total_groups):
-        s = g*windows_per_group
-        e = s+windows_per_group
-        frames_g = build_frames(X_test[s:e], pred[s:e], Y_test[s:e])
+    windows_per_group = 37
+    for g in range(num_groups_total):
+        s = g*windows_per_group; e = s+windows_per_group
+        frames_g = build_frames(X[s:e], pred[s:e], Y[s:e],
+                                p_low=p_low, p_high=p_high, gamma=gamma)
         frames_all.extend(frames_g)
-        if g < total_groups-1:
+        if g < num_groups_total - 1:
             frames_all.extend([spacer]*spacer_frames)
 
-    # 6) Speichern
-    out_file = Path(out_dir) / f"{Path(model_weights).stem}_centers_3to39.mp4"
+    # 7) Speichern
+    out_file = Path(out_dir) / f"{Path(model_weights).stem}_centers_3to39_IRUNet2D.mp4"
     save_mp4(frames_all, out_file, fps=fps)
 
 if __name__ == "__main__":
-    model_weights = Path("JENS_IRUNET.hdf5")  # Weights-only HDF5
+    # Weights-only HDF5 von Jens’ 2D-IRUNet
+    model_weights = Path("JENS_IRUNET.hdf5")
     main(model_weights)
 
