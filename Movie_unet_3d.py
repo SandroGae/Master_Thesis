@@ -55,28 +55,17 @@ def build_center_frames(
         p = pred[b, k, ..., 0]
         h = high[b, k, ..., 0]
 
-        # === Zusatz: visuelle Normalisierung, nur fuer Darstellung ===
-        # berechne pro Frame lokale Stretchung wie bei IRUNet, ohne Training zu beeinflussen
-        # skaliert Low und Pred nur fuer Anzeige dynamischer
-        def auto_rescale(x):
-            x = np.clip(x, 0, None)
-            lo, hi = np.percentile(x, [0.1, 99.9])
-            return np.clip((x - lo) / (hi - lo + 1e-8), 0, 1)
+        num = float(h.sum())
+        den = float(p.sum())
+        scale = num / max(den, 1e-8)
+        p_eq = np.clip(p * scale, 0.0, 1.0)
 
-        l_vis = auto_rescale(l)
-        p_vis = auto_rescale(p)
-        h_vis = auto_rescale(h)
+        lo, hi = np.percentile(h, [p_low, p_high])
+        l8 = stretch_with_window(l   , lo, hi, gamma)
+        p8 = stretch_with_window(p_eq, lo, hi, gamma)
+        h8 = stretch_with_window(h   , lo, hi, gamma)
 
-        # gemeinsames Fenster aus High (identisch zum IRUNet-Movie)
-        # NEW – union window
-        vals = np.concatenate([l_vis.ravel(), p_vis.ravel(), h_vis.ravel()])
-        lo, hi = np.percentile(vals, [p_low, p_high])
-
-        l8 = stretch_with_window(l_vis, lo, hi, gamma)
-        p8 = stretch_with_window(p_vis, lo, hi, gamma)
-        h8 = stretch_with_window(h_vis, lo, hi, gamma)
-
-
+        # Beschriftete RGB-Panels bauen
         l_rgb = make_rgb_labeled(l8, "Low-count")
         p_rgb = make_rgb_labeled(p8, "Denoised (Model)")
         h_rgb = make_rgb_labeled(h8, "High-count")
@@ -129,28 +118,6 @@ def upscale_rgb(img_rgb, scale=2):
         return img_rgb
     h, w = img_rgb.shape[:2]
     return np.asarray(Image.fromarray(img_rgb).resize((w*scale, h*scale), Image.BILINEAR))
-
-# ---------- Frames bauen ----------
-def build_frames(low, pred, high, *, p_low=1.0, p_high=99.5, gamma=0.8, upscale=2, pad_px=12):
-    frames=[]
-    for i in range(low.shape[0]):
-        # gemeinsames Fenster – nimm High (oder die Vereinigung)
-        # Option A: nur High als Referenz
-        l = low [i,...,0]; p = pred[i,...,0]; h = high[i,...,0]
-        vals = np.concatenate([l.ravel(), p.ravel(), h.ravel()])
-        lo, hi = np.percentile(vals, [p_low, p_high])
-        # Option B (streng gleich): Vereinigung aller drei
-        # all_vals = np.concatenate([low[i,...,0].ravel(), pred[i,...,0].ravel(), high[i,...,0].ravel()])
-        # lo, hi = np.percentile(all_vals, [p_low, p_high])
-
-        l8 = stretch_with_window(low [i,...,0], lo, hi, gamma)
-        p8 = stretch_with_window(pred[i,...,0], lo, hi, gamma)
-        h8 = stretch_with_window(high[i,...,0], lo, hi, gamma)
-        l = make_rgb_labeled(l8,"Low-count")
-        p = make_rgb_labeled(p8,"Denoised (Model)")
-        h = make_rgb_labeled(h8,"High-count")
-        frames.append(upscale_rgb(hstack_same_height([l,p,h], pad_px=pad_px), scale=upscale))
-    return frames
 
 # ---------- Speichern ----------
 def save_mp4(frames_rgb, out_path, fps=12):

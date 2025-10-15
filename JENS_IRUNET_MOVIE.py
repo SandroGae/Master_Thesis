@@ -140,16 +140,16 @@ def upscale_rgb(img_rgb, scale=2):
 def build_frames(low, pred, high, *, p_low=1.0, p_high=99.5, gamma=0.8, upscale=2, pad_px=12):
     frames=[]
     for i in range(low.shape[0]):
-        # gemeinsames Fenster – nimm High (oder die Vereinigung)
-        # Option A: nur High als Referenz
-        lo, hi = np.percentile(high[i,...,0], [p_low, p_high])
-        # Option B (streng gleich): Vereinigung aller drei
-        # all_vals = np.concatenate([low[i,...,0].ravel(), pred[i,...,0].ravel(), high[i,...,0].ravel()])
-        # lo, hi = np.percentile(all_vals, [p_low, p_high])
+        num = float(high[i,...,0].sum())
+        den = float(pred[i,...,0].sum())
+        scale = num / max(den, 1e-8)
+        pred_eq = np.clip(pred[i,...,0] * scale, 0.0, 1.0)
 
+        lo, hi = np.percentile(high[i,...,0], [p_low, p_high])
         l8 = stretch_with_window(low [i,...,0], lo, hi, gamma)
-        p8 = stretch_with_window(pred[i,...,0], lo, hi, gamma)
+        p8 = stretch_with_window(pred_eq       , lo, hi, gamma)
         h8 = stretch_with_window(high[i,...,0], lo, hi, gamma)
+
         l = make_rgb_labeled(l8,"Low-count")
         p = make_rgb_labeled(p8,"Denoised (Model)")
         h = make_rgb_labeled(h8,"High-count")
