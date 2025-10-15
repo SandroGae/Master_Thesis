@@ -71,28 +71,31 @@ def load_splits(data_dir: Path):
 # Wir spiegeln die *Valid/Test*-Normalisierung aus deinem Training:
 # SumScaleNormalizer(scale_range=[5000,5001], pre_offset=0, normalize_label=True,
 #                    axis=(H,W,C), clip_before=[0,inf], clip_after=[0,1])
-def normalize_with_jens(x_nhw, y_nhw):
-    # x_nhw, y_nhw: (N,H,W) in float32 (Counts, >=0)
-    X = x_nhw[..., None].astype(np.float32)   # (N,H,W,1)
-    Y = y_nhw[..., None].astype(np.float32)
+def normalize_with_jens(low_nhw, high_nhw):
+    # Eingabe: (N,H,W) Counts
+    X4 = low_nhw[..., None].astype(np.float32)   # (N,H,W,1)
+    Y4 = high_nhw[..., None].astype(np.float32)  # (N,H,W,1)
+
     normalizer = SumScaleNormalizer(
-        scale_range=[5000, 5001], pre_offset=0.0, normalize_label=True,
-        axis=(0,1,2), batch_mode=False,    # 2D-Frame: (H,W,C)
-        clip_before=[0., float("inf")], clip_after=[0., 1.]
+        scale_range=[5000, 5001],
+        pre_offset=0.0,
+        normalize_label=True,
+        axis=(1, 2, 3),      # wie im Val/Test-Setup beim Training
+        batch_mode=True,     # GANZ WICHTIG: Batchmodus (B,H,W,C)
+        clip_before=[0., float("inf")],
+        clip_after=[0., 1.],
     )
-    # per-Frame map (identisch wie val/test im Training – fester Zielbereich)
-    Xn = np.empty_like(X, dtype=np.float32)
-    Yn = np.empty_like(Y, dtype=np.float32)
-    for i in range(X.shape[0]):
-        xi = tf.convert_to_tensor(X[i], tf.float32)
-        yi = tf.convert_to_tensor(Y[i], tf.float32)
-        xo, yo = normalizer.map(xi, yi)            # -> [0,1], gleiche Skala fuer X und Y
-        # finite & clip (wie map_slice_wise bei dir)
-        xo = tf.where(tf.math.is_finite(xo), xo, tf.zeros_like(xo))
-        yo = tf.where(tf.math.is_finite(yo), yo, tf.zeros_like(yo))
-        Xn[i] = tf.clip_by_value(xo, 0.0, 1.0).numpy()
-        Yn[i] = tf.clip_by_value(yo, 0.0, 1.0).numpy()
-    return Xn, Yn
+
+    X_tf = tf.convert_to_tensor(X4, tf.float32)
+    Y_tf = tf.convert_to_tensor(Y4, tf.float32)
+
+    Xn, Yn = normalizer.map(X_tf, Y_tf)          # -> [0,1], gleiche Skala für X/Y
+    # finite & clip wie in deinem map_slice_wise:
+    Xn = tf.clip_by_value(tf.where(tf.math.is_finite(Xn), Xn, tf.zeros_like(Xn)), 0.0, 1.0)
+    Yn = tf.clip_by_value(tf.where(tf.math.is_finite(Yn), Yn, tf.zeros_like(Yn)), 0.0, 1.0)
+
+    return Xn.numpy(), Yn.numpy()                # (N,H,W,1)
+
 
 # ---------- Auswahl: zentrale 37 Frames pro 41er Serie ----------
 def select_center_frames_2_thru_38(X, Y, group_len=41):
