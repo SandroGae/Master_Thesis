@@ -56,7 +56,9 @@ def build_center_frames(
         h = high[b, k, ..., 0]
 
         # gemeinsames Fenster aus High (identisch zum IRUNet-Movie)
-        lo, hi = np.percentile(h, [p_low, p_high])
+        # NEW – union window
+        vals = np.concatenate([l.ravel(), p.ravel(), h.ravel()])
+        lo, hi = np.percentile(vals, [p_low, p_high])
 
         l8 = stretch_with_window(l, lo, hi, gamma)
         p8 = stretch_with_window(p, lo, hi, gamma)
@@ -121,7 +123,9 @@ def build_frames(low, pred, high, *, p_low=1.0, p_high=99.5, gamma=0.8, upscale=
     for i in range(low.shape[0]):
         # gemeinsames Fenster – nimm High (oder die Vereinigung)
         # Option A: nur High als Referenz
-        lo, hi = np.percentile(high[i,...,0], [p_low, p_high])
+        l = low [i,...,0]; p = pred[i,...,0]; h = high[i,...,0]
+        vals = np.concatenate([l.ravel(), p.ravel(), h.ravel()])
+        lo, hi = np.percentile(vals, [p_low, p_high])
         # Option B (streng gleich): Vereinigung aller drei
         # all_vals = np.concatenate([low[i,...,0].ravel(), pred[i,...,0].ravel(), high[i,...,0].ravel()])
         # lo, hi = np.percentile(all_vals, [p_low, p_high])
