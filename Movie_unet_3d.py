@@ -35,7 +35,7 @@ def make_rgb_labeled(panel_gray, label_text, pad=6):
     h, w = panel_gray.shape
     bar_h = 26
     canvas = Image.new("RGB", (w, h + bar_h + pad), (0, 0, 0))
-    panel_img = Image.fromarray(panel_gray, mode="L").convert("RGB")
+    panel_img = Image.fromarray(panel_gray).convert("RGB")
     canvas.paste(panel_img, (0, bar_h))
     draw = ImageDraw.Draw(canvas)
     try:

@@ -197,14 +197,18 @@ def main(model_weights: Path,
     tmp = build_frames(X[:1], pred[:1], Y[:1], p_low=p_low, p_high=p_high, gamma=gamma)[0]
     spacer = np.zeros_like(tmp)
 
+    # gleiche Logik wie im 3D-Skript
     windows_per_group = 37
-    for g in range(num_groups_total):
-        s = g*windows_per_group; e = s+windows_per_group
+    use_groups = min(20, num_groups_total)  # nur die ersten 20
+
+    for g in range(use_groups):
+        s = g * windows_per_group
+        e = s + windows_per_group
         frames_g = build_frames(X[s:e], pred[s:e], Y[s:e],
                                 p_low=p_low, p_high=p_high, gamma=gamma)
         frames_all.extend(frames_g)
-        if g < num_groups_total - 1:
-            frames_all.extend([spacer]*spacer_frames)
+        if g < use_groups - 1:
+            frames_all.extend([spacer] * spacer_frames)
 
     # 7) Speichern
     out_file = Path(out_dir) / f"{Path(model_weights).stem}_centers_3to39_IRUNet2D.mp4"
