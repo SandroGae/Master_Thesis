@@ -497,15 +497,19 @@ def run_mini_sweep():
               cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
               print(f"\n[SWEEP] Run {runs}: {raw_tag}")
-              history = model.fit(train_ds_bs, validation_data=val_ds_bs,
-                    epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0,
-                    workers=1, use_multiprocessing=False, max_queue_size=4)
-              tf.keras.backend.clear_session(); import gc; gc.collect()
+              history = model.fit(
+                  train_ds_bs, validation_data=val_ds_bs,
+                  epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0,
+                  workers=1, use_multiprocessing=False, max_queue_size=4
+              )
 
+              # evaluieren
               _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
               _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
 
+              # aufräumen
               tf.keras.backend.clear_session()
+              import gc; gc.collect()
 
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
