@@ -69,7 +69,7 @@ X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
 BATCH_SIZE = 32
-EPOCHS     = 8
+EPOCHS     = 3
 
 # %%
 # ==============================
@@ -245,7 +245,7 @@ model.compile(optimizer=AdamW(learning_rate=1e-4),
 
 # %%
 # ==============================
-# 7) Callbacks
+# 7) Callbacks + CSV_logging
 # ==============================
 
 ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
@@ -275,21 +275,19 @@ cbs, bf, ckpt_best = build_standard_callbacks(
 
 # CSV logger
 CSV_DIR = Path.home() / "data" / "logs_csv"
-CSV_DIR.mkdir(parents=True, exist_ok=True)
+CSV_DIR.mkdir(parents=True, exist_ok=True)   # falls der Ordner doch noch nicht existiert
 
-# eindeutiger Dateiname pro Run (nimmt den Code-Prefix aus BestFinalizeCallback)
 stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-csv_path = CSV_DIR / f"{bf.code}_train_{stamp}.csv"   # bf kommt aus build_standard_callbacks
+csv_path = CSV_DIR / f"{bf.code}_train_{stamp}.csv"
 
-csv_cb = CSVLogger(
-    filename=str(csv_path),
-    separator=",",
-    append=False,    # auf True stellen, wenn du an eine bestehende Datei anhaengen willst
-)
+csv_cb = CSVLogger(filename=str(csv_path), separator=",", append=False)
+
+# >>> WICHTIG: CSV-Logger zu den Callbacks packen
+cbs = list(cbs) + [csv_cb]
 
 # %%
 # ==============================
-# 8) CSV logging + Training + kurze Evaluierung
+# 8) Training + kurze Evaluierung
 # ==============================
 print(">>> Phase 3: GPU training starts now!")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=cbs, verbose=0)
