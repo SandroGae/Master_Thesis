@@ -384,11 +384,12 @@ def get_loss_fixed():
     return CombinedMAE_SSIM_Loss(alpha=0.7, name="mae_ssim_0p7")
 
 # --- (D) Suchraum ---
-DEPTHS      = [2, 3, 4]                 # Architektur-Tiefe
-BASE_FILTER = [8, 16, 24, 32]               # Start-Kanaele
-OUT_ACTS    = ["sigmoid", "tanh", "linear", "relu"]     # Output-Aktivierung
+DEPTHS       = [3, 4]                 # Architektur-Tiefe
+BASE_FILTERS = [8, 16, 24]            # Start-Kanaele
+OUT_ACTS     = ["sigmoid"]            # Targets ∈ [0,1] -> sigmoid
+LEARNING_RATES = [3e-4, 1e-4, 3e-5]   # kleiner LR-Sweep lohnt mehr als bf=32
 
-MAX_EPOCHS_SCOUT = 10
+MAX_EPOCHS_SCOUT = 3
 
 def run_mini_sweep():
     runs = 0
@@ -430,7 +431,7 @@ def run_mini_sweep():
             run_meta=run_meta_scout,
             monitor="val_loss",
             patience_es=200,
-            reduce_on_plateau=True,
+            reduce_on_plateau=False,
             reduce_factor=0.5,
             reduce_patience=2,
             min_lr=1e-6,
