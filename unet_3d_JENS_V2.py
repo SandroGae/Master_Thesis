@@ -429,7 +429,7 @@ def run_mini_sweep():
             ckpt_root=ckpt_root_scout,
             run_meta=run_meta_scout,
             monitor="val_loss",
-            patience_es=3,
+            patience_es=200,
             reduce_on_plateau=True,
             reduce_factor=0.5,
             reduce_patience=2,
@@ -457,11 +457,11 @@ def run_mini_sweep():
         test_res = model.evaluate(test_ds, return_dict=True, verbose=0)
 
         # JSON
-        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         out = {
             "timestamp": stamp,
-            "run_tag": raw_tag,               # menschlich lesbar (unsanitized)
-            "run_tag_safe": tag,              # safe fuer Files/Scopes
+            "run_tag": raw_tag,               # lesbar
+            "run_tag_safe": tag,              # safe für Files/Scopes
             "model_name": model.name,
             "config": {
                 "depth_levels": depth,
