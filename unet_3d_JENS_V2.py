@@ -91,7 +91,7 @@ def augment_5stack_flips(x, y):
 
 print(">>> Phase 1–2: Build datasets via train_utils...")
 DATA_DIR = Path.home() / "data" / "original_data"
-train_ds, val_ds, test_ds, meta = build_5stack_datasets(
+train_ds, val_ds, test_ds, meta = build_5stack_datasets_grouped(
     train_path=DATA_DIR / "training_data.hdf5",
     val_path=  DATA_DIR / "validation_data.hdf5",
     test_path= DATA_DIR / "test_data.hdf5",
