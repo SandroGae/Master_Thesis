@@ -69,7 +69,7 @@ X_test,  Y_test  = results["test"]
 
 INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
 BATCH_SIZE = 32
-EPOCHS     = 3
+EPOCHS     = 0
 
 # %%
 # ==============================
@@ -252,7 +252,7 @@ ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
-    "early_stopping": {"monitor": "val_loss", "patience": 30},
+    "early_stopping": {"monitor": "val_loss", "patience": 200},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
     "alpha": 0.7,                             # Gewichte für kombinierten Loss
     "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
@@ -262,7 +262,7 @@ cbs, bf, ckpt_best = build_standard_callbacks(
     ckpt_root=ckpt_root,
     run_meta=run_meta,
     monitor="val_loss",
-    patience_es=30,
+    patience_es=200,
     reduce_on_plateau=True,
     reduce_factor=0.5,
     reduce_patience=10,
@@ -275,14 +275,12 @@ cbs, bf, ckpt_best = build_standard_callbacks(
 
 # CSV logger
 CSV_DIR = Path.home() / "data" / "logs_csv"
-CSV_DIR.mkdir(parents=True, exist_ok=True)   # falls der Ordner doch noch nicht existiert
 
 stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 csv_path = CSV_DIR / f"{bf.code}_train_{stamp}.csv"
 
 csv_cb = CSVLogger(filename=str(csv_path), separator=",", append=False)
-
-# >>> WICHTIG: CSV-Logger zu den Callbacks packen
+# CSV-Logger zu den Callbacks packen
 cbs = list(cbs) + [csv_cb]
 
 # %%
@@ -300,18 +298,17 @@ print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 
 
 # %%
-"""
-
 # ==============================
-# 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss (fix)
-#      -> je Run max. 10 Epochen, JSON-Report, sauberer Logger
+# 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss (hier fix)
+#     Pro Run 10 Epochen, JSON-Report + CSV Logger
 # ==============================
-
 import json, datetime, re
 from itertools import product
+from pathlib import Path
 
 EVAL_DIR = Path.home() / "data" / "model_evaluations"
-EVAL_DIR.mkdir(parents=True, exist_ok=True)
+CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
+CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
 def _safe_tag(s: str) -> str:
     # Erlaubt nur A-Za-z0-9_.\\/>- ; ersetze andere Zeichen durch '_'.
@@ -388,8 +385,8 @@ def get_loss_fixed():
 
 # --- (D) Suchraum ---
 DEPTHS      = [2, 3, 4]                 # Architektur-Tiefe
-BASE_FILTER = [8, 16, 24]               # Start-Kanaele
-OUT_ACTS    = ["sigmoid", "tanh", "linear"]     # Output-Aktivierung
+BASE_FILTER = [8, 16, 24, 32]               # Start-Kanaele
+OUT_ACTS    = ["sigmoid", "tanh", "linear", "relu"]     # Output-Aktivierung
 
 MAX_EPOCHS_SCOUT = 10
 
@@ -423,7 +420,7 @@ def run_mini_sweep():
         run_meta_scout = {
             "batch_size": BATCH_SIZE,
             "epochs": MAX_EPOCHS_SCOUT,
-            "early_stopping": {"monitor": "val_loss", "patience": 3},
+            "early_stopping": {"monitor": "val_loss", "patience": 200},
             "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
             "alpha": 0.7,
             "loss_components": {"mae": 0.3, "ssim": 0.7}
@@ -443,14 +440,17 @@ def run_mini_sweep():
             verbose_ckpt=0
         )
 
+        # CSV fuer DIESEN Run
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
+        csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
+        # Callbacks erweitern
+        cbs_scout = list(cbs_scout) + [csv_cb]
+        
         # Run-Header
         print(f"\n[SWEEP] Run {runs}: {raw_tag}")
-
-        # Train (einmal, mit Logger)
-        history = model.fit(
-            train_ds, validation_data=val_ds,
-            epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0
-        )
+        history = model.fit(train_ds, validation_data=val_ds,
+                            epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0)
 
         # Eval
         val_res  = model.evaluate(val_ds,  return_dict=True, verbose=0)
@@ -492,5 +492,3 @@ def run_mini_sweep():
 
 # Start
 run_mini_sweep()
-
-"""
