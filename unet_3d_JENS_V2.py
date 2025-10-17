@@ -9,18 +9,6 @@
 # ---
 
 # %%
-"""
-Durchsuchter Raum:
-DEPTHS      = [2, 3, 4]                         Architektur-Tiefe
-BASE_FILTER = [8, 16, 24]                       Start-Kanaele
-OUT_ACTS    = ["sigmoid", "tanh", "linear"]     Output-Aktivierung
-MAX_EPOCHS_SCOUT = 10
-
-Bestes Ergebnis:
-depth 3, base_filters 16, output_activation tanh
-"""
-
-# %%
 # unet_3d_JENS.py
 # ==============================
 # 0) Imports & global setup
@@ -29,21 +17,17 @@ depth 3, base_filters 16, output_activation tanh
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
-from pathlib import Path
 tf.config.optimizer.set_jit(False)  # XLA aus
 
 import re
-from pathlib import Path
 from tensorflow.keras.callbacks import CSVLogger, Callback
-import h5py, numpy as np, tensorflow as tf
-
 from tensorflow.keras import regularizers, constraints, layers, models
 from tensorflow.keras.optimizers import AdamW
-from tensorflow.keras.callbacks import CSVLogger
 from datetime import datetime
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
-from train_utils import build_standard_callbacks, clip01
+from train_utils import build_standard_callbacks, build_5stack_datasets, clip01
+
 
 # Reproduzierbarkeit
 seed = 0
@@ -60,103 +44,19 @@ AUTO = tf.data.AUTOTUNE
 # ==============================
 # 1–3) Daten-Streaming (kein RAM-Fullload)
 # ==============================
-import h5py
 
-# --- Streaming-Klasse, die 5er-Fenster strikt innerhalb 41er-Gruppen liefert ---
-class H5FiveStackGrouped:
-    """
-    Liefert 5er-Stacks (D=5, H, W, 1) aus HDF5 mit stride=1 *innerhalb* von 41er-Gruppen.
-    Pro Gruppe entstehen (41 - 5 + 1) = 37 Samples. Kein Crossing ueber Gruppenraender.
-    """
-    def __init__(self, path: Path, group_len=41, stack_depth=5, dtype=np.float32):
-        assert stack_depth == 5, "Diese Klasse ist auf D=5 ausgelegt."
-        self.f = h5py.File(path, "r")
-        self.high = self.f["/high_count/data"]  # (H, W, N)
-        self.low  = self.f["/low_count/data"]
-        self.H, self.W, self.N = self.high.shape
-        self.group_len = int(group_len)
-        self.D = int(stack_depth)
-        self.dtype = dtype
-
-        if self.N % self.group_len != 0:
-            raise ValueError(f"N={self.N} ist kein Vielfaches von group_len={self.group_len}")
-        self.num_groups = self.N // self.group_len
-        self.samples_per_group = self.group_len - self.D + 1  # 37 bei 41/5
-        self.total_samples = self.num_groups * self.samples_per_group
-
-    def __len__(self):
-        return self.total_samples
-
-    def _flat_to_group_offset(self, k):
-        # k in [0, total_samples)
-        g = k // self.samples_per_group                    # Gruppenindex
-        o = k %  self.samples_per_group                    # Start-Offset innerhalb der Gruppe
-        start = g * self.group_len + o                     # globaler Startindex
-        return start  # Fenster nimmt start .. start+4
-
-    def get_pair(self, k):
-        start = self._flat_to_group_offset(k)
-        idxs = np.arange(start, start + self.D)            # exakt 5 aufeinanderfolgende
-        # (H,W,5) -> (5,H,W,1)
-        hi = np.asarray(self.high[..., idxs], dtype=np.float32)
-        lo = np.asarray(self.low[...,  idxs],  dtype=np.float32)
-        hi = np.moveaxis(hi, -1, 0)[..., None]
-        lo = np.moveaxis(lo, -1, 0)[..., None]
-        return lo, hi
-
-
-
-def make_stream_ds_grouped(h5obj, *, batch_size=32, shuffle=False,
-                           preproc=None, augmenter=None, prefetch=tf.data.AUTOTUNE,
-                           shuffle_buffer=1024, deterministic=False):
-    def gen():
-        for k in range(len(h5obj)):      # k: 0..total_samples-1
-            x, y = h5obj.get_pair(k)
-            yield x, y
-
-    out_spec = (
-        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float32),
-        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float32),
-    )
-    ds = tf.data.Dataset.from_generator(gen, output_signature=out_spec)
-    ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), tf.cast(y, tf.float32)),
-                num_parallel_calls=tf.data.AUTOTUNE)
-
-    if preproc is not None:
-        ds = ds.map(preproc, num_parallel_calls=tf.data.AUTOTUNE)
-    if augmenter is not None:
-        ds = ds.map(augmenter, num_parallel_calls=tf.data.AUTOTUNE)
-    if shuffle:
-        ds = ds.shuffle(buffer_size=min(shuffle_buffer, len(h5obj)),
-                        reshuffle_each_iteration=True)
-
-    ds = ds.batch(batch_size).prefetch(prefetch)
-    if not deterministic:
-        opts = tf.data.Options()
-        opts.experimental_deterministic = False
-        ds = ds.with_options(opts)
-    return ds
-
-
-
-print(">>> Phase 1: Opening HDF5 datasets (streaming mode)...")
-
-DATA_DIR = Path.home() / "data" / "original_data"
-train_h5 = H5FiveStackGrouped(DATA_DIR / "training_data.hdf5", group_len=41, stack_depth=5, dtype=np.float16)
-val_h5   = H5FiveStackGrouped(DATA_DIR / "validation_data.hdf5", group_len=41, stack_depth=5, dtype=np.float16)
-test_h5  = H5FiveStackGrouped(DATA_DIR / "test_data.hdf5",       group_len=41, stack_depth=5, dtype=np.float16)
-
-INPUT_SHAPE = (5, train_h5.H, train_h5.W, 1)
-BATCH_SIZE  = 32
-EPOCHS      = 0
-
-# ==============================
-# Preprocessing & Augmentation (wie vorher)
-# ==============================
-
-# Normalisierung
+# --- deine Normalisierer aus jens_stuff ---
 preproc_train_slice = SumScaleNormalizer(
-    scale_range=[5000, 15001],  # Training: zufaellig in diesem Bereich
+    scale_range=[5000, 15001],
+    pre_offset=0.0,
+    normalize_label=True,
+    axis=(1, 2, 3),
+    batch_mode=True,
+    clip_before=[0., float("inf")],
+    clip_after=[0., 1.]
+)
+preproc_valid_slice = SumScaleNormalizer(
+    scale_range=[5000, 5001],
     pre_offset=0.0,
     normalize_label=True,
     axis=(1, 2, 3),
@@ -165,15 +65,8 @@ preproc_train_slice = SumScaleNormalizer(
     clip_after=[0., 1.]
 )
 
-preproc_valid_slice = SumScaleNormalizer(
-    scale_range=[5000, 5001],   # Val/Test: fixe Skalierung
-    pre_offset=0.0,
-    normalize_label=True,
-    axis=(1, 2, 3),
-    batch_mode=True,
-    clip_before=[0., float("inf")],
-    clip_after=[0., 1.]
-)
+BATCH_SIZE = 32
+EPOCHS = 0
 
 def map_slice_wise(normalizer):
     def _finite01(t):
@@ -186,37 +79,31 @@ def map_slice_wise(normalizer):
     return _fn
 
 def augment_5stack_flips(x, y):
-    # flip entlang H und W (Achsen 1/2 bei Tensorform (D,H,W,C))
     do_lr = tf.random.uniform(()) < 0.5  # left-right (W)
     do_ud = tf.random.uniform(()) < 0.5  # up-down (H)
-
     def fliplr(t): return tf.reverse(t, axis=[2])  # W
     def flipud(t): return tf.reverse(t, axis=[1])  # H
-
     x = tf.cond(do_lr, lambda: fliplr(x), lambda: x)
     y = tf.cond(do_lr, lambda: fliplr(y), lambda: y)
     x = tf.cond(do_ud, lambda: flipud(x), lambda: x)
     y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
     return x, y
 
-print(">>> Phase 2: Create Tensorflow Datasets (streaming)...")
-
-train_ds = make_stream_ds_grouped(
-    train_h5, batch_size=BATCH_SIZE, shuffle=True,
-    preproc=map_slice_wise(preproc_train_slice),
-    augmenter=augment_5stack_flips, prefetch=tf.data.AUTOTUNE,
-    shuffle_buffer=1024, deterministic=False
+print(">>> Phase 1–2: Build datasets via train_utils...")
+DATA_DIR = Path.home() / "data" / "original_data"
+train_ds, val_ds, test_ds, meta = build_5stack_datasets(
+    train_path=DATA_DIR / "training_data.hdf5",
+    val_path=  DATA_DIR / "validation_data.hdf5",
+    test_path= DATA_DIR / "test_data.hdf5",
+    group_len=41,
+    batch_train=BATCH_SIZE,
+    batch_eval=BATCH_SIZE,
+    preproc_train=map_slice_wise(preproc_train_slice),
+    preproc_eval=map_slice_wise(preproc_valid_slice),
+    augmenter=augment_5stack_flips,
+    deterministic=False
 )
-val_ds = make_stream_ds_grouped(
-    val_h5, batch_size=BATCH_SIZE, shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice),
-    prefetch=tf.data.AUTOTUNE, deterministic=False
-)
-test_ds = make_stream_ds_grouped(
-    test_h5, batch_size=BATCH_SIZE, shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice),
-    prefetch=tf.data.AUTOTUNE, deterministic=False
-)
+INPUT_SHAPE = meta["input_shape"]
 print(">>> Datasets created")
 
 
@@ -237,7 +124,7 @@ def conv_block(x, filters, kernel_size=(3,3,3), padding="same"):
     x = layers.LayerNormalization(epsilon=1e-5)(x); x = layers.ELU()(x)
     return x
 
-def unet3d(input_shape=(5,192,240,1), base_filters=16, output_activation="tanh"):
+def unet3d(input_shape=(5,192,240,1), base_filters=16, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape)
 
     # Encoder (Depth=4)
@@ -468,88 +355,90 @@ def run_mini_sweep():
         for outa in OUT_ACTS:
           for lr in LEARNING_RATES:
             for bs in BATCH_SIZES:
-              runs += 1
-              raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
-              tag = _safe_tag(raw_tag)
+                runs += 1
+                raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
+                tag = _safe_tag(raw_tag)
 
-              # Datasets fuer diese Batchgroesse
-              train_ds_bs = make_stream_ds_grouped(
-                  train_h5, batch_size=bs, shuffle=True,
-                  preproc=map_slice_wise(preproc_train_slice),
-                  augmenter=augment_5stack_flips, prefetch=tf.data.AUTOTUNE,
-                  shuffle_buffer=1024, deterministic=False
-              )
-              val_ds_bs = make_stream_ds_grouped(
-                  val_h5, batch_size=bs, shuffle=False,
-                  preproc=map_slice_wise(preproc_valid_slice),
-                  prefetch=tf.data.AUTOTUNE, deterministic=False
-              )
-              test_ds_bs = make_stream_ds_grouped(
-                  test_h5, batch_size=bs, shuffle=False,
-                  preproc=map_slice_wise(preproc_valid_slice),
-                  prefetch=tf.data.AUTOTUNE, deterministic=False
-              )
+                # Datasets fuer diese Batchgroesse
+                # Datasets fuer diese Batchgroesse (neu via Builder)
+                DATA_DIR = Path.home() / "data" / "original_data"
+                train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets(
+                    train_path=DATA_DIR / "training_data.hdf5",
+                    val_path=  DATA_DIR / "validation_data.hdf5",
+                    test_path= DATA_DIR / "test_data.hdf5",
+                    group_len=41,
+                    batch_train=bs,
+                    batch_eval=bs,
+                    preproc_train=map_slice_wise(preproc_train_slice),
+                    preproc_eval=map_slice_wise(preproc_valid_slice),
+                    augmenter=augment_5stack_flips,
+                    deterministic=False
+                )
+                INPUT_SHAPE_SWEEP = meta_bs["input_shape"]
+
+                # Modell
+                model = build_unet3d_depth(
+                    INPUT_SHAPE_SWEEP, base_filters=bf, depth_levels=depth,
+                    norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
+                )
 
 
+                model.compile(
+                    optimizer=AdamW(learning_rate=lr),
+                    loss=get_loss_fixed(),
+                    metrics=[ssim_metric,
+                            tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                            tf.keras.metrics.MeanSquaredError(name="mse"),
+                            psnr_metric],
+                    jit_compile=False
+                )
 
-              # Modell
-              model = build_unet3d_depth(
-                  INPUT_SHAPE, base_filters=bf, depth_levels=depth,
-                  norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
-              )
-              model.compile(
-                  optimizer=AdamW(learning_rate=lr),
-                  loss=get_loss_fixed(),
-                  metrics=[ssim_metric,
-                           tf.keras.metrics.MeanAbsoluteError(name="mae"),
-                           tf.keras.metrics.MeanSquaredError(name="mse"),
-                           psnr_metric],
-                  jit_compile=False
-              )
+                # Callbacks (ES aus, ReduceLROnPlateau aus)
+                run_meta_scout = {
+                    "batch_size": bs,
+                    "epochs": MAX_EPOCHS_SCOUT,
+                    "early_stopping": {"monitor": "val_loss", "patience": 10**9},
+                    "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+                    "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
+                }
+                cbs_scout, _, _ = build_standard_callbacks(
+                    ckpt_root=ckpt_root_scout,
+                    run_meta=run_meta_scout,
+                    monitor="val_loss",
+                    patience_es=10**9,
+                    reduce_on_plateau=False,
+                    include_nan_guards=True,
+                    include_logger=True,
+                    code_name=f"sweep_{tag}",
+                    verbose_ckpt=0
+                )
 
-              # Callbacks (ES aus, ReduceLROnPlateau aus)
-              run_meta_scout = {
-                  "batch_size": bs,
-                  "epochs": MAX_EPOCHS_SCOUT,
-                  "early_stopping": {"monitor": "val_loss", "patience": 10**9},
-                  "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-                  "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
-              }
-              cbs_scout, _, _ = build_standard_callbacks(
-                  ckpt_root=ckpt_root_scout,
-                  run_meta=run_meta_scout,
-                  monitor="val_loss",
-                  patience_es=10**9,
-                  reduce_on_plateau=False,
-                  include_nan_guards=True,
-                  include_logger=True,
-                  code_name=f"sweep_{tag}",
-                  verbose_ckpt=0
-              )
+                # CSV + statische Spalten
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # falls du Option A unten nutzt
+                csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
+                csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
+                inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
+                                        out_act=outa, lr=lr, batch_size=bs)
 
-              # CSV + statische Spalten
-              stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # falls du Option A unten nutzt
-              csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
-              csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
-              inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
-                                    out_act=outa, lr=lr, batch_size=bs)
+                cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
-              cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
+                print(f"\n[SWEEP] Run {runs}: {raw_tag}")
 
-              print(f"\n[SWEEP] Run {runs}: {raw_tag}")
-              history = model.fit(
-                  train_ds_bs, validation_data=val_ds_bs,
-                  epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0,
-                  workers=1, use_multiprocessing=False, max_queue_size=4
-              )
+                history = model.fit(
+                        train_ds_bs,
+                        validation_data=val_ds_bs,
+                        epochs=MAX_EPOCHS_SCOUT,
+                        callbacks=cbs_scout,
+                        verbose=0,
+                )
+                
+                # evaluieren
+                _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
+                _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
 
-              # evaluieren
-              _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
-              _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
-
-              # aufräumen
-              tf.keras.backend.clear_session()
-              import gc; gc.collect()
+                # aufräumen
+                tf.keras.backend.clear_session()
+                import gc; gc.collect()
 
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")

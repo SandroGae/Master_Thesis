@@ -1,10 +1,13 @@
 # train_utils.py
+import h5py
+import re as _re
+from pathlib import Path as _Path
+
 import os, sys, inspect, json, socket, getpass, platform, subprocess, time, uuid
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import callbacks
-
 import atexit, signal
 
 # ---------- kleine Helfer ----------
@@ -355,3 +358,129 @@ def build_standard_callbacks(
 # Optional: universeller Clamper (nützlich für Loss/Metric-Helfer)
 def clip01(x: tf.Tensor) -> tf.Tensor:
     return tf.clip_by_value(tf.cast(x, tf.float32), 0.0, 1.0)
+
+class H5FiveStackGrouped:
+    """
+    Liefert 5er-Stacks (D=5,H,W,1) aus HDF5 mit stride=1 *innerhalb* von 41er-Gruppen.
+    high=/high_count/data, low=/low_count/data (Shape: H,W,N).
+    Kein Crossing über Gruppenränder. Pro Gruppe entstehen (group_len - 5 + 1) Samples.
+    """
+    def __init__(self, path: _Path, group_len=41, stack_depth=5, dtype=np.float32):
+        assert int(stack_depth) == 5, "Diese Klasse ist auf D=5 ausgelegt."
+        self.f = h5py.File(str(path), "r")
+        self.high = self.f["/high_count/data"]  # (H, W, N)
+        self.low  = self.f["/low_count/data"]   # (H, W, N)
+        self.H, self.W, self.N = self.high.shape
+        self.group_len = int(group_len)
+        self.D = 5
+        self.dtype = dtype
+
+        if self.N % self.group_len != 0:
+            raise ValueError(f"N={self.N} ist kein Vielfaches von group_len={self.group_len}")
+        self.num_groups = self.N // self.group_len
+        self.samples_per_group = self.group_len - self.D + 1  # 37 bei 41/5
+        self.total_samples = self.num_groups * self.samples_per_group
+
+    def __len__(self): return self.total_samples
+
+    def _flat_to_group_offset(self, k: int) -> int:
+        g = k // self.samples_per_group
+        o = k %  self.samples_per_group
+        return g * self.group_len + o
+
+    def get_pair(self, k: int):
+        start = self._flat_to_group_offset(k)
+        idxs = np.arange(start, start + self.D)
+        hi = np.asarray(self.high[..., idxs], dtype=self.dtype)  # (H,W,5)
+        lo = np.asarray(self.low[...,  idxs], dtype=self.dtype)
+        # → (5,H,W,1)
+        hi = np.moveaxis(hi, -1, 0)[..., None]
+        lo = np.moveaxis(lo, -1, 0)[..., None]
+        return lo, hi
+
+
+def make_stream_ds_grouped(h5obj: H5FiveStackGrouped, *,
+                           batch_size=32,
+                           shuffle=False,
+                           preproc=None,
+                           augmenter=None,
+                           prefetch=tf.data.AUTOTUNE,
+                           shuffle_buffer=1024,
+                           deterministic=False):
+    """
+    Baut tf.data-Dataset aus H5FiveStackGrouped.
+    Reihenfolge: generator → cast → preproc (z.B. Normalisierung) → augment → batch → prefetch.
+    preproc/augmenter sind Callables (x,y)→(x',y').
+    """
+    def gen():
+        for k in range(len(h5obj)):
+            x, y = h5obj.get_pair(k)
+            yield x, y
+
+    out_spec = (
+        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float32),
+        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float32),
+    )
+    ds = tf.data.Dataset.from_generator(gen, output_signature=out_spec)
+    ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), tf.cast(y, tf.float32)),
+                num_parallel_calls=tf.data.AUTOTUNE)
+
+    if preproc is not None:
+        ds = ds.map(preproc, num_parallel_calls=tf.data.AUTOTUNE)
+    if augmenter is not None:
+        ds = ds.map(augmenter, num_parallel_calls=tf.data.AUTOTUNE)
+
+    if shuffle:
+        ds = ds.shuffle(buffer_size=min(int(shuffle_buffer), len(h5obj)),
+                        reshuffle_each_iteration=True)
+
+    ds = ds.batch(int(batch_size)).prefetch(prefetch)
+    if not deterministic:
+        opts = tf.data.Options()
+        opts.experimental_deterministic = False
+        ds = ds.with_options(opts)
+    return ds
+
+
+def build_5stack_datasets(train_path, val_path, test_path, *,
+                          group_len=41,
+                          batch_train=32, batch_eval=32,
+                          preproc_train=None, preproc_eval=None,
+                          augmenter=None,
+                          deterministic=False,
+                          prefetch=tf.data.AUTOTUNE,
+                          shuffle_buffer=1024):
+    """
+    Komfort-Builder: öffnet drei HDF5s, erzeugt je ein Dataset.
+    Normalisierung bleibt *außen* (z.B. aus jens_stuff.SumScaleNormalizer via Wrapper).
+    """
+    train_h5 = H5FiveStackGrouped(_Path(train_path), group_len=group_len, stack_depth=5)
+    val_h5   = H5FiveStackGrouped(_Path(val_path),   group_len=group_len, stack_depth=5)
+    test_h5  = H5FiveStackGrouped(_Path(test_path),  group_len=group_len, stack_depth=5)
+
+    input_shape = (5, train_h5.H, train_h5.W, 1)
+
+    train_ds = make_stream_ds_grouped(
+        train_h5, batch_size=batch_train, shuffle=True,
+        preproc=preproc_train, augmenter=augmenter,
+        prefetch=prefetch, shuffle_buffer=shuffle_buffer, deterministic=deterministic
+    )
+    val_ds = make_stream_ds_grouped(
+        val_h5, batch_size=batch_eval, shuffle=False,
+        preproc=preproc_eval, prefetch=prefetch, deterministic=deterministic
+    )
+    test_ds = make_stream_ds_grouped(
+        test_h5, batch_size=batch_eval, shuffle=False,
+        preproc=preproc_eval, prefetch=prefetch, deterministic=deterministic
+    )
+
+    meta = {
+        "H": train_h5.H, "W": train_h5.W, "D": 5,
+        "group_len": group_len,
+        "samples_per_group": group_len - 5 + 1,
+        "input_shape": input_shape,
+        "train_total_samples": len(train_h5),
+        "val_total_samples": len(val_h5),
+        "test_total_samples": len(test_h5),
+    }
+    return train_ds, val_ds, test_ds, meta
