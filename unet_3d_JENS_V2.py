@@ -259,24 +259,27 @@ cbs = list(cbs) + [csv_cb]
 # 8) Training + kurze Evaluierung
 # ==============================
 print(">>> Phase 3: GPU training starts now!")
-steps_per_epoch    = _steps(meta, "train", BATCH_SIZE)
-validation_steps   = _steps(meta, "val",   BATCH_SIZE)
 
-history = model.fit(
-    train_ds,
-    validation_data=val_ds,
-    epochs=EPOCHS,                     # EPOCHS > 0!
-    steps_per_epoch=steps_per_epoch,
-    validation_steps=validation_steps,
-    callbacks=cbs,
-    verbose=1,
-)
-print(">>> Phase 3: Training complete!")
+steps_per_epoch  = _steps(meta, "train", BATCH_SIZE)
+validation_steps = _steps(meta, "val",   BATCH_SIZE)
 
-final_val = model.evaluate(val_ds, return_dict=True, verbose=0)
-print("FINAL VAL:", {k: float(v) for k, v in final_val.items()})
-final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
-print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
+if EPOCHS > 0:
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=EPOCHS,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps,
+        callbacks=cbs,
+        verbose=1,
+    )
+    print(">>> Phase 3: Training complete!")
+    final_val  = model.evaluate(val_ds,  return_dict=True, verbose=0)
+    final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
+    print("FINAL VAL:",  {k: float(v) for k, v in final_val.items()})
+    print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
+else:
+    print(">>> Skipping main training (EPOCHS=0).")
 
 
 # %%
