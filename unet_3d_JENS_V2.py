@@ -16,6 +16,7 @@
 
 from pathlib import Path
 import numpy as np
+import math
 import tensorflow as tf
 tf.config.optimizer.set_jit(False)  # XLA aus
 
@@ -102,6 +103,13 @@ train_ds, val_ds, test_ds, meta = build_5stack_datasets_grouped(
     deterministic=False,
     cache_after_preproc=False,   # optional
 )
+
+def _steps(meta, split, batch):
+    spp = meta["samples_per_group"]           # 37
+    groups = meta[f"{split}_groups"]          # z.B. "train_groups", "val_groups"
+    total = groups * spp
+    return math.ceil(total / batch)
+
 
 INPUT_SHAPE = meta["input_shape"]
 print(">>> Datasets created")
@@ -251,7 +259,18 @@ cbs = list(cbs) + [csv_cb]
 # 8) Training + kurze Evaluierung
 # ==============================
 print(">>> Phase 3: GPU training starts now!")
-history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=cbs, verbose=0)
+steps_per_epoch    = _steps(meta, "train", BATCH_SIZE)
+validation_steps   = _steps(meta, "val",   BATCH_SIZE)
+
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,                     # EPOCHS > 0!
+    steps_per_epoch=steps_per_epoch,
+    validation_steps=validation_steps,
+    callbacks=cbs,
+    verbose=1,
+)
 print(">>> Phase 3: Training complete!")
 
 final_val = model.evaluate(val_ds, return_dict=True, verbose=0)
@@ -407,13 +426,21 @@ def run_mini_sweep():
 
                 print(f"\n[SWEEP] Run {runs}: {raw_tag}")
 
+                train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(...)
+
+                spe_bs  = _steps(meta_bs, "train", bs)
+                vste_bs = _steps(meta_bs, "val",   bs)
+
                 history = model.fit(
                     train_ds_bs,
                     validation_data=val_ds_bs,
                     epochs=MAX_EPOCHS_SCOUT,
+                    steps_per_epoch=spe_bs,
+                    validation_steps=vste_bs,
                     callbacks=cbs_scout,
-                    verbose=1
+                    verbose=1,
                 )
+
 
                 _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
                 _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
