@@ -359,94 +359,93 @@ def run_mini_sweep():
     DATA_DIR = Path.home() / "data" / "original_data"
 
     for depth in DEPTHS:
-      for bf in BASE_FILTERS:
-        for outa in OUT_ACTS:
-          for lr in LEARNING_RATES:
-            for bs in BATCH_SIZES:
-                runs += 1
-                raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
-                tag = _safe_tag(raw_tag)
+        for bf in BASE_FILTERS:
+            for outa in OUT_ACTS:
+                for lr in LEARNING_RATES:
+                    for bs in BATCH_SIZES:
+                        runs += 1
+                        raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
+                        tag = _safe_tag(raw_tag)
 
-                # Datasets pro Run (gruppenweises Streaming, GPU-prefetch)
-                train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(
-                    data_dir=DATA_DIR,
-                    group_len=41,
-                    batch_train=bs,
-                    batch_eval=bs,
-                    preproc_train=map_slice_wise(preproc_train_slice),
-                    preproc_eval=map_slice_wise(preproc_valid_slice),
-                    augmenter=augment_5stack_flips,
-                    deterministic=False,
-                    cache_after_preproc=False
-                )
-                INPUT_SHAPE_SWEEP = meta_bs["input_shape"]
+                        # --- Datasets pro Run (einmal bauen!) ---
+                        train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(
+                            data_dir=DATA_DIR,
+                            group_len=41,
+                            batch_train=bs,
+                            batch_eval=bs,
+                            preproc_train=map_slice_wise(preproc_train_slice),
+                            preproc_eval=map_slice_wise(preproc_valid_slice),
+                            augmenter=augment_5stack_flips,
+                            deterministic=False,
+                            cache_after_preproc=False
+                        )
 
-                # Modell
-                model = build_unet3d_depth(
-                    INPUT_SHAPE_SWEEP, base_filters=bf, depth_levels=depth,
-                    norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
-                )
-                model.compile(
-                    optimizer=AdamW(learning_rate=lr),
-                    loss=get_loss_fixed(),
-                    metrics=[ssim_metric,
-                             tf.keras.metrics.MeanAbsoluteError(name="mae"),
-                             tf.keras.metrics.MeanSquaredError(name="mse"),
-                             psnr_metric],
-                    jit_compile=False
-                )
+                        # --- Steps (verhindert OUT_OF_RANGE-Warnung) ---
+                        spe_bs  = _steps(meta_bs, "train", bs)
+                        vste_bs = _steps(meta_bs, "val",   bs)
 
-                # Callbacks (ES effektiv aus, nur Logging/Guards)
-                run_meta_scout = {
-                    "batch_size": bs,
-                    "epochs": MAX_EPOCHS_SCOUT,
-                    "early_stopping": {"monitor": "val_loss", "patience": 10**9},
-                    "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-                    "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
-                }
-                cbs_scout, _, _ = build_standard_callbacks(
-                    ckpt_root=ckpt_root_scout,
-                    run_meta=run_meta_scout,
-                    monitor="val_loss",
-                    patience_es=10**9,
-                    reduce_on_plateau=False,
-                    include_nan_guards=True,
-                    include_logger=True,
-                    code_name=f"sweep_{tag}",
-                    verbose_ckpt=0
-                )
+                        # --- Modell ---
+                        model = build_unet3d_depth(
+                            meta_bs["input_shape"], base_filters=bf, depth_levels=depth,
+                            norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
+                        )
+                        model.compile(
+                            optimizer=AdamW(learning_rate=lr),
+                            loss=get_loss_fixed(),
+                            metrics=[ssim_metric,
+                                     tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                                     tf.keras.metrics.MeanSquaredError(name="mse"),
+                                     psnr_metric],
+                            jit_compile=False
+                        )
 
-                # CSV + statische Spalten
-                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
-                csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
-                inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
-                                      out_act=outa, lr=lr, batch_size=bs)
-                cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
+                        # --- Callbacks (ES effektiv aus) ---
+                        run_meta_scout = {
+                            "batch_size": bs,
+                            "epochs": MAX_EPOCHS_SCOUT,
+                            "early_stopping": {"monitor": "val_loss", "patience": 10**9},
+                            "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+                            "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
+                        }
+                        cbs_scout, _, _ = build_standard_callbacks(
+                            ckpt_root=ckpt_root_scout,
+                            run_meta=run_meta_scout,
+                            monitor="val_loss",
+                            patience_es=10**9,
+                            reduce_on_plateau=False,
+                            include_nan_guards=True,
+                            include_logger=True,
+                            code_name=f"sweep_{tag}",
+                            verbose_ckpt=0
+                        )
 
-                print(f"\n[SWEEP] Run {runs}: {raw_tag}")
+                        # --- CSV + statische Spalten ---
+                        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                        csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
+                        csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
+                        inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
+                                              out_act=outa, lr=lr, batch_size=bs)
+                        cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
-                train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(...)
+                        print(f"\n[SWEEP] Run {runs}: {raw_tag}")
 
-                spe_bs  = _steps(meta_bs, "train", bs)
-                vste_bs = _steps(meta_bs, "val",   bs)
+                        # --- Train ---
+                        history = model.fit(
+                            train_ds_bs,
+                            validation_data=val_ds_bs,
+                            epochs=MAX_EPOCHS_SCOUT,
+                            steps_per_epoch=spe_bs,
+                            validation_steps=vste_bs,
+                            callbacks=cbs_scout,
+                            verbose=1,
+                        )
 
-                history = model.fit(
-                    train_ds_bs,
-                    validation_data=val_ds_bs,
-                    epochs=MAX_EPOCHS_SCOUT,
-                    steps_per_epoch=spe_bs,
-                    validation_steps=vste_bs,
-                    callbacks=cbs_scout,
-                    verbose=1,
-                )
+                        # --- Eval ---
+                        _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
+                        _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
 
-
-                _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
-                _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
-
-                tf.keras.backend.clear_session()
-                import gc; gc.collect()
+                        # --- Cleanup ---
+                        tf.keras.backend.clear_session()
+                        import gc; gc.collect()
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
-
