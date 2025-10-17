@@ -13,14 +13,21 @@
 # ==============================
 # 0) Imports & global setup
 # ==============================
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"   # schluckt I/W-Logs aus C++
+os.environ["TF_DISABLE_XLA"] = "1"        # XLA nicht initialisieren
+os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"  # kein langes cuDNN-Autotuning (ruhiger & schneller Start)
 
 from pathlib import Path
 import numpy as np
 import math
 import tensorflow as tf
-import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # weniger TF-Logs
-os.environ["TF_DISABLE_XLA"] = "1"        # unterdrückt XLA-Initialisierung
+# interne Logger auf ERROR drehen
+tf.get_logger().setLevel("ERROR")
+tf.autograph.set_verbosity(0)
+# absl (XLA/Compiler) auf ERROR
+from absl import logging as absl_logging
+absl_logging.set_verbosity(absl_logging.ERROR)
 tf.config.optimizer.set_jit(False)  # XLA aus
 
 import re
