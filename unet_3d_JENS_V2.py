@@ -29,9 +29,15 @@ depth 3, base_filters 16, output_activation tanh
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
+from pathlib import Path
 tf.config.optimizer.set_jit(False)  # XLA aus
 
-from tensorflow.keras import regularizers, constraints, layers, models, callbacks
+import re
+from pathlib import Path
+from tensorflow.keras.callbacks import CSVLogger, Callback
+import h5py, numpy as np, tensorflow as tf
+
+from tensorflow.keras import regularizers, constraints, layers, models
 from tensorflow.keras.optimizers import AdamW
 from tensorflow.keras.callbacks import CSVLogger
 from datetime import datetime
@@ -53,36 +59,92 @@ AUTO = tf.data.AUTOTUNE
 
 # %%
 # ==============================
-# 1) Daten laden (CPU)
+# 1–3) Daten-Streaming (kein RAM-Fullload)
+# ==============================
+import h5py
+
+class H5Dataset:
+    """Lazy Loader, liest 2D-Frames oder 5-Stacks on-demand aus HDF5."""
+    def __init__(self, path: Path, stack_depth=5, dtype=np.float16):
+        self.f = h5py.File(path, "r")
+        self.high = self.f["/high_count/data"]  # (H,W,N)
+        self.low  = self.f["/low_count/data"]
+        self.H, self.W, self.N = self.high.shape
+        self.D = 1  # aktuell 1 Slice, falls du echte 5-Stacks willst: D=5
+        self.dtype = dtype
+
+    def __len__(self): return self.N
+
+    def get_pair(self, i):
+        hi = self.high[..., i].astype(self.dtype)
+        lo = self.low[...,  i].astype(self.dtype)
+        hi = hi[None, ..., None]  # (1,H,W,1)
+        lo = lo[None, ..., None]
+        return lo, hi
+
+
+def make_stream_ds(h5obj, *, batch_size=32, shuffle=False,
+                   preproc=None, augmenter=None, prefetch=1):
+    """tf.data.Dataset-Wrapper um H5Dataset."""
+    def gen():
+        for i in range(len(h5obj)):
+            x, y = h5obj.get_pair(i)
+            yield x, y
+
+    out_spec = (
+        tf.TensorSpec(shape=(1, h5obj.H, h5obj.W, 1), dtype=tf.float16),
+        tf.TensorSpec(shape=(1, h5obj.H, h5obj.W, 1), dtype=tf.float16),
+    )
+
+    ds = tf.data.Dataset.from_generator(gen, output_signature=out_spec)
+    ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), tf.cast(y, tf.float32)),
+                num_parallel_calls=1)
+
+    if preproc is not None:
+        ds = ds.map(preproc, num_parallel_calls=1)
+    if augmenter is not None:
+        ds = ds.map(augmenter, num_parallel_calls=1)
+    if shuffle:
+        ds = ds.shuffle(buffer_size=min(512, len(h5obj)),
+                        reshuffle_each_iteration=True)
+
+    return ds.batch(batch_size).prefetch(prefetch)
+
+
+print(">>> Phase 1: Opening HDF5 datasets (streaming mode)...")
+
+DATA_DIR = Path.home() / "data" / "original_data"
+train_h5 = H5Dataset(DATA_DIR / "training_data.hdf5", stack_depth=5, dtype=np.float16)
+val_h5   = H5Dataset(DATA_DIR / "validation_data.hdf5", stack_depth=5, dtype=np.float16)
+test_h5  = H5Dataset(DATA_DIR / "test_data.hdf5",       stack_depth=5, dtype=np.float16)
+
+INPUT_SHAPE = (train_h5.D, train_h5.H, train_h5.W, 1)
+BATCH_SIZE  = 32
+EPOCHS      = 0
+
+# ==============================
+# Preprocessing & Augmentation (wie vorher)
 # ==============================
 
-print(">>> Phase 1: Starting data prep on CPU...")
-results = prepare_in_memory_5to5(
-    data_dir=Path.home() / "data" / "original_data",
-    size=5, group_len=41, dtype=np.float32,
-)
-print(">>> Data preperation finished, all data in RAM")
-
-X_train, Y_train = results["train"]
-X_val,   Y_val   = results["val"]
-X_test,  Y_test  = results["test"]
-
-INPUT_SHAPE = X_train.shape[1:]   # (D,H,W,C)
-BATCH_SIZE = 32
-EPOCHS     = 0
-
-# %%
-# ==============================
-# 2) Preprocessing & Augmentation
-# ==============================
-
+# Normalisierung
 preproc_train_slice = SumScaleNormalizer(
-    scale_range=[5000, 15001], pre_offset=0.0, normalize_label=True,
-    axis=(1, 2, 3), batch_mode=True, clip_before=[0., float("inf")], clip_after=[0., 1.]
+    scale_range=[5000, 15001],  # Training: zufaellig in diesem Bereich
+    pre_offset=0.0,
+    normalize_label=True,
+    axis=(1, 2, 3),
+    batch_mode=True,
+    clip_before=[0., float("inf")],
+    clip_after=[0., 1.]
 )
+
 preproc_valid_slice = SumScaleNormalizer(
-    scale_range=[5000, 5001], pre_offset=0.0, normalize_label=True,
-    axis=(1, 2, 3), batch_mode=True, clip_before=[0., float("inf")], clip_after=[0., 1.]
+    scale_range=[5000, 5001],   # Val/Test: fixe Skalierung
+    pre_offset=0.0,
+    normalize_label=True,
+    axis=(1, 2, 3),
+    batch_mode=True,
+    clip_before=[0., float("inf")],
+    clip_after=[0., 1.]
 )
 
 def map_slice_wise(normalizer):
@@ -96,53 +158,36 @@ def map_slice_wise(normalizer):
     return _fn
 
 def augment_5stack_flips(x, y):
-    do_lr = tf.random.uniform(()) < 0.5
-    do_ud = tf.random.uniform(()) < 0.5
+    # flip entlang H und W (Achsen 1/2 bei Tensorform (D,H,W,C))
+    do_lr = tf.random.uniform(()) < 0.5  # left-right (W)
+    do_ud = tf.random.uniform(()) < 0.5  # up-down (H)
+
     def fliplr(t): return tf.reverse(t, axis=[2])  # W
     def flipud(t): return tf.reverse(t, axis=[1])  # H
+
     x = tf.cond(do_lr, lambda: fliplr(x), lambda: x)
     y = tf.cond(do_lr, lambda: fliplr(y), lambda: y)
     x = tf.cond(do_ud, lambda: flipud(x), lambda: x)
     y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
     return x, y
 
+print(">>> Phase 2: Create Tensorflow Datasets (streaming)...")
 
-# %%
-# ==============================
-# 3) Erstelle Datenset (mit NaN-Guard)
-# ==============================
+train_ds = make_stream_ds(
+    train_h5, batch_size=BATCH_SIZE, shuffle=True,
+    preproc=map_slice_wise(preproc_train_slice),
+    augmenter=augment_5stack_flips, prefetch=1
+)
+val_ds = make_stream_ds(
+    val_h5, batch_size=BATCH_SIZE, shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice), prefetch=1
+)
+test_ds = make_stream_ds(
+    test_h5, batch_size=BATCH_SIZE, shuffle=False,
+    preproc=map_slice_wise(preproc_valid_slice), prefetch=1
+)
 
-def nan_debug(x, y):
-    nx = tf.reduce_sum(tf.cast(~tf.math.is_finite(x), tf.int32))
-    ny = tf.reduce_sum(tf.cast(~tf.math.is_finite(y), tf.int32))
-    tf.debugging.assert_equal(nx, 0, message="NaN/Inf in X batch")
-    tf.debugging.assert_equal(ny, 0, message="NaN/Inf in Y batch")
-    return x, y
-
-def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
-            limit=None, cache_in_memory=False, check_nans=False,
-            shuffle_buf=512, prefetch_n=2, num_calls=2, batch_size=32):
-    ds = tf.data.Dataset.from_tensor_slices((X, Y))
-    if preproc is not None:
-        ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=num_calls)
-    if cache_in_memory:
-        ds = ds.cache()
-    if augmenter is not None:
-        ds = ds.map(lambda x, y: augmenter(x, y), num_parallel_calls=num_calls)
-    if check_nans:
-        ds = ds.map(nan_debug, num_parallel_calls=num_calls)
-    if shuffle:
-        ds = ds.shuffle(buffer_size=min(shuffle_buf, X.shape[0]), reshuffle_each_iteration=True)
-    if limit is not None:
-        ds = ds.take(int(limit))
-    ds = ds.batch(batch_size, drop_remainder=False).prefetch(prefetch_n)
-    return ds
-
-print(">>> Phase 2: Create Tensorflow Datasets...")
-train_ds = make_ds(X_train, Y_train, shuffle=True, preproc=map_slice_wise(preproc_train_slice), augmenter=augment_5stack_flips, check_nans=True)
-val_ds   = make_ds(X_val, Y_val, shuffle=False, preproc=map_slice_wise(preproc_valid_slice), augmenter=None, check_nans=True)
-test_ds  = make_ds(X_test, Y_test, shuffle=False, preproc=map_slice_wise(preproc_valid_slice), augmenter=None, check_nans=True)
-print(">>> Datasets created")
+print(">>> Datasets created (streaming)")
 
 
 # %%
@@ -302,11 +347,6 @@ print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 # 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss (hier fix)
 #     Pro Run 10 Epochen, JSON-Report + CSV Logger
 # ==============================
-import json, re
-from itertools import product
-from pathlib import Path
-from tensorflow.keras.callbacks import CSVLogger, Callback
-
 CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
 CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
@@ -381,7 +421,7 @@ OUT_ACTS     = ["sigmoid"]            # Targets ∈ [0,1] -> sigmoid
 LEARNING_RATES = [3e-4, 1e-4, 3e-5]   # kleiner LR-Sweep lohnt mehr als bf=32
 BATCH_SIZES = [32, 128]               # Batch-Grössen
 
-MAX_EPOCHS_SCOUT = 10
+MAX_EPOCHS_SCOUT = 2
 
 class InjectStatic(Callback):
     def __init__(self, **static): super().__init__(); self.static = static
@@ -403,18 +443,14 @@ def run_mini_sweep():
               tag = _safe_tag(raw_tag)
 
               # Datasets fuer diese Batchgroesse
-              train_ds_bs = make_ds(X_train, Y_train, shuffle=True,
-                                    preproc=map_slice_wise(preproc_train_slice),
-                                    augmenter=augment_5stack_flips, check_nans=True,
-                                    batch_size=bs)
-              val_ds_bs   = make_ds(X_val, Y_val, shuffle=False,
-                                    preproc=map_slice_wise(preproc_valid_slice),
-                                    augmenter=None, check_nans=True,
-                                    batch_size=bs)
-              test_ds_bs  = make_ds(X_test, Y_test, shuffle=False,
-                                    preproc=map_slice_wise(preproc_valid_slice),
-                                    augmenter=None, check_nans=True,
-                                    batch_size=bs)
+              train_ds_bs = make_stream_ds(train_h5, batch_size=bs, shuffle=True,
+                                        preproc=map_slice_wise(preproc_train_slice),
+                                        augmenter=augment_5stack_flips, prefetch=1)
+              val_ds_bs = make_stream_ds(val_h5, batch_size=bs, shuffle=False,
+                                        preproc=map_slice_wise(preproc_valid_slice), prefetch=1)
+              test_ds_bs = make_stream_ds(test_h5, batch_size=bs, shuffle=False,
+                                        preproc=map_slice_wise(preproc_valid_slice), prefetch=1)
+
 
               # Modell
               model = build_unet3d_depth(
@@ -462,7 +498,9 @@ def run_mini_sweep():
 
               print(f"\n[SWEEP] Run {runs}: {raw_tag}")
               history = model.fit(train_ds_bs, validation_data=val_ds_bs,
-                                  epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0)
+                    epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0,
+                    workers=1, use_multiprocessing=False, max_queue_size=4)
+              tf.keras.backend.clear_session(); import gc; gc.collect()
 
               _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
               _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
