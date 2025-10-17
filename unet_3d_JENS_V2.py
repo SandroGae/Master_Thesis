@@ -18,6 +18,9 @@ from pathlib import Path
 import numpy as np
 import math
 import tensorflow as tf
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # weniger TF-Logs
+os.environ["TF_DISABLE_XLA"] = "1"        # unterdrückt XLA-Initialisierung
 tf.config.optimizer.set_jit(False)  # XLA aus
 
 import re
@@ -264,15 +267,20 @@ steps_per_epoch  = _steps(meta, "train", BATCH_SIZE)
 validation_steps = _steps(meta, "val",   BATCH_SIZE)
 
 if EPOCHS > 0:
+    # wichtig: Dataset wiederholbar machen, sonst ist nach Epoche 1 Schluss
+    train_ds_rep = train_ds.repeat(EPOCHS)
+    val_ds_rep   = val_ds.repeat(EPOCHS)
+
     history = model.fit(
-        train_ds,
-        validation_data=val_ds,
+        train_ds_rep,
+        validation_data=val_ds_rep,
         epochs=EPOCHS,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=cbs,
-        verbose=1,
+        verbose=0,  # nur dein CompactLogger
     )
+
     print(">>> Phase 3: Training complete!")
     final_val  = model.evaluate(val_ds,  return_dict=True, verbose=0)
     final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
@@ -391,7 +399,7 @@ def run_mini_sweep():
                         raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
                         tag = _safe_tag(raw_tag)
 
-                        # --- Datasets pro Run (einmal bauen!) ---
+                        # --- 1) Datasets pro Run bauen ---
                         train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(
                             data_dir=DATA_DIR,
                             group_len=41,
@@ -404,11 +412,14 @@ def run_mini_sweep():
                             cache_after_preproc=False
                         )
 
-                        # --- Steps (verhindert OUT_OF_RANGE-Warnung) ---
+                        # mehrere Epochen ohne OUT_OF_RANGE
+                        train_ds_bs = train_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+                        val_ds_bs   = val_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+
                         spe_bs  = _steps(meta_bs, "train", bs)
                         vste_bs = _steps(meta_bs, "val",   bs)
 
-                        # --- Modell ---
+                        # --- 2) Modell bauen + kompilieren ---
                         model = build_unet3d_depth(
                             meta_bs["input_shape"], base_filters=bf, depth_levels=depth,
                             norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
@@ -423,7 +434,7 @@ def run_mini_sweep():
                             jit_compile=False
                         )
 
-                        # --- Callbacks (ES effektiv aus) ---
+                        # --- 3) Callbacks (ES effektiv aus) ---
                         run_meta_scout = {
                             "batch_size": bs,
                             "epochs": MAX_EPOCHS_SCOUT,
@@ -438,28 +449,29 @@ def run_mini_sweep():
                             patience_es=10**9,
                             reduce_on_plateau=False,
                             include_nan_guards=True,
-                            include_logger=True,
+                            include_logger=True,   # dein CompactLogger
                             code_name=f"sweep_{tag}",
                             verbose_ckpt=0
                         )
 
-                        # --- CSV + statische Spalten ---
+                        # CSV + nur numerische Zusatz-Logs
                         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                         csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
                         csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
+
                         inject = InjectStatic(
-                            run_tag=tag,              # bleibt als String, wird aber nicht in logs geschrieben
-                            depth=depth,              # numerisch -> wird geschrieben
-                            base_filters=bf,          # numerisch
-                            out_act=outa,             # String -> wird via out_act_id gehasht/gemappt
-                            lr=lr,                    # numerisch
-                            batch_size=bs             # numerisch
+                            run_tag=tag,          # String -> wird als Hash geschrieben
+                            depth=depth,          # numerisch
+                            base_filters=bf,      # numerisch
+                            out_act=outa,         # String -> als ID
+                            lr=lr,                # numerisch
+                            batch_size=bs         # numerisch
                         )
                         cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
                         print(f"\n[SWEEP] Run {runs}: {raw_tag}")
 
-                        # --- Train ---
+                        # --- 4) Train ---
                         history = model.fit(
                             train_ds_bs,
                             validation_data=val_ds_bs,
@@ -467,14 +479,14 @@ def run_mini_sweep():
                             steps_per_epoch=spe_bs,
                             validation_steps=vste_bs,
                             callbacks=cbs_scout,
-                            verbose=1,
+                            verbose=0,  # nur dein CompactLogger
                         )
 
-                        # --- Eval ---
+                        # --- 5) Eval ---
                         _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
                         _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
 
-                        # --- Cleanup ---
+                        # --- 6) Cleanup ---
                         tf.keras.backend.clear_session()
                         import gc; gc.collect()
 
