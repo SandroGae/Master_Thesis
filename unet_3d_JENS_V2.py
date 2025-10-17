@@ -42,7 +42,6 @@ from tensorflow.keras.optimizers import AdamW
 from tensorflow.keras.callbacks import CSVLogger
 from datetime import datetime
 
-from unet_3d_data_JENS import prepare_in_memory_5to5
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from train_utils import build_standard_callbacks, clip01
 
@@ -63,62 +62,91 @@ AUTO = tf.data.AUTOTUNE
 # ==============================
 import h5py
 
-class H5Dataset:
-    """Lazy Loader, liest 2D-Frames oder 5-Stacks on-demand aus HDF5."""
-    def __init__(self, path: Path, stack_depth=5, dtype=np.float16):
+# --- Streaming-Klasse, die 5er-Fenster strikt innerhalb 41er-Gruppen liefert ---
+class H5FiveStackGrouped:
+    """
+    Liefert 5er-Stacks (D=5, H, W, 1) aus HDF5 mit stride=1 *innerhalb* von 41er-Gruppen.
+    Pro Gruppe entstehen (41 - 5 + 1) = 37 Samples. Kein Crossing ueber Gruppenraender.
+    """
+    def __init__(self, path: Path, group_len=41, stack_depth=5, dtype=np.float16):
+        assert stack_depth == 5, "Diese Klasse ist auf D=5 ausgelegt."
         self.f = h5py.File(path, "r")
-        self.high = self.f["/high_count/data"]  # (H,W,N)
+        self.high = self.f["/high_count/data"]  # (H, W, N)
         self.low  = self.f["/low_count/data"]
         self.H, self.W, self.N = self.high.shape
-        self.D = 1  # aktuell 1 Slice, falls du echte 5-Stacks willst: D=5
+        self.group_len = int(group_len)
+        self.D = int(stack_depth)
         self.dtype = dtype
 
-    def __len__(self): return self.N
+        if self.N % self.group_len != 0:
+            raise ValueError(f"N={self.N} ist kein Vielfaches von group_len={self.group_len}")
+        self.num_groups = self.N // self.group_len
+        self.samples_per_group = self.group_len - self.D + 1  # 37 bei 41/5
+        self.total_samples = self.num_groups * self.samples_per_group
 
-    def get_pair(self, i):
-        hi = self.high[..., i].astype(self.dtype)
-        lo = self.low[...,  i].astype(self.dtype)
-        hi = hi[None, ..., None]  # (1,H,W,1)
-        lo = lo[None, ..., None]
+    def __len__(self):
+        return self.total_samples
+
+    def _flat_to_group_offset(self, k):
+        # k in [0, total_samples)
+        g = k // self.samples_per_group                    # Gruppenindex
+        o = k %  self.samples_per_group                    # Start-Offset innerhalb der Gruppe
+        start = g * self.group_len + o                     # globaler Startindex
+        return start  # Fenster nimmt start .. start+4
+
+    def get_pair(self, k):
+        start = self._flat_to_group_offset(k)
+        idxs = np.arange(start, start + self.D)            # exakt 5 aufeinanderfolgende
+        # (H,W,5) -> (5,H,W,1)
+        hi = self.high[..., idxs].astype(self.dtype)
+        lo = self.low[...,  idxs].astype(self.dtype)
+        hi = np.moveaxis(hi, -1, 0)[..., None]
+        lo = np.moveaxis(lo, -1, 0)[..., None]
         return lo, hi
 
 
-def make_stream_ds(h5obj, *, batch_size=32, shuffle=False,
-                   preproc=None, augmenter=None, prefetch=1):
-    """tf.data.Dataset-Wrapper um H5Dataset."""
+
+def make_stream_ds_grouped(h5obj, *, batch_size=32, shuffle=False,
+                           preproc=None, augmenter=None, prefetch=tf.data.AUTOTUNE,
+                           shuffle_buffer=1024, deterministic=False):
     def gen():
-        for i in range(len(h5obj)):
-            x, y = h5obj.get_pair(i)
+        for k in range(len(h5obj)):      # k: 0..total_samples-1
+            x, y = h5obj.get_pair(k)
             yield x, y
 
     out_spec = (
-        tf.TensorSpec(shape=(1, h5obj.H, h5obj.W, 1), dtype=tf.float16),
-        tf.TensorSpec(shape=(1, h5obj.H, h5obj.W, 1), dtype=tf.float16),
+        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float16),
+        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float16),
     )
-
     ds = tf.data.Dataset.from_generator(gen, output_signature=out_spec)
     ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), tf.cast(y, tf.float32)),
-                num_parallel_calls=1)
+                num_parallel_calls=tf.data.AUTOTUNE)
 
     if preproc is not None:
-        ds = ds.map(preproc, num_parallel_calls=1)
+        ds = ds.map(preproc, num_parallel_calls=tf.data.AUTOTUNE)
     if augmenter is not None:
-        ds = ds.map(augmenter, num_parallel_calls=1)
+        ds = ds.map(augmenter, num_parallel_calls=tf.data.AUTOTUNE)
     if shuffle:
-        ds = ds.shuffle(buffer_size=min(512, len(h5obj)),
+        ds = ds.shuffle(buffer_size=min(shuffle_buffer, len(h5obj)),
                         reshuffle_each_iteration=True)
 
-    return ds.batch(batch_size).prefetch(prefetch)
+    ds = ds.batch(batch_size).prefetch(prefetch)
+    if not deterministic:
+        opts = tf.data.Options()
+        opts.experimental_deterministic = False
+        ds = ds.with_options(opts)
+    return ds
+
 
 
 print(">>> Phase 1: Opening HDF5 datasets (streaming mode)...")
 
 DATA_DIR = Path.home() / "data" / "original_data"
-train_h5 = H5Dataset(DATA_DIR / "training_data.hdf5", stack_depth=5, dtype=np.float16)
-val_h5   = H5Dataset(DATA_DIR / "validation_data.hdf5", stack_depth=5, dtype=np.float16)
-test_h5  = H5Dataset(DATA_DIR / "test_data.hdf5",       stack_depth=5, dtype=np.float16)
+train_h5 = H5FiveStackGrouped(DATA_DIR / "training_data.hdf5", group_len=41, stack_depth=5, dtype=np.float16)
+val_h5   = H5FiveStackGrouped(DATA_DIR / "validation_data.hdf5", group_len=41, stack_depth=5, dtype=np.float16)
+test_h5  = H5FiveStackGrouped(DATA_DIR / "test_data.hdf5",       group_len=41, stack_depth=5, dtype=np.float16)
 
-INPUT_SHAPE = (train_h5.D, train_h5.H, train_h5.W, 1)
+INPUT_SHAPE = (5, train_h5.H, train_h5.W, 1)
 BATCH_SIZE  = 32
 EPOCHS      = 0
 
@@ -173,21 +201,23 @@ def augment_5stack_flips(x, y):
 
 print(">>> Phase 2: Create Tensorflow Datasets (streaming)...")
 
-train_ds = make_stream_ds(
+train_ds = make_stream_ds_grouped(
     train_h5, batch_size=BATCH_SIZE, shuffle=True,
     preproc=map_slice_wise(preproc_train_slice),
-    augmenter=augment_5stack_flips, prefetch=1
+    augmenter=augment_5stack_flips, prefetch=tf.data.AUTOTUNE,
+    shuffle_buffer=1024, deterministic=False
 )
-val_ds = make_stream_ds(
+val_ds = make_stream_ds_grouped(
     val_h5, batch_size=BATCH_SIZE, shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice), prefetch=1
+    preproc=map_slice_wise(preproc_valid_slice),
+    prefetch=tf.data.AUTOTUNE, deterministic=False
 )
-test_ds = make_stream_ds(
+test_ds = make_stream_ds_grouped(
     test_h5, batch_size=BATCH_SIZE, shuffle=False,
-    preproc=map_slice_wise(preproc_valid_slice), prefetch=1
+    preproc=map_slice_wise(preproc_valid_slice),
+    prefetch=tf.data.AUTOTUNE, deterministic=False
 )
-
-print(">>> Datasets created (streaming)")
+print(">>> Datasets created")
 
 
 # %%
@@ -281,7 +311,7 @@ class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
 # 6) Compile
 # ==============================
 
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16, output_activation="tanh")
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16, output_activation="sigmoid")
 model.compile(optimizer=AdamW(learning_rate=1e-4),
     loss=CombinedMAE_SSIM_Loss(alpha=0.7),
     metrics=[ssim_metric, tf.keras.metrics.MeanAbsoluteError(name="mae"), tf.keras.metrics.MeanSquaredError(name="mse"), psnr_metric],
@@ -443,13 +473,23 @@ def run_mini_sweep():
               tag = _safe_tag(raw_tag)
 
               # Datasets fuer diese Batchgroesse
-              train_ds_bs = make_stream_ds(train_h5, batch_size=bs, shuffle=True,
-                                        preproc=map_slice_wise(preproc_train_slice),
-                                        augmenter=augment_5stack_flips, prefetch=1)
-              val_ds_bs = make_stream_ds(val_h5, batch_size=bs, shuffle=False,
-                                        preproc=map_slice_wise(preproc_valid_slice), prefetch=1)
-              test_ds_bs = make_stream_ds(test_h5, batch_size=bs, shuffle=False,
-                                        preproc=map_slice_wise(preproc_valid_slice), prefetch=1)
+              train_ds_bs = make_stream_ds_grouped(
+                  train_h5, batch_size=bs, shuffle=True,
+                  preproc=map_slice_wise(preproc_train_slice),
+                  augmenter=augment_5stack_flips, prefetch=tf.data.AUTOTUNE,
+                  shuffle_buffer=1024, deterministic=False
+              )
+              val_ds_bs = make_stream_ds_grouped(
+                  val_h5, batch_size=bs, shuffle=False,
+                  preproc=map_slice_wise(preproc_valid_slice),
+                  prefetch=tf.data.AUTOTUNE, deterministic=False
+              )
+              test_ds_bs = make_stream_ds_grouped(
+                  test_h5, batch_size=bs, shuffle=False,
+                  preproc=map_slice_wise(preproc_valid_slice),
+                  prefetch=tf.data.AUTOTUNE, deterministic=False
+              )
+
 
 
               # Modell

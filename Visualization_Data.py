@@ -17,8 +17,9 @@ import h5py
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable  # für Colorbar links
 
-def show_pair(high_img, low_img, idx, p_low=1, p_high=99, share_scale=False):
+def show_pair(high_img, low_img, idx=None, p_low=1, p_high=99, share_scale=False):
     def robust_minmax(img):
         vals = img.ravel()
         vmin, vmax = np.percentile(vals, (p_low, p_high))
@@ -26,27 +27,38 @@ def show_pair(high_img, low_img, idx, p_low=1, p_high=99, share_scale=False):
             vmin, vmax = float(vals.min()), float(vals.max() + 1e-6)
         return vmin, vmax
 
+    # Skalen bestimmen
+    vmin_h, vmax_h = robust_minmax(high_img)
+    vmin_l, vmax_l = robust_minmax(low_img)
     if share_scale:
-        vmin_h, vmax_h = robust_minmax(high_img)
-        vmin_l, vmax_l = robust_minmax(low_img)
         vmin = min(vmin_h, vmin_l); vmax = max(vmax_h, vmax_l)
         vmin_h = vmin_l = vmin; vmax_h = vmax_l = vmax
-    else:
-        vmin_h, vmax_h = robust_minmax(high_img)
-        vmin_l, vmax_l = robust_minmax(low_img)
 
-    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-    im0 = axes[0].imshow(high_img, cmap="gray_r", origin="lower", aspect="equal",
-                         vmin=vmin_h, vmax=vmax_h)
-    axes[0].set_title(f"High count {idx}"); axes[0].axis("off")
-    fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04).set_label("Intensity")
+    # Figure mit 3-Spalten-Grid: [Colorbar | Low | High]
+    fig = plt.figure(figsize=(11, 5), constrained_layout=True)
+    gs = fig.add_gridspec(nrows=1, ncols=3, width_ratios=(1, 20, 20), wspace=0.02)
 
-    im1 = axes[1].imshow(low_img, cmap="gray_r", origin="lower", aspect="equal",
+    cax   = fig.add_subplot(gs[0])  # nur Colorbar
+    ax_lo = fig.add_subplot(gs[1])  # Low links
+    ax_hi = fig.add_subplot(gs[2])  # High rechts
+
+    im_lo = ax_lo.imshow(low_img, cmap="gray_r", origin="lower", aspect="equal",
                          vmin=vmin_l, vmax=vmax_l)
-    axes[1].set_title(f"Low count {idx}"); axes[1].axis("off")
-    fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04).set_label("Intensity")
+    ax_lo.set_title("Low Count Data", fontsize=14)
+    ax_lo.axis("off")
 
-    plt.tight_layout(); plt.show()
+    im_hi = ax_hi.imshow(high_img, cmap="gray_r", origin="lower", aspect="equal",
+                         vmin=vmin_h, vmax=vmax_h)
+    ax_hi.set_title("High Count Data", fontsize=14)
+    ax_hi.axis("off")
+
+    # Eine gemeinsame Farbskala: verwende die des linken Bildes
+    cbar = fig.colorbar(im_lo, cax=cax)
+    cax.yaxis.set_ticks_position('left')
+    cax.yaxis.set_label_position('left')
+    cbar.set_label("Intensity", fontsize=16)
+
+    plt.show()
 
 # Ordner mit den HDF5-Dateien
 DATA_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
@@ -67,13 +79,15 @@ data = {name: load_all(p) for name, p in paths.items()}
 
 print({name: (h.shape, l.shape) for name,(h,l) in data.items()})
 
-indices = [0]
+indices = [0,1,2,3,4,5]
 for split in ["train", "test", "val"]:
     high, low = data[split]
     print(f"===== {split.upper()} =====")
     for idx in indices:
         print(f"{split.upper()} -> Bild {idx}")
-        show_pair(high[idx], low[idx], idx)   # ensure show_pair ist definiert
+        # Low links, High rechts; idx wird in show_pair nicht mehr benötigt
+        show_pair(high[idx], low[idx], share_scale=False)
+
 
 # %%
 import os
