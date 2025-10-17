@@ -302,7 +302,7 @@ print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 # 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss (hier fix)
 #     Pro Run 10 Epochen, JSON-Report + CSV Logger
 # ==============================
-import json, datetime, re
+import json, re
 from itertools import product
 from pathlib import Path
 
