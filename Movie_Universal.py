@@ -341,32 +341,32 @@ def make_movie_for_code(
 # Beispiel-Aufrufe
 # =========================
 if __name__ == "__main__":
-    # Beispiel 1: ALT-Pipeline (unet_3d)
-    # make_movie_for_code(
-    #     code_name="unet_3d",
-    #     model_path=Path.home() / "data" / "checkpoints_3d_unet" / "unet_3d_V1_valloss_1.065e-02_PSNR_42.keras",
-    #     data_dir=Path.home() / "data" / "original_data",
-    #     size=5, group_len=41,
-    #     out_dir=Path.home() / "data" / "movies",
-    #     start_group=0, max_groups=20,
-    #     fps=12, gamma=0.8, p_low=1.0, p_high=99.5,
-    #     layout="h", upscale=2, pad_px=12,
-    #     energy_match=True,
-    #     save_counts=True  # nur ALT hat clip_val fuer echte Counts
-    # )
+    make_movie_for_code(
+        code_name="unet_3d",
+        model_path=Path.home() / "data" / "checkpoints_3d_unet" /
+                    "unet_3d_V1_valloss_1.065e-02_PSNR_42.keras",
+        data_dir=Path.home() / "data" / "original_data",
+        size=5, group_len=41,
+        out_dir=Path.home() / "data" / "movies",
+        start_group=0, max_groups=20,
+        fps=12, gamma=0.8, p_low=1.0, p_high=99.5,
+        layout="h", upscale=2, pad_px=12,
+        energy_match=True,
+        save_counts=True
+    )
 
-    # Beispiel 2: Jens-Pipeline (unet_3d_JENS_mae)
-    # make_movie_for_code(
-    #     code_name="unet_3d_JENS_mae",
-    #     model_path=Path.home() / "data" / "checkpoints_3d_unet" / "unet_3d_JENS_mae_V1_valloss_9.9e-03_PSNR_43.keras",
-    #     data_dir=Path.home() / "data" / "original_data",
-    #     size=5, group_len=41,
-    #     out_dir=Path.home() / "data" / "movies",
-    #     start_group=0, max_groups=20,
-    #     fps=12, gamma=0.8, p_low=1.0, p_high=99.5,
-    #     layout="h", upscale=2, pad_px=12,
-    #     energy_match=True,
-    #     save_counts=False
-    # )
-    pass
+    make_movie_for_code(
+        code_name="unet_3d_JENS_mae",
+        model_path=Path.home() / "data" / "checkpoints_3d_unet" /
+                    "unet_3d_JENS_mae_V1_valloss_9.9e-03_PSNR_43.keras",
+        data_dir=Path.home() / "data" / "original_data",
+        size=5, group_len=41,
+        out_dir=Path.home() / "data" / "movies",
+        start_group=0, max_groups=20,
+        fps=12, gamma=0.8, p_low=1.0, p_high=99.5,
+        layout="h", upscale=2, pad_px=12,
+        energy_match=True,
+        save_counts=False
+    )
+
 
