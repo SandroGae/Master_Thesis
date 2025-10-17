@@ -405,7 +405,7 @@ def run_mini_sweep():
                         raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
                         tag = _safe_tag(raw_tag)
 
-                        # --- 1) Datasets pro Run bauen ---
+                        # 1) Datasets
                         train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(
                             data_dir=DATA_DIR,
                             group_len=41,
@@ -418,14 +418,16 @@ def run_mini_sweep():
                             cache_after_preproc=False
                         )
 
-                        # mehrere Epochen ohne OUT_OF_RANGE
-                        train_ds_bs = train_ds_bs.repeat(MAX_EPOCHS_SCOUT)
-                        val_ds_bs   = val_ds_bs.repeat(MAX_EPOCHS_SCOUT)
-
+                        # Schritte (für fit/eval) – val/test NICHT repeat-en
                         spe_bs  = _steps(meta_bs, "train", bs)
                         vste_bs = _steps(meta_bs, "val",   bs)
+                        tste_bs = _steps(meta_bs, "test",  bs)
 
-                        # --- 2) Modell bauen + kompilieren ---
+                        # Für fit mehrere Epochen sicherstellen
+                        train_ds_fit = train_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+                        val_ds_fit   = val_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+
+                        # 2) Modell bauen + kompilieren
                         model = build_unet3d_depth(
                             meta_bs["input_shape"], base_filters=bf, depth_levels=depth,
                             norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
@@ -440,7 +442,7 @@ def run_mini_sweep():
                             jit_compile=False
                         )
 
-                        # --- 3) Callbacks (ES effektiv aus) ---
+                        # 3) Callbacks
                         run_meta_scout = {
                             "batch_size": bs,
                             "epochs": MAX_EPOCHS_SCOUT,
@@ -455,46 +457,42 @@ def run_mini_sweep():
                             patience_es=10**9,
                             reduce_on_plateau=False,
                             include_nan_guards=True,
-                            include_logger=True,   # dein CompactLogger
+                            include_logger=True,
                             code_name=f"sweep_{tag}",
                             verbose_ckpt=0
                         )
-
-                        # CSV + nur numerische Zusatz-Logs
                         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                         csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
                         csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
-
                         inject = InjectStatic(
-                            run_tag=tag,          # String -> wird als Hash geschrieben
-                            depth=depth,          # numerisch
-                            base_filters=bf,      # numerisch
-                            out_act=outa,         # String -> als ID
-                            lr=lr,                # numerisch
-                            batch_size=bs         # numerisch
+                            run_tag=tag, depth=depth, base_filters=bf,
+                            out_act=outa, lr=lr, batch_size=bs
                         )
                         cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
                         print(f"\n[SWEEP] Run {runs}: {raw_tag}")
 
-                        # --- 4) Train ---
-                        history = model.fit(
-                            train_ds_bs,
-                            validation_data=val_ds_bs,
+                        # 4) Train
+                        model.fit(
+                            train_ds_fit,
+                            validation_data=val_ds_fit,
                             epochs=MAX_EPOCHS_SCOUT,
                             steps_per_epoch=spe_bs,
                             validation_steps=vste_bs,
                             callbacks=cbs_scout,
-                            verbose=0,  # nur dein CompactLogger
+                            verbose=0,   # nur dein CompactLogger
                         )
 
-                        # --- 5) Eval ---
-                        _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
-                        _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
+                        # 5) Eval (auf NICHT-repeated Datasets + mit steps)
+                        _ = model.evaluate(val_ds_bs,  steps=vste_bs, return_dict=True, verbose=0)
+                        _ = model.evaluate(test_ds_bs, steps=tste_bs, return_dict=True, verbose=0)
 
-                        # --- 6) Cleanup ---
+                        # 6) Cleanup
                         tf.keras.backend.clear_session()
                         import gc; gc.collect()
+
+    print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
+
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
 
