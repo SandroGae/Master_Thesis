@@ -28,9 +28,6 @@ tf.get_logger().setLevel("ERROR")
 from absl import logging as absl_logging
 absl_logging.set_verbosity(absl_logging.FATAL)   # XLA/absl-ERRORs verstummen
 tf.config.optimizer.set_jit(False)
-# (optional, bremst minimal, aber verhindert weitere Numdiffs)
-tf.config.experimental.enable_op_determinism(True)
-
 
 from pathlib import Path
 import numpy as np
