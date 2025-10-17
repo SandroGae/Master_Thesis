@@ -26,7 +26,7 @@ from tensorflow.keras.optimizers import AdamW
 from datetime import datetime
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
-from train_utils import build_standard_callbacks, build_5stack_datasets, clip01
+from train_utils import build_standard_callbacks, build_5stack_datasets_grouped, clip01
 
 
 # Reproduzierbarkeit
@@ -262,25 +262,19 @@ print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 # %%
 # ==============================
 # 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss (hier fix)
-#     Pro Run 10 Epochen, JSON-Report + CSV Logger
 # ==============================
 CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
 CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
 def _safe_tag(s: str) -> str:
-    # Erlaubt nur A-Za-z0-9_.\\/>- ; ersetze andere Zeichen durch '_'.
-    # Garantiert, dass der erste Char gueltig ist (A-Za-z oder Ziffer oder '.').
-    # Ersetze unerlaubte Zeichen
     t = re.sub(r"[^A-Za-z0-9_.\\/>-]", "_", s)
-    # falls erster Char ungueltig, prefix mit 'A'
     if not re.match(r"^[A-Za-z0-9.]", t):
         t = "A" + t
     return t
 
-# --- (A) kleine Hilfen: norm + act ohne dein conv_block umzuschreiben ---
 def conv_block_param(x, filters, *, norm="LN", act="ELU"):
     if norm.upper() == "LN" and act.upper() == "ELU":
-        return conv_block(x, filters)  # exakt dein Block
+        return conv_block(x, filters)
     ki  = "he_normal"; kr = regularizers.l2(1e-5); kc = constraints.MaxNorm(3.0)
     y = layers.Conv3D(filters, (3,3,3), padding="same",
                       kernel_initializer=ki, use_bias=False,
@@ -296,14 +290,12 @@ def conv_block_param(x, filters, *, norm="LN", act="ELU"):
     y = (layers.ELU()(y) if act.upper()=="ELU" else layers.LeakyReLU(alpha=0.1)(y))
     return y
 
-# --- (B) U-Net mit variabler Tiefe (depth_levels = Anzahl Downsamplings) ---
 def build_unet3d_depth(input_shape,
                        *, base_filters=16, depth_levels=3,
                        norm="LN", act="ELU",
                        output_activation="sigmoid",
                        name=None):
     inputs = layers.Input(shape=input_shape)
-    # Encoder
     skips = []
     x = inputs
     filters = base_filters
@@ -312,32 +304,26 @@ def build_unet3d_depth(input_shape,
         skips.append(x)
         x = layers.MaxPooling3D((1,2,2))(x)
         filters *= 2
-    # Bottleneck
-    x = conv_block_param(x, filters, norm=norm, act=act)
-    # Decoder
+    x = conv_block_param(x, filters, norm=norm, act=act)  # bottleneck
     for level in reversed(range(depth_levels)):
         filters //= 2
         x = layers.Conv3DTranspose(filters, (1,2,2), (1,2,2), padding="same")(x)
         x = layers.Concatenate()([x, skips[level]])
         x = conv_block_param(x, filters, norm=norm, act=act)
-    out = layers.Conv3D(1, (1,1,1),
-                        activation=output_activation,
+    out = layers.Conv3D(1, (1,1,1), activation=output_activation,
                         kernel_initializer="glorot_uniform")(x)
     model_name = name or f"UNet3D_d{depth_levels}_bf{base_filters}_{act}_{norm}_out{output_activation}"
     model_name = _safe_tag(model_name)
     return models.Model(inputs, out, name=model_name)
 
-# --- (C) Loss fix: MAE+SSIM(0.7) ---
 def get_loss_fixed():
     return CombinedMAE_SSIM_Loss(alpha=0.7, name="mae_ssim_0p7")
 
-# --- (D) Suchraum ---
-DEPTHS       = [3, 4]                 # Architektur-Tiefe
-BASE_FILTERS = [8, 16, 24]            # Start-Kanaele
-OUT_ACTS     = ["sigmoid"]            # Targets ∈ [0,1] -> sigmoid
-LEARNING_RATES = [3e-4, 1e-4, 3e-5]   # kleiner LR-Sweep lohnt mehr als bf=32
-BATCH_SIZES = [32, 128]               # Batch-Grössen
-
+DEPTHS         = [3, 4]
+BASE_FILTERS   = [8, 16, 24]
+OUT_ACTS       = ["sigmoid"]
+LEARNING_RATES = [3e-4, 1e-4, 3e-5]
+BATCH_SIZES    = [32, 128]
 MAX_EPOCHS_SCOUT = 2
 
 class InjectStatic(Callback):
@@ -348,7 +334,9 @@ class InjectStatic(Callback):
 def run_mini_sweep():
     runs = 0
     ckpt_root_scout = Path.home() / "data" / "checkpoints_3d_unet_scout"
-    CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"; CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
+    CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
+    CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
+    DATA_DIR = Path.home() / "data" / "original_data"
 
     for depth in DEPTHS:
       for bf in BASE_FILTERS:
@@ -359,20 +347,17 @@ def run_mini_sweep():
                 raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
                 tag = _safe_tag(raw_tag)
 
-                # Datasets fuer diese Batchgroesse
-                # Datasets fuer diese Batchgroesse (neu via Builder)
-                DATA_DIR = Path.home() / "data" / "original_data"
-                train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets(
-                    train_path=DATA_DIR / "training_data.hdf5",
-                    val_path=  DATA_DIR / "validation_data.hdf5",
-                    test_path= DATA_DIR / "test_data.hdf5",
+                # Datasets pro Run (gruppenweises Streaming, GPU-prefetch)
+                train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(
+                    data_dir=DATA_DIR,
                     group_len=41,
                     batch_train=bs,
                     batch_eval=bs,
                     preproc_train=map_slice_wise(preproc_train_slice),
                     preproc_eval=map_slice_wise(preproc_valid_slice),
                     augmenter=augment_5stack_flips,
-                    deterministic=False
+                    deterministic=False,
+                    cache_after_preproc=False
                 )
                 INPUT_SHAPE_SWEEP = meta_bs["input_shape"]
 
@@ -381,19 +366,17 @@ def run_mini_sweep():
                     INPUT_SHAPE_SWEEP, base_filters=bf, depth_levels=depth,
                     norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
                 )
-
-
                 model.compile(
                     optimizer=AdamW(learning_rate=lr),
                     loss=get_loss_fixed(),
                     metrics=[ssim_metric,
-                            tf.keras.metrics.MeanAbsoluteError(name="mae"),
-                            tf.keras.metrics.MeanSquaredError(name="mse"),
-                            psnr_metric],
+                             tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                             tf.keras.metrics.MeanSquaredError(name="mse"),
+                             psnr_metric],
                     jit_compile=False
                 )
 
-                # Callbacks (ES aus, ReduceLROnPlateau aus)
+                # Callbacks (ES effektiv aus, nur Logging/Guards)
                 run_meta_scout = {
                     "batch_size": bs,
                     "epochs": MAX_EPOCHS_SCOUT,
@@ -414,34 +397,28 @@ def run_mini_sweep():
                 )
 
                 # CSV + statische Spalten
-                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # falls du Option A unten nutzt
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                 csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
                 csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
                 inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
-                                        out_act=outa, lr=lr, batch_size=bs)
-
+                                      out_act=outa, lr=lr, batch_size=bs)
                 cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
                 print(f"\n[SWEEP] Run {runs}: {raw_tag}")
 
                 history = model.fit(
-                        train_ds_bs,
-                        validation_data=val_ds_bs,
-                        epochs=MAX_EPOCHS_SCOUT,
-                        callbacks=cbs_scout,
-                        verbose=0,
+                    train_ds_bs,
+                    validation_data=val_ds_bs,
+                    epochs=MAX_EPOCHS_SCOUT,
+                    callbacks=cbs_scout,
+                    verbose=1
                 )
-                
-                # evaluieren
+
                 _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
                 _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
 
-                # aufräumen
                 tf.keras.backend.clear_session()
                 import gc; gc.collect()
 
-
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
 
-# Start
-run_mini_sweep()
