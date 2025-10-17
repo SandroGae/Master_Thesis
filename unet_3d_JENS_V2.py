@@ -305,6 +305,7 @@ print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
 import json, re
 from itertools import product
 from pathlib import Path
+from tensorflow.keras.callbacks import CSVLogger, Callback
 
 EVAL_DIR = Path.home() / "data" / "model_evaluations"
 CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
@@ -391,103 +392,80 @@ LEARNING_RATES = [3e-4, 1e-4, 3e-5]   # kleiner LR-Sweep lohnt mehr als bf=32
 
 MAX_EPOCHS_SCOUT = 3
 
+class InjectStatic(Callback):
+    def __init__(self, **static): super().__init__(); self.static = static
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is not None: logs.update(self.static)
+
 def run_mini_sweep():
     runs = 0
     ckpt_root_scout = Path.home() / "data" / "checkpoints_3d_unet_scout"
+    CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"; CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
-    for depth, bf, outa in product(DEPTHS, BASE_FILTER, OUT_ACTS):
-        runs += 1
-        raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}__mae+ssim:0.7"
-        tag = _safe_tag(raw_tag)
+    for depth in DEPTHS:
+        for bf in BASE_FILTERS:
+            for outa in OUT_ACTS:
+                for lr in LEARNING_RATES:
+                    runs += 1
+                    raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}__mae+ssim:0.7"
+                    tag = _safe_tag(raw_tag)
 
-        # Modell
-        model = build_unet3d_depth(INPUT_SHAPE,
-                                   base_filters=bf, depth_levels=depth,
-                                   norm="LN", act="ELU",
-                                   output_activation=outa,
-                                   name=f"Scout_{tag}")
+                    # Modell
+                    model = build_unet3d_depth(
+                        INPUT_SHAPE, base_filters=bf, depth_levels=depth,
+                        norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
+                    )
 
-        model.compile(
-            optimizer=AdamW(learning_rate=1e-4),
-            loss=get_loss_fixed(),
-            metrics=[ssim_metric,
-                     tf.keras.metrics.MeanAbsoluteError(name="mae"),
-                     tf.keras.metrics.MeanSquaredError(name="mse"),
-                     psnr_metric],
-            jit_compile=False
-        )
+                    model.compile(
+                        optimizer=AdamW(learning_rate=lr),
+                        loss=get_loss_fixed(),
+                        metrics=[ssim_metric,
+                                 tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                                 tf.keras.metrics.MeanSquaredError(name="mse"),
+                                 psnr_metric],
+                        jit_compile=False
+                    )
 
-        # Logger/Callbacks wie bei dir
-        run_meta_scout = {
-            "batch_size": BATCH_SIZE,
-            "epochs": MAX_EPOCHS_SCOUT,
-            "early_stopping": {"monitor": "val_loss", "patience": 200},
-            "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-            "alpha": 0.7,
-            "loss_components": {"mae": 0.3, "ssim": 0.7}
-        }
-        cbs_scout, _, _ = build_standard_callbacks(
-            ckpt_root=ckpt_root_scout,
-            run_meta=run_meta_scout,
-            monitor="val_loss",
-            patience_es=200,
-            reduce_on_plateau=False,
-            reduce_factor=0.5,
-            reduce_patience=2,
-            min_lr=1e-6,
-            include_nan_guards=True,
-            include_logger=True,
-            code_name=f"sweep_{tag}",   # pro Run eindeutig und safe
-            verbose_ckpt=0
-        )
+                    # Callbacks: ES AUS, ReduceLROnPlateau AUS, Logger AN
+                    run_meta_scout = {
+                        "batch_size": BATCH_SIZE,
+                        "epochs": MAX_EPOCHS_SCOUT,
+                        "early_stopping": {"monitor": "val_loss", "patience": 10**9},
+                        "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+                        "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
+                    }
+                    cbs_scout, _, _ = build_standard_callbacks(
+                        ckpt_root=ckpt_root_scout,
+                        run_meta=run_meta_scout,
+                        monitor="val_loss",
+                        patience_es=10**9,           # effektiv aus
+                        reduce_on_plateau=False,     # AUS fuer Scout
+                        include_nan_guards=True,
+                        include_logger=True,
+                        code_name=f"sweep_{tag}",
+                        verbose_ckpt=0
+                    )
 
-        # CSV fuer DIESEN Run
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
-        csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
-        # Callbacks erweitern
-        cbs_scout = list(cbs_scout) + [csv_cb]
-        
-        # Run-Header
-        print(f"\n[SWEEP] Run {runs}: {raw_tag}")
-        history = model.fit(train_ds, validation_data=val_ds,
-                            epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0)
+                    # CSV pro Run + statische Spalten
+                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
+                    csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
+                    inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf, out_act=outa, lr=lr)
 
-        # Eval
-        val_res  = model.evaluate(val_ds,  return_dict=True, verbose=0)
-        test_res = model.evaluate(test_ds, return_dict=True, verbose=0)
+                    # Reihenfolge: erst Inject, dann CSV
+                    cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
-        # JSON
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        out = {
-            "timestamp": stamp,
-            "run_tag": raw_tag,               # lesbar
-            "run_tag_safe": tag,              # safe für Files/Scopes
-            "model_name": model.name,
-            "config": {
-                "depth_levels": depth,
-                "base_filters": bf,
-                "norm": "LN", "act": "ELU",
-                "output_activation": outa
-            },
-            "loss_name": "mae+ssim:0.7",
-            "epochs_trained": int(len(history.history.get("loss", []))),
-            "final_val":  {k: float(v) for k, v in val_res.items()},
-            "final_test": {k: float(v) for k, v in test_res.items()}
-        }
-        vloss = out["final_val"].get("loss", None)
-        vpsnr = out["final_val"].get("psnr", None)
-        fname_core = f"sweep_{stamp}_{tag}"
-        fname = (
-            f"{fname_core}_valloss_{vloss:.4e}_valpsnr_{vpsnr:.2f}.json"
-            if (vloss is not None and vpsnr is not None) else
-            f"{fname_core}.json"
-        )
-        with open(EVAL_DIR / fname, "w") as f:
-            json.dump(out, f, indent=2)
+                    print(f"\n[SWEEP] Run {runs}: {raw_tag}")
+                    history = model.fit(
+                        train_ds, validation_data=val_ds,
+                        epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0
+                    )
 
-        # Speicher freigeben (GPU/Host)
-        tf.keras.backend.clear_session()
+                    # optional: kurze Eval (keine JSON-Flut)
+                    _ = model.evaluate(val_ds,  return_dict=True, verbose=0)
+                    _ = model.evaluate(test_ds, return_dict=True, verbose=0)
+
+                    tf.keras.backend.clear_session()
 
     print(f"\n[SWEEP] Completed {runs} runs. JSONs in {EVAL_DIR}")
 
