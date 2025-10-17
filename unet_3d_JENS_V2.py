@@ -452,3 +452,5 @@ def run_mini_sweep():
                         import gc; gc.collect()
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
+
+run_mini_sweep()
