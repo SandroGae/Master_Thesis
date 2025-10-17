@@ -121,7 +121,7 @@ def nan_debug(x, y):
 
 def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
             limit=None, cache_in_memory=False, check_nans=False,
-            shuffle_buf=512, prefetch_n=2, num_calls=2):
+            shuffle_buf=512, prefetch_n=2, num_calls=2, batch_size=32):
     ds = tf.data.Dataset.from_tensor_slices((X, Y))
     if preproc is not None:
         ds = ds.map(lambda x, y: tuple(preproc(x, y)), num_parallel_calls=num_calls)
@@ -135,7 +135,7 @@ def make_ds(X, Y, *, shuffle=True, preproc=None, augmenter=None,
         ds = ds.shuffle(buffer_size=min(shuffle_buf, X.shape[0]), reshuffle_each_iteration=True)
     if limit is not None:
         ds = ds.take(int(limit))
-    ds = ds.batch(BATCH_SIZE, drop_remainder=False).prefetch(prefetch_n)
+    ds = ds.batch(batch_size, drop_remainder=False).prefetch(prefetch_n)
     return ds
 
 print(">>> Phase 2: Create Tensorflow Datasets...")
@@ -307,7 +307,6 @@ from itertools import product
 from pathlib import Path
 from tensorflow.keras.callbacks import CSVLogger, Callback
 
-EVAL_DIR = Path.home() / "data" / "model_evaluations"
 CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
 CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
@@ -372,15 +371,6 @@ def build_unet3d_depth(input_shape,
     return models.Model(inputs, out, name=model_name)
 
 # --- (C) Loss fix: MAE+SSIM(0.7) ---
-class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
-    def __init__(self, alpha=0.7, name="mae_ssim"):
-        super().__init__(name=name); self.alpha=float(alpha)
-    def call(self, y_true, y_pred):
-        yt = clip01(y_true); yp = clip01(y_pred)
-        mae = tf.reduce_mean(tf.abs(yt - yp))
-        ssimv = ssim_3d_mean_safe(yt, yp, max_val=1.0)
-        return (1.0 - self.alpha) * mae + self.alpha * (1.0 - ssimv)
-
 def get_loss_fixed():
     return CombinedMAE_SSIM_Loss(alpha=0.7, name="mae_ssim_0p7")
 
@@ -389,8 +379,9 @@ DEPTHS       = [3, 4]                 # Architektur-Tiefe
 BASE_FILTERS = [8, 16, 24]            # Start-Kanaele
 OUT_ACTS     = ["sigmoid"]            # Targets ∈ [0,1] -> sigmoid
 LEARNING_RATES = [3e-4, 1e-4, 3e-5]   # kleiner LR-Sweep lohnt mehr als bf=32
+BATCH_SIZES = [32, 128]               # Batch-Grössen
 
-MAX_EPOCHS_SCOUT = 3
+MAX_EPOCHS_SCOUT = 2
 
 class InjectStatic(Callback):
     def __init__(self, **static): super().__init__(); self.static = static
@@ -403,71 +394,83 @@ def run_mini_sweep():
     CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"; CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
     for depth in DEPTHS:
-        for bf in BASE_FILTERS:
-            for outa in OUT_ACTS:
-                for lr in LEARNING_RATES:
-                    runs += 1
-                    raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}__mae+ssim:0.7"
-                    tag = _safe_tag(raw_tag)
+      for bf in BASE_FILTERS:
+        for outa in OUT_ACTS:
+          for lr in LEARNING_RATES:
+            for bs in BATCH_SIZES:
+              runs += 1
+              raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
+              tag = _safe_tag(raw_tag)
 
-                    # Modell
-                    model = build_unet3d_depth(
-                        INPUT_SHAPE, base_filters=bf, depth_levels=depth,
-                        norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
-                    )
+              # Datasets fuer diese Batchgroesse
+              train_ds_bs = make_ds(X_train, Y_train, shuffle=True,
+                                    preproc=map_slice_wise(preproc_train_slice),
+                                    augmenter=augment_5stack_flips, check_nans=True,
+                                    batch_size=bs)
+              val_ds_bs   = make_ds(X_val, Y_val, shuffle=False,
+                                    preproc=map_slice_wise(preproc_valid_slice),
+                                    augmenter=None, check_nans=True,
+                                    batch_size=bs)
+              test_ds_bs  = make_ds(X_test, Y_test, shuffle=False,
+                                    preproc=map_slice_wise(preproc_valid_slice),
+                                    augmenter=None, check_nans=True,
+                                    batch_size=bs)
 
-                    model.compile(
-                        optimizer=AdamW(learning_rate=lr),
-                        loss=get_loss_fixed(),
-                        metrics=[ssim_metric,
-                                 tf.keras.metrics.MeanAbsoluteError(name="mae"),
-                                 tf.keras.metrics.MeanSquaredError(name="mse"),
-                                 psnr_metric],
-                        jit_compile=False
-                    )
+              # Modell
+              model = build_unet3d_depth(
+                  INPUT_SHAPE, base_filters=bf, depth_levels=depth,
+                  norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
+              )
+              model.compile(
+                  optimizer=AdamW(learning_rate=lr),
+                  loss=get_loss_fixed(),
+                  metrics=[ssim_metric,
+                           tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                           tf.keras.metrics.MeanSquaredError(name="mse"),
+                           psnr_metric],
+                  jit_compile=False
+              )
 
-                    # Callbacks: ES AUS, ReduceLROnPlateau AUS, Logger AN
-                    run_meta_scout = {
-                        "batch_size": BATCH_SIZE,
-                        "epochs": MAX_EPOCHS_SCOUT,
-                        "early_stopping": {"monitor": "val_loss", "patience": 10**9},
-                        "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-                        "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
-                    }
-                    cbs_scout, _, _ = build_standard_callbacks(
-                        ckpt_root=ckpt_root_scout,
-                        run_meta=run_meta_scout,
-                        monitor="val_loss",
-                        patience_es=10**9,           # effektiv aus
-                        reduce_on_plateau=False,     # AUS fuer Scout
-                        include_nan_guards=True,
-                        include_logger=True,
-                        code_name=f"sweep_{tag}",
-                        verbose_ckpt=0
-                    )
+              # Callbacks (ES aus, ReduceLROnPlateau aus)
+              run_meta_scout = {
+                  "batch_size": bs,
+                  "epochs": MAX_EPOCHS_SCOUT,
+                  "early_stopping": {"monitor": "val_loss", "patience": 10**9},
+                  "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+                  "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
+              }
+              cbs_scout, _, _ = build_standard_callbacks(
+                  ckpt_root=ckpt_root_scout,
+                  run_meta=run_meta_scout,
+                  monitor="val_loss",
+                  patience_es=10**9,
+                  reduce_on_plateau=False,
+                  include_nan_guards=True,
+                  include_logger=True,
+                  code_name=f"sweep_{tag}",
+                  verbose_ckpt=0
+              )
 
-                    # CSV pro Run + statische Spalten
-                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                    csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
-                    csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
-                    inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf, out_act=outa, lr=lr)
+              # CSV + statische Spalten
+              stamp = datetime.now().strftime("%Y%m%d-%H%M%S")  # falls du Option A unten nutzt
+              csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
+              csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
+              inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
+                                    out_act=outa, lr=lr, batch_size=bs)
 
-                    # Reihenfolge: erst Inject, dann CSV
-                    cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
+              cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
-                    print(f"\n[SWEEP] Run {runs}: {raw_tag}")
-                    history = model.fit(
-                        train_ds, validation_data=val_ds,
-                        epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0
-                    )
+              print(f"\n[SWEEP] Run {runs}: {raw_tag}")
+              history = model.fit(train_ds_bs, validation_data=val_ds_bs,
+                                  epochs=MAX_EPOCHS_SCOUT, callbacks=cbs_scout, verbose=0)
 
-                    # optional: kurze Eval (keine JSON-Flut)
-                    _ = model.evaluate(val_ds,  return_dict=True, verbose=0)
-                    _ = model.evaluate(test_ds, return_dict=True, verbose=0)
+              _ = model.evaluate(val_ds_bs,  return_dict=True, verbose=0)
+              _ = model.evaluate(test_ds_bs, return_dict=True, verbose=0)
 
-                    tf.keras.backend.clear_session()
+              tf.keras.backend.clear_session()
 
-    print(f"\n[SWEEP] Completed {runs} runs. JSONs in {EVAL_DIR}")
+
+    print(f"\n[SWEEP] Completed {runs} runs. JSONs in {CSV_DIR_SWEEP}")
 
 # Start
 run_mini_sweep()
