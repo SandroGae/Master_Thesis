@@ -68,7 +68,7 @@ class H5FiveStackGrouped:
     Liefert 5er-Stacks (D=5, H, W, 1) aus HDF5 mit stride=1 *innerhalb* von 41er-Gruppen.
     Pro Gruppe entstehen (41 - 5 + 1) = 37 Samples. Kein Crossing ueber Gruppenraender.
     """
-    def __init__(self, path: Path, group_len=41, stack_depth=5, dtype=np.float16):
+    def __init__(self, path: Path, group_len=41, stack_depth=5, dtype=np.float32):
         assert stack_depth == 5, "Diese Klasse ist auf D=5 ausgelegt."
         self.f = h5py.File(path, "r")
         self.high = self.f["/high_count/data"]  # (H, W, N)
@@ -98,8 +98,8 @@ class H5FiveStackGrouped:
         start = self._flat_to_group_offset(k)
         idxs = np.arange(start, start + self.D)            # exakt 5 aufeinanderfolgende
         # (H,W,5) -> (5,H,W,1)
-        hi = self.high[..., idxs].astype(self.dtype)
-        lo = self.low[...,  idxs].astype(self.dtype)
+        hi = np.asarray(self.high[..., idxs], dtype=np.float32)
+        lo = np.asarray(self.low[...,  idxs],  dtype=np.float32)
         hi = np.moveaxis(hi, -1, 0)[..., None]
         lo = np.moveaxis(lo, -1, 0)[..., None]
         return lo, hi
@@ -115,8 +115,8 @@ def make_stream_ds_grouped(h5obj, *, batch_size=32, shuffle=False,
             yield x, y
 
     out_spec = (
-        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float16),
-        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float16),
+        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float32),
+        tf.TensorSpec(shape=(h5obj.D, h5obj.H, h5obj.W, 1), dtype=tf.float32),
     )
     ds = tf.data.Dataset.from_generator(gen, output_signature=out_spec)
     ds = ds.map(lambda x, y: (tf.cast(x, tf.float32), tf.cast(y, tf.float32)),
