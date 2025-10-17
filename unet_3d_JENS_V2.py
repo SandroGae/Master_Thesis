@@ -350,9 +350,30 @@ BATCH_SIZES    = [32, 128]
 MAX_EPOCHS_SCOUT = 2
 
 class InjectStatic(Callback):
-    def __init__(self, **static): super().__init__(); self.static = static
+    def __init__(self, **static):
+        super().__init__()
+        self.static = static
+
+    @staticmethod
+    def _is_number(x):
+        import numpy as np
+        return isinstance(x, (int, float, np.integer, np.floating))
+
     def on_epoch_end(self, epoch, logs=None):
-        if logs is not None: logs.update(self.static)
+        if logs is None:
+            return
+        # nur numerische Felder in logs lassen (Progbar/CSV vertragen nur Zahlen)
+        for k, v in self.static.items():
+            if self._is_number(v):
+                logs[k] = float(v)
+
+        # optional: String-Tags als numerischen Hash mitschreiben
+        if "run_tag" in self.static and "run_tag_hash" not in logs:
+            h = abs(hash(str(self.static["run_tag"]))) % (10**9)
+            logs["run_tag_hash"] = float(h)
+        if "out_act" in self.static and "out_act_id" not in logs:
+            act_map = {"sigmoid": 1.0, "tanh": 2.0, "linear": 3.0}
+            logs["out_act_id"] = float(act_map.get(str(self.static["out_act"]).lower(), 0.0))
 
 def run_mini_sweep():
     runs = 0
@@ -426,8 +447,14 @@ def run_mini_sweep():
                         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                         csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
                         csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
-                        inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
-                                              out_act=outa, lr=lr, batch_size=bs)
+                        inject = InjectStatic(
+                            run_tag=tag,              # bleibt als String, wird aber nicht in logs geschrieben
+                            depth=depth,              # numerisch -> wird geschrieben
+                            base_filters=bf,          # numerisch
+                            out_act=outa,             # String -> wird via out_act_id gehasht/gemappt
+                            lr=lr,                    # numerisch
+                            batch_size=bs             # numerisch
+                        )
                         cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
                         print(f"\n[SWEEP] Run {runs}: {raw_tag}")
