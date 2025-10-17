@@ -381,7 +381,7 @@ OUT_ACTS     = ["sigmoid"]            # Targets ∈ [0,1] -> sigmoid
 LEARNING_RATES = [3e-4, 1e-4, 3e-5]   # kleiner LR-Sweep lohnt mehr als bf=32
 BATCH_SIZES = [32, 128]               # Batch-Grössen
 
-MAX_EPOCHS_SCOUT = 2
+MAX_EPOCHS_SCOUT = 10
 
 class InjectStatic(Callback):
     def __init__(self, **static): super().__init__(); self.static = static
@@ -470,7 +470,7 @@ def run_mini_sweep():
               tf.keras.backend.clear_session()
 
 
-    print(f"\n[SWEEP] Completed {runs} runs. JSONs in {CSV_DIR_SWEEP}")
+    print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
 
 # Start
 run_mini_sweep()
