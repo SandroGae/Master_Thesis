@@ -92,17 +92,17 @@ def augment_5stack_flips(x, y):
 print(">>> Phase 1–2: Build datasets via train_utils...")
 DATA_DIR = Path.home() / "data" / "original_data"
 train_ds, val_ds, test_ds, meta = build_5stack_datasets_grouped(
-    train_path=DATA_DIR / "training_data.hdf5",
-    val_path=  DATA_DIR / "validation_data.hdf5",
-    test_path= DATA_DIR / "test_data.hdf5",
+    data_dir=DATA_DIR,
     group_len=41,
     batch_train=BATCH_SIZE,
     batch_eval=BATCH_SIZE,
     preproc_train=map_slice_wise(preproc_train_slice),
     preproc_eval=map_slice_wise(preproc_valid_slice),
     augmenter=augment_5stack_flips,
-    deterministic=False
+    deterministic=False,
+    cache_after_preproc=False,   # optional
 )
+
 INPUT_SHAPE = meta["input_shape"]
 print(">>> Datasets created")
 
@@ -237,6 +237,7 @@ cbs, bf, ckpt_best = build_standard_callbacks(
 
 # CSV logger
 CSV_DIR = Path.home() / "data" / "logs_csv"
+CSV_DIR.mkdir(parents=True, exist_ok=True)
 
 stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 csv_path = CSV_DIR / f"{bf.code}_train_{stamp}.csv"
