@@ -274,19 +274,18 @@ steps_per_epoch  = _steps(meta, "train", BATCH_SIZE)
 validation_steps = _steps(meta, "val",   BATCH_SIZE)
 
 if EPOCHS > 0:
-    # wichtig: Dataset wiederholbar machen, sonst ist nach Epoche 1 Schluss
     train_ds_rep = train_ds.repeat(EPOCHS)
     val_ds_rep   = val_ds.repeat(EPOCHS)
-
-    history = model.fit(
+    model.fit(
         train_ds_rep,
         validation_data=val_ds_rep,
         epochs=EPOCHS,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=cbs,
-        verbose=0,  # nur dein CompactLogger
+        verbose=0,
     )
+
 
     print(">>> Phase 3: Training complete!")
     final_val  = model.evaluate(val_ds,  return_dict=True, verbose=0)
