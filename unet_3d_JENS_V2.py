@@ -15,12 +15,11 @@
 # ==============================
 import os
 # 1) Lautsprecher aus:
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"             # schluckt TF I/W
-os.environ["TF_DISABLE_XLA"] = "1"                   # TF-seitig XLA nicht initialisieren
+os.environ["TF_DISABLE_XLA"] = "1"
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
-os.environ["XLA_FLAGS"] = "--xla_gpu_autotune_level=0"  # kein XLA-Autotuning -> keine BufferComparator-Checks
-os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"            # cuDNN-Autotune aus
-os.environ["CUDA_MODULE_LOADING"] = "LAZY"           # schnelleres Laden vieler CUDA-Module
+os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
+os.environ["TF_CUDNN_WORKSPACE_LIMIT_IN_MB"] = "512"
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 
 import tensorflow as tf
@@ -304,8 +303,6 @@ else:
 # ==============================
 START_AT = int(os.environ.get("START_AT", "25"))  # z.B. 25 um bei Run 25 zu starten
 
-
-
 CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
 CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
@@ -362,6 +359,7 @@ def build_unet3d_depth(input_shape,
 def get_loss_fixed():
     return CombinedMAE_SSIM_Loss(alpha=0.7, name="mae_ssim_0p7")
 
+# Sweep-Parameter
 DEPTHS         = [3, 4]
 BASE_FILTERS   = [8, 16, 24]
 OUT_ACTS       = ["sigmoid"]
@@ -382,12 +380,9 @@ class InjectStatic(Callback):
     def on_epoch_end(self, epoch, logs=None):
         if logs is None:
             return
-        # nur numerische Felder in logs lassen (Progbar/CSV vertragen nur Zahlen)
         for k, v in self.static.items():
             if self._is_number(v):
                 logs[k] = float(v)
-
-        # optional: String-Tags als numerischen Hash mitschreiben
         if "run_tag" in self.static and "run_tag_hash" not in logs:
             h = abs(hash(str(self.static["run_tag"]))) % (10**9)
             logs["run_tag_hash"] = float(h)
@@ -403,7 +398,7 @@ def run_mini_sweep():
     DATA_DIR = Path.home() / "data" / "original_data"
 
     for bs in BATCH_SIZES:
-        # ---- Datasets EINMAL pro bs ----
+        # ---- Datasets EINMAL pro "nominalem" bs ----
         train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(
             data_dir=DATA_DIR,
             group_len=41,
@@ -415,9 +410,6 @@ def run_mini_sweep():
             deterministic=False,
             cache_after_preproc=False
         )
-        # wiederholbare Pipelines nur für fit:
-        train_ds_fit = train_ds_bs.repeat(MAX_EPOCHS_SCOUT)
-        val_ds_fit   = val_ds_bs.repeat(MAX_EPOCHS_SCOUT)
 
         spe_bs  = _steps(meta_bs, "train", bs)
         vste_bs = _steps(meta_bs, "val",   bs)
@@ -428,12 +420,34 @@ def run_mini_sweep():
                 for outa in OUT_ACTS:
                     for lr in LEARNING_RATES:
                         runs += 1
-                        
                         if runs < START_AT:
-                            continue
+                            continue  # vorangehende Runs ueberspringen
 
                         raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
                         tag = _safe_tag(raw_tag)
+
+                        # ---- Stabilitaets-Fallback: schwere Configs mit eff_bs=32 ----
+                        eff_bs = bs
+                        if bf >= 24 and bs == 128:
+                            eff_bs = 32  # vermeidet cuDNN-Workspace-OOM bei 3D-Convs
+
+                        if eff_bs == bs:
+                            train_ds_fit = train_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+                            val_ds_fit   = val_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+                            spe_run, vste_run, tste_run = spe_bs, vste_bs, tste_bs
+                        else:
+                            # neu batchen fuer diesen Run
+                            train_ds_fit = train_ds_bs.unbatch().batch(eff_bs).repeat(MAX_EPOCHS_SCOUT)
+                            val_ds_fit   = val_ds_bs.unbatch().batch(eff_bs).repeat(MAX_EPOCHS_SCOUT)
+                            # eval-datasets auch auf eff_bs fuer konsistente Steps
+                            val_ds_eff   = val_ds_bs.unbatch().batch(eff_bs)
+                            test_ds_eff  = test_ds_bs.unbatch().batch(eff_bs)
+                            vste_run = _steps(meta_bs, "val",  eff_bs)
+                            tste_run = _steps(meta_bs, "test", eff_bs)
+                            spe_run  = _steps(meta_bs, "train", eff_bs)
+                        # Hinweis: wenn eff_bs == bs, koennen wir direkt val_ds_bs/test_ds_bs verwenden
+                        use_val_ds  = val_ds_eff  if eff_bs != bs else val_ds_bs
+                        use_test_ds = test_ds_eff if eff_bs != bs else test_ds_bs
 
                         # ---- Modell ----
                         model = build_unet3d_depth(
@@ -452,7 +466,7 @@ def run_mini_sweep():
 
                         # ---- Callbacks ----
                         run_meta_scout = {
-                            "batch_size": bs,
+                            "batch_size": eff_bs,  # effektive Trainings-Batch
                             "epochs": MAX_EPOCHS_SCOUT,
                             "early_stopping": {"monitor": "val_loss", "patience": 10**9},
                             "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
@@ -473,25 +487,26 @@ def run_mini_sweep():
                         csv_path = CSV_DIR_SWEEP / f"sweep_{tag}_{stamp}.csv"
                         csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
                         inject = InjectStatic(run_tag=tag, depth=depth, base_filters=bf,
-                                              out_act=outa, lr=lr, batch_size=bs)
+                                              out_act=outa, lr=lr, batch_size=eff_bs)
                         cbs_scout = [inject] + list(cbs_scout) + [csv_cb]
 
-                        print(f"\n[SWEEP] Run {runs}: {raw_tag}")
+                        print(f"\n[SWEEP] Run {runs}: {raw_tag}"
+                              + ("" if eff_bs == bs else f"  (eff_bs={eff_bs} statt {bs})"))
 
                         # ---- Train ----
                         model.fit(
                             train_ds_fit,
                             validation_data=val_ds_fit,
                             epochs=MAX_EPOCHS_SCOUT,
-                            steps_per_epoch=spe_bs,
-                            validation_steps=vste_bs,
+                            steps_per_epoch=spe_run,
+                            validation_steps=vste_run,
                             callbacks=cbs_scout,
                             verbose=0,
                         )
 
                         # ---- Eval ----
-                        _ = model.evaluate(val_ds_bs,  steps=vste_bs, return_dict=True, verbose=0)
-                        _ = model.evaluate(test_ds_bs, steps=tste_bs, return_dict=True, verbose=0)
+                        _ = model.evaluate(use_val_ds,  steps=vste_run, return_dict=True, verbose=0)
+                        _ = model.evaluate(use_test_ds, steps=tste_run, return_dict=True, verbose=0)
 
                         # ---- Cleanup ----
                         tf.keras.backend.clear_session()
@@ -499,5 +514,5 @@ def run_mini_sweep():
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
 
-
 run_mini_sweep()
+
