@@ -302,6 +302,10 @@ else:
 # ==============================
 # 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss (hier fix)
 # ==============================
+START_AT = int(os.environ.get("START_AT", "25"))  # z.B. 25 um bei Run 25 zu starten
+
+
+
 CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout"
 CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 
@@ -424,6 +428,10 @@ def run_mini_sweep():
                 for outa in OUT_ACTS:
                     for lr in LEARNING_RATES:
                         runs += 1
+                        
+                        if runs < START_AT:
+                            continue
+
                         raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
                         tag = _safe_tag(raw_tag)
 
