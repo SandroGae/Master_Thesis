@@ -14,13 +14,19 @@
 # 0) Imports & global setup
 # ==============================
 import os
-# 1) Lautsprecher aus:
+# ---- cuDNN/TF Runtime Setup (robust für 3D-Convs) ----
+# XLA aus (wie gehabt)
 os.environ["TF_DISABLE_XLA"] = "1"
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
-os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
-os.environ["TF_CUDNN_WORKSPACE_LIMIT_IN_MB"] = "512"
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
+# WICHTIG: Autotune EIN, damit cuDNN einen passenden Algo inkl. Workspace findet
+os.environ["TF_CUDNN_USE_AUTOTUNE"] = "1"
+
+# KEIN hartes Workspace-Limit (512 MB war zu klein). Entferne es, falls gesetzt.
+os.environ.pop("TF_CUDNN_WORKSPACE_LIMIT_IN_MB", None)
+
+# Optional: GPU Growth anlassen
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 import tensorflow as tf
 tf.get_logger().setLevel("ERROR")
@@ -426,43 +432,10 @@ def run_mini_sweep():
                         raw_tag = f"d{depth}_bf{bf}_ELU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
                         tag = _safe_tag(raw_tag)
 
-                        # ---- Stabilitaets-Fallback: schwere Configs mit eff_bs=32 ----
+                        # ---- Basiswahl eff_bs (schwere Configs runtersetzen) ----
                         eff_bs = bs
                         if bf >= 24 and bs == 128:
-                            eff_bs = 32  # vermeidet cuDNN-Workspace-OOM bei 3D-Convs
-
-                        if eff_bs == bs:
-                            train_ds_fit = train_ds_bs.repeat(MAX_EPOCHS_SCOUT)
-                            val_ds_fit   = val_ds_bs.repeat(MAX_EPOCHS_SCOUT)
-                            spe_run, vste_run, tste_run = spe_bs, vste_bs, tste_bs
-                        else:
-                            # neu batchen fuer diesen Run
-                            train_ds_fit = train_ds_bs.unbatch().batch(eff_bs).repeat(MAX_EPOCHS_SCOUT)
-                            val_ds_fit   = val_ds_bs.unbatch().batch(eff_bs).repeat(MAX_EPOCHS_SCOUT)
-                            # eval-datasets auch auf eff_bs fuer konsistente Steps
-                            val_ds_eff   = val_ds_bs.unbatch().batch(eff_bs)
-                            test_ds_eff  = test_ds_bs.unbatch().batch(eff_bs)
-                            vste_run = _steps(meta_bs, "val",  eff_bs)
-                            tste_run = _steps(meta_bs, "test", eff_bs)
-                            spe_run  = _steps(meta_bs, "train", eff_bs)
-                        # Hinweis: wenn eff_bs == bs, koennen wir direkt val_ds_bs/test_ds_bs verwenden
-                        use_val_ds  = val_ds_eff  if eff_bs != bs else val_ds_bs
-                        use_test_ds = test_ds_eff if eff_bs != bs else test_ds_bs
-
-                        # ---- Modell ----
-                        model = build_unet3d_depth(
-                            meta_bs["input_shape"], base_filters=bf, depth_levels=depth,
-                            norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
-                        )
-                        model.compile(
-                            optimizer=AdamW(learning_rate=lr),
-                            loss=get_loss_fixed(),
-                            metrics=[ssim_metric,
-                                     tf.keras.metrics.MeanAbsoluteError(name="mae"),
-                                     tf.keras.metrics.MeanSquaredError(name="mse"),
-                                     psnr_metric],
-                            jit_compile=False
-                        )
+                            eff_bs = 32
 
                         # ---- Callbacks ----
                         run_meta_scout = {
@@ -493,24 +466,75 @@ def run_mini_sweep():
                         print(f"\n[SWEEP] Run {runs}: {raw_tag}"
                               + ("" if eff_bs == bs else f"  (eff_bs={eff_bs} statt {bs})"))
 
-                        # ---- Train ----
-                        model.fit(
-                            train_ds_fit,
-                            validation_data=val_ds_fit,
-                            epochs=MAX_EPOCHS_SCOUT,
-                            steps_per_epoch=spe_run,
-                            validation_steps=vste_run,
-                            callbacks=cbs_scout,
-                            verbose=0,
-                        )
+                        # ---------- Hilfsfunktionen ----------
+                        def _make_datasets(eff_batch):
+                            if eff_batch == bs:
+                                tr_fit = train_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+                                va_fit = val_ds_bs.repeat(MAX_EPOCHS_SCOUT)
+                                use_val  = val_ds_bs
+                                use_test = test_ds_bs
+                                spe_run, vste_run, tste_run = spe_bs, vste_bs, tste_bs
+                            else:
+                                tr_fit = train_ds_bs.unbatch().batch(eff_batch).repeat(MAX_EPOCHS_SCOUT)
+                                va_fit = val_ds_bs.unbatch().batch(eff_batch).repeat(MAX_EPOCHS_SCOUT)
+                                use_val  = val_ds_bs.unbatch().batch(eff_batch)
+                                use_test = test_ds_bs.unbatch().batch(eff_batch)
+                                spe_run  = _steps(meta_bs, "train", eff_batch)
+                                vste_run = _steps(meta_bs, "val",   eff_batch)
+                                tste_run = _steps(meta_bs, "test",  eff_batch)
+                            return tr_fit, va_fit, use_val, use_test, spe_run, vste_run, tste_run
 
-                        # ---- Eval ----
-                        _ = model.evaluate(use_val_ds,  steps=vste_run, return_dict=True, verbose=0)
-                        _ = model.evaluate(use_test_ds, steps=tste_run, return_dict=True, verbose=0)
+                        def _build_model():
+                            m = build_unet3d_depth(
+                                meta_bs["input_shape"], base_filters=bf, depth_levels=depth,
+                                norm="LN", act="ELU", output_activation=outa, name=f"Scout_{tag}"
+                            )
+                            m.compile(
+                                optimizer=AdamW(learning_rate=lr),
+                                loss=get_loss_fixed(),
+                                metrics=[ssim_metric,
+                                         tf.keras.metrics.MeanAbsoluteError(name="mae"),
+                                         tf.keras.metrics.MeanSquaredError(name="mse"),
+                                         psnr_metric],
+                                jit_compile=False
+                            )
+                            return m
 
-                        # ---- Cleanup ----
-                        tf.keras.backend.clear_session()
-                        import gc; gc.collect()
+                        # ---------- Train mit Retry bei cuDNN-Workspace-Fehler ----------
+                        current_bs = eff_bs
+                        while True:
+                            (train_ds_fit, val_ds_fit, use_val_ds, use_test_ds,
+                             spe_run, vste_run, tste_run) = _make_datasets(current_bs)
+
+                            model = _build_model()
+                            try:
+                                model.fit(
+                                    train_ds_fit,
+                                    validation_data=val_ds_fit,
+                                    epochs=MAX_EPOCHS_SCOUT,
+                                    steps_per_epoch=spe_run,
+                                    validation_steps=vste_run,
+                                    callbacks=cbs_scout,
+                                    verbose=0,
+                                )
+                                _ = model.evaluate(use_val_ds,  steps=vste_run, return_dict=True, verbose=0)
+                                _ = model.evaluate(use_test_ds, steps=tste_run, return_dict=True, verbose=0)
+                                break  # Erfolg
+                            except Exception as e:
+                                msg = str(e)
+                                needs_retry = (
+                                    "CUDNN failed to allocate the scratch space" in msg
+                                    or "scratch space" in msg.lower()
+                                    or "cudnn" in msg.lower()
+                                )
+                                tf.keras.backend.clear_session()
+                                import gc; gc.collect()
+                                if needs_retry and current_bs > 8:
+                                    current_bs = max(8, current_bs // 2)
+                                    print(f"   -> cuDNN-Workspace-Problem, retry mit eff_bs={current_bs}")
+                                    continue
+                                else:
+                                    raise
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
 
