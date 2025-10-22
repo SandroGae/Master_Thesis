@@ -392,7 +392,7 @@ BASE_FILTERS   = [8, 16, 24]
 OUT_ACTS       = ["sigmoid"]
 LEARNING_RATES = [3e-4, 1e-4, 3e-5]
 BATCH_SIZES    = [32, 128]
-MAX_EPOCHS_SCOUT = 1
+MAX_EPOCHS_SCOUT = 20
 
 class InjectStatic(Callback):
     def __init__(self, **static):
