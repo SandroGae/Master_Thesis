@@ -1,45 +1,9 @@
-# --- Virtuelle Umgebungen ---
-.venv/
-env/
-venv/
+# Alles ignorieren
+*
 
-# --- Python Cache ---
-__pycache__/
-*.pyc
+# In Ordner hineinsteigen erlauben (sonst wirken die Whitelists nicht)
+!*/
 
-# --- Jupyter Notebook Checkpoints ---
-.ipynb_checkpoints/
-
-# --- Logs & Output ---
-logs/
-*.out
-*.err
-
-# --- Grosse Datenformate (werden NICHT ins Repo geladen) ---
-*.hdf5
-*.h5
-*.npy
-*.npz
-*.csv
-*.tsv
-*.jsonl
-*.parquet
-*.feather
-*.pkl
-*.joblib
-*.mat
-*.mp4
-*.png
-
-# --- Komprimierte Archive ---
-*.zip
-*.tar
-*.tar.gz
-*.tgz
-*.bz2
-*.xz
-*.7z
-
-# --- Sonstiges ---
-.DS_Store
-Thumbs.db
+# Nur Python-Dateien und die .gitignore selbst tracken
+!**/*.py
+!.gitignore
