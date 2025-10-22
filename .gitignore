@@ -29,6 +29,7 @@ logs/
 *.joblib
 *.mat
 *.mp4
+*.png
 
 # --- Komprimierte Archive ---
 *.zip
