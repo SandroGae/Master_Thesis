@@ -298,7 +298,7 @@ else:
 # ==============================
 # 11) Mini-Sweep: Tiefe, Base-Filters, Output-Activation, Loss GPTs WORK!
 # ==============================
-START_AT = int(os.environ.get("START_AT", "25"))  # z.B. 25 um bei Run 25 zu starten
+START_AT = int(os.environ.get("START_AT", "1"))  # Bei welchem eun beginnen?
 
 CSV_DIR_SWEEP = Path.home() / "data" / "logs_csv_scout_JENS_V2"
 CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
