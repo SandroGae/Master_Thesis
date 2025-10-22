@@ -1,18 +1,3 @@
-# ---
-# jupyter:
-#   jupytext:
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.17.3
-#   kernelspec:
-#     display_name: dl
-#     language: python
-#     name: python3
-# ---
-
-# %%
 # unet_3d_data.py
 # ALT-PIPELINE: Keine Anscombe/VST. Globales 99.9-Perzentil der High-Counts, dann Clip & Scale auf [0,1].
 # Baut 5-zu-5 (size-zu-size) 3D-Samples fuer Training/Val/Test.
