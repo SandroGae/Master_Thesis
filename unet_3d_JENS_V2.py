@@ -211,7 +211,7 @@ class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
 # 6) Compile
 # ==============================
 
-model = unet3d(input_shape=INPUT_SHAPE, base_filters=16, output_activation="sigmoid")
+model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(optimizer=AdamW(learning_rate=1e-4),
     loss=CombinedMAE_SSIM_Loss(alpha=0.7),
     metrics=[ssim_metric, tf.keras.metrics.MeanAbsoluteError(name="mae"), 
