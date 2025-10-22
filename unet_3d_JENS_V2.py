@@ -7,13 +7,16 @@ import os
 os.environ["TF_DISABLE_XLA"] = "1"
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 # Behebe "Failed to allocate scratch space errors (testet verschiedene Faltungsalgorithmen bei der ersten Iteration)"
-os.environ["TF_CUDNN_USE_AUTOTUNE"] = "1"
+os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
 # Etfernt hartes Workspace-Limit (512 MB war zu klein)
 os.environ.pop("TF_CUDNN_WORKSPACE_LIMIT_IN_MB", None)
 # GPU alloziert nur benötigte Menge an VRAM
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+# Weniger TF/C++-Spam (INFO+WARNING weg, ERROR bleibt)
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 import tensorflow as tf
+tf.config.optimizer.set_jit(False)
 # Unterdrückt nervige Warnungen im Log
 tf.get_logger().setLevel("ERROR")
 from absl import logging as absl_logging
