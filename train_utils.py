@@ -51,40 +51,63 @@ class H5Flat:
 
 
 def build_1stack_datasets_flat(
-    data_dir: _Path, *,
+    data_dir: Path, *,
     batch_train=32, batch_eval=32,
     preproc_train=None, preproc_eval=None,
     augmenter=None,
     deterministic=False,
     cache_after_preproc=False,
+    read_block=128,   # <<— NEU: wie viele Frames pro HDF5-Call laden
 ):
-    """
-    Baut tf.data Datasets fuer Train/Val/Test – JEDE Aufnahme ist ein Sample (D=1).
-    Keine Gruppen, keine Fenster.
-    """
-    import tensorflow as tf
-    tr = H5Flat(_Path(data_dir) / "training_data.hdf5")
-    va = H5Flat(_Path(data_dir) / "validation_data.hdf5")
-    te = H5Flat(_Path(data_dir) / "test_data.hdf5")
+    import tensorflow as tf, numpy as np, h5py
+    class H5Flat:
+        def __init__(self, path: Path, dtype=np.float32):
+            self.f = h5py.File(str(path), "r")
+            self.high = self.f["/high_count/data"]   # (H,W,N)
+            self.low  = self.f["/low_count/data"]
+            H, W, N = self.high.shape
+            self.H, self.W, self.N = int(H), int(W), int(N)
+            self.dtype = dtype
+        def get_block(self, start: int, count: int):
+            end = min(start+count, self.N)
+            sl = slice(start, end)
+            hi = np.asarray(self.high[..., sl], dtype=self.dtype)  # (H,W,M)
+            lo = np.asarray(self.low[...,  sl], dtype=self.dtype)  # (H,W,M)
+            # -> (M,1,H,W,1)
+            hi = np.moveaxis(hi, 2, 0)[:, None, ..., None]
+            lo = np.moveaxis(lo, 2, 0)[:, None, ..., None]
+            return lo, hi  # (M,1,H,W,1)
+        def close(self):
+            try: self.f.close()
+            except: pass
+        def __del__(self): self.close()
+
+    tr = H5Flat(Path(data_dir) / "training_data.hdf5")
+    va = H5Flat(Path(data_dir) / "validation_data.hdf5")
+    te = H5Flat(Path(data_dir) / "test_data.hdf5")
 
     input_shape = (1, tr.H, tr.W, 1)
 
     def _make_split(flat: H5Flat, batch_size: int, shuffle: bool):
-        N = len(flat)
-        idx = tf.data.Dataset.range(N)
+        N = flat.N
+        # Wir erzeugen Start-Offsets fuer Bloecke, nicht fuer einzelne Frames
+        starts = tf.data.Dataset.range(0, N, read_block)
         if shuffle:
-            idx = idx.shuffle(buffer_size=N, reshuffle_each_iteration=True)
+            starts = starts.shuffle(buffer_size=max(1, N // read_block), reshuffle_each_iteration=True)
 
-        def _py_fetch(i):
-            li, hi = flat.get_frame_pair(int(i))
-            return li, hi  # (1,H,W,1)
+        def _py_read_block(s):
+            s = int(s)
+            lo, hi = flat.get_block(s, read_block)  # (M,1,H,W,1)
+            return lo, hi
 
-        ds = idx.map(lambda i: tf.numpy_function(_py_fetch, [i],
-                                                 Tout=(tf.float32, tf.float32)),
-                     num_parallel_calls=tf.data.AUTOTUNE)
-        ds = ds.map(lambda x,y: (tf.ensure_shape(x, input_shape),
-                                 tf.ensure_shape(y, input_shape)),
+        ds = starts.map(lambda s: tf.numpy_function(_py_read_block, [s],
+                                                    Tout=(tf.float32, tf.float32)),
+                        num_parallel_calls=tf.data.AUTOTUNE)
+        # Shapes fixieren und dann unbatchen auf einzelne Frames
+        ds = ds.map(lambda x,y: (tf.ensure_shape(x, (None,)+input_shape),
+                                 tf.ensure_shape(y, (None,)+input_shape)),
                     num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.unbatch()
 
         # Preproc + Augment
         if preproc_train is not None and preproc_eval is not None:
@@ -96,7 +119,9 @@ def build_1stack_datasets_flat(
         if cache_after_preproc:
             ds = ds.cache()
 
-        ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        # Prefetch bis GPU
+        ds = ds.batch(batch_size)
+        ds = ds.apply(tf.data.experimental.copy_to_device("/GPU:0")).prefetch(1)
         if not deterministic:
             opts = tf.data.Options(); opts.experimental_deterministic = False
             ds = ds.with_options(opts)
@@ -106,12 +131,10 @@ def build_1stack_datasets_flat(
     val_ds,   Nva = _make_split(va, batch_eval,   shuffle=False)
     test_ds,  Nte = _make_split(te, batch_eval,   shuffle=False)
 
-    meta = {
-        "H": tr.H, "W": tr.W, "D": 1,
-        "input_shape": input_shape,
-        "n_train": Ntr, "n_val": Nva, "n_test": Nte,
-    }
+    meta = {"H": tr.H, "W": tr.W, "D": 1, "input_shape": input_shape,
+            "n_train": Ntr, "n_val": Nva, "n_test": Nte}
     return train_ds, val_ds, test_ds, meta
+
 
 
 
