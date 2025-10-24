@@ -1,4 +1,4 @@
-# unet_3d_JENS_V2.py
+# unet_3d_JENS_V2_test.py
 # ==============================
 # 0) Imports & global setup
 # ==============================
@@ -32,7 +32,7 @@ from tensorflow.keras.optimizers import AdamW
 from datetime import datetime
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
-from train_utils import build_standard_callbacks, build_5stack_datasets_grouped, clip01
+from train_utils import build_1stack_datasets_flat, clip01, build_standard_callbacks
 
 
 # Reproduzierbarkeit
@@ -93,30 +93,31 @@ def augment_5stack_flips(x, y):
     y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
     return x, y
 
-print(">>> Phase 1: Baue Datensatz via train_utils...")
+USE_SINGLE_FRAMES = True  # <— EIN/AUS
+
+print(">>> Phase 1: Baue Datensatz (flat, D=1)...")
 DATA_DIR = Path.home() / "data" / "original_data"
-train_ds, val_ds, test_ds, meta = build_5stack_datasets_grouped(
+
+train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
     data_dir=DATA_DIR,
-    group_len=41,
     batch_train=BATCH_SIZE,
     batch_eval=BATCH_SIZE,
     preproc_train=map_slice_wise(preproc_train_slice),
     preproc_eval=map_slice_wise(preproc_valid_slice),
-    augmenter=augment_5stack_flips,
-    deterministic=False, # False: Map und Prefetch dürfen in zufälliger Reihenfolge arbeiten
-    cache_after_preproc=False, # False: Augmentation wird bei jeder Epoche neu berechnet
+    augmenter=augment_5stack_flips,   # flips in H/W sind weiterhin ok
+    deterministic=False,
+    cache_after_preproc=False,
 )
 
-def _steps(meta, split, batch):
-    # Berechnet Anzahl Batches pro Epoche = Anzahl Updates pro Epoche
-    spp = meta["samples_per_group"] # 37 Trainingsdaten pro 41er gruppe
-    groups = meta[f"{split}_groups"]
-    total = groups * spp
-    return math.ceil(total / batch)
-
-
 INPUT_SHAPE = meta["input_shape"]
-print(">>> Datasets created")
+print(">>> Datasets created (D =", meta["D"], ")")
+
+def _steps(meta, split, batch):
+    N = {"train": meta["n_train"], "val": meta["n_val"], "test": meta["n_test"]}[split]
+    import math
+    return math.ceil(N / batch)
+
+
 
 
 # %%
@@ -234,7 +235,7 @@ run_meta = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
     "early_stopping": {"monitor": "val_loss", "patience": 200},
-    "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+    "data_prep": {"size": 1, "group_len": None, "dtype": "float32"},
     "alpha": 0.7,
     "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
 }
@@ -392,9 +393,8 @@ def run_mini_sweep():
 
     for bs in BATCH_SIZES:
         # ---- Datasets EINMAL pro "nominalem" bs ----
-        train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_5stack_datasets_grouped(
+        train_ds_bs, val_ds_bs, test_ds_bs, meta_bs = build_1stack_datasets_flat(
             data_dir=DATA_DIR,
-            group_len=41,
             batch_train=bs,
             batch_eval=bs,
             preproc_train=map_slice_wise(preproc_train_slice),
@@ -407,6 +407,8 @@ def run_mini_sweep():
         spe_bs  = _steps(meta_bs, "train", bs)
         vste_bs = _steps(meta_bs, "val",   bs)
         tste_bs = _steps(meta_bs, "test",  bs)
+
+
 
         for depth in DEPTHS:
             for bf in BASE_FILTERS:
@@ -429,7 +431,7 @@ def run_mini_sweep():
                             "batch_size": eff_bs,  # effektive Trainings-Batch
                             "epochs": MAX_EPOCHS_SCOUT,
                             "early_stopping": {"monitor": "val_loss", "patience": 10**9},
-                            "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
+                            "data_prep": {"size": 1, "group_len": None, "dtype": "float32"},
                             "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
                         }
                         cbs_scout, _, _ = build_standard_callbacks(

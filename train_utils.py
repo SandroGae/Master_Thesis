@@ -22,6 +22,107 @@ from tensorflow.keras import callbacks
 import atexit, signal
 
 
+# TEST!!!
+# ===== Flat-Loader: keine Gruppen, keine 5er-Stacks – nur Einzelbilder (D=1) =====
+class H5Flat:
+    """Liest direkt alle Frames aus dem HDF5, ohne Gruppierung."""
+    def __init__(self, path: _Path, dtype=np.float32):
+        import h5py, numpy as np
+        f = h5py.File(str(path), "r")
+        self._f = f
+        self.high = f["/high_count/data"]   # (H,W,N)
+        self.low  = f["/low_count/data"]
+        H, W, N = self.high.shape
+        self.H, self.W, self.N = int(H), int(W), int(N)
+        self.dtype = dtype
+    def __len__(self): return self.N
+    def get_frame_pair(self, i: int):
+        import numpy as np
+        hc = np.asarray(self.high[..., i], dtype=self.dtype)  # (H,W)
+        lc = np.asarray(self.low[...,  i], dtype=self.dtype)  # (H,W)
+        # -> (1,H,W,1)
+        hc1 = hc[None, ..., None]
+        lc1 = lc[None, ..., None]
+        return lc1, hc1
+    def close(self):
+        try: self._f.close()
+        except: pass
+    def __del__(self): self.close()
+
+
+def build_1stack_datasets_flat(
+    data_dir: _Path, *,
+    batch_train=32, batch_eval=32,
+    preproc_train=None, preproc_eval=None,
+    augmenter=None,
+    deterministic=False,
+    cache_after_preproc=False,
+):
+    """
+    Baut tf.data Datasets fuer Train/Val/Test – JEDE Aufnahme ist ein Sample (D=1).
+    Keine Gruppen, keine Fenster.
+    """
+    import tensorflow as tf
+    tr = H5Flat(_Path(data_dir) / "training_data.hdf5")
+    va = H5Flat(_Path(data_dir) / "validation_data.hdf5")
+    te = H5Flat(_Path(data_dir) / "test_data.hdf5")
+
+    input_shape = (1, tr.H, tr.W, 1)
+
+    def _make_split(flat: H5Flat, batch_size: int, shuffle: bool):
+        N = len(flat)
+        idx = tf.data.Dataset.range(N)
+        if shuffle:
+            idx = idx.shuffle(buffer_size=N, reshuffle_each_iteration=True)
+
+        def _py_fetch(i):
+            li, hi = flat.get_frame_pair(int(i))
+            return li, hi  # (1,H,W,1)
+
+        ds = idx.map(lambda i: tf.numpy_function(_py_fetch, [i],
+                                                 Tout=(tf.float32, tf.float32)),
+                     num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.map(lambda x,y: (tf.ensure_shape(x, input_shape),
+                                 tf.ensure_shape(y, input_shape)),
+                    num_parallel_calls=tf.data.AUTOTUNE)
+
+        # Preproc + Augment
+        if preproc_train is not None and preproc_eval is not None:
+            pp = preproc_train if shuffle else preproc_eval
+            ds = ds.map(pp, num_parallel_calls=tf.data.AUTOTUNE)
+        if augmenter is not None and shuffle:
+            ds = ds.map(augmenter, num_parallel_calls=tf.data.AUTOTUNE)
+
+        if cache_after_preproc:
+            ds = ds.cache()
+
+        ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        if not deterministic:
+            opts = tf.data.Options(); opts.experimental_deterministic = False
+            ds = ds.with_options(opts)
+        return ds, N
+
+    train_ds, Ntr = _make_split(tr, batch_train, shuffle=True)
+    val_ds,   Nva = _make_split(va, batch_eval,   shuffle=False)
+    test_ds,  Nte = _make_split(te, batch_eval,   shuffle=False)
+
+    meta = {
+        "H": tr.H, "W": tr.W, "D": 1,
+        "input_shape": input_shape,
+        "n_train": Ntr, "n_val": Nva, "n_test": Nte,
+    }
+    return train_ds, val_ds, test_ds, meta
+
+
+
+
+
+
+
+# universeller Clamper (nützlich für Loss/Metric-Helfer)
+def clip01(x: tf.Tensor) -> tf.Tensor:
+    return tf.clip_by_value(tf.cast(x, tf.float32), 0.0, 1.0)
+
 # ---- gruppenweiser Reader + vektorisiertes Fenster-Building ----
 class H5Groups:
     def __init__(self, path: Path, group_len=41, dtype=np.float32):
@@ -130,10 +231,6 @@ def build_5stack_datasets_grouped(data_dir: Path, *,
         "train_groups": len(train_g), "val_groups": len(val_g), "test_groups": len(test_g),
     }
     return train_ds, val_ds, test_ds, meta
-
-
-
-
 
 
 
@@ -481,8 +578,3 @@ def build_standard_callbacks(
         cb_list += [CompactLogger()]
 
     return cb_list, bf, ckpt_best
-
-
-# Optional: universeller Clamper (nützlich für Loss/Metric-Helfer)
-def clip01(x: tf.Tensor) -> tf.Tensor:
-    return tf.clip_by_value(tf.cast(x, tf.float32), 0.0, 1.0)
