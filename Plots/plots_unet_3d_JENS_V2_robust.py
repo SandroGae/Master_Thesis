@@ -4,10 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # === Pfad zur kombinierten CSV anpassen, falls noetig ===
-csv_path = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\csv_combined.csv")
+csv_path = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\csv_combined_robust.csv")
 
 # Output-Verzeichnisse
-root_out = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\plots_unet_3d_JENS_V2")
+root_out = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\plots_unet_3d_JENS_V2_robust")
 out_indiv = root_out / "individual_y_scale"
 out_same  = root_out / "same_y_scale"
 out_indiv.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,7 @@ def add_legends(ax, depth, bf, bs, lr, actname):
         f"Base filters: {bf}\n"
         f"Batch size: {bs}\n"
         f"LR: {lr}\n"
-        f"Activation function: ELU\n"
+        f"Activation function: ReLU\n"
         f"Output Activation: {actname}"
     )
     ax.text(

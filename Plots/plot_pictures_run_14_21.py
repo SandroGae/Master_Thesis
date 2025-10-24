@@ -22,7 +22,11 @@ CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\plots_serie_11_fra
 OUT_DIR        = CHECKPOINT_DIR
 SAVE_DPI       = 200
 
-# --- IRUNet-Referenz (0-basiert) ---
+# --- exakte Modell-Dateinamen (die zwei von dir) ---
+SWEEP1_FILE  = "unet_3d_JENS_V2_sweep1_d3_bf8_ELU_LN_outsigmoid_lr0_0003_bs32__mae_ssim_0_7_V2_valloss_4.575e-01_PSNR_11.6.keras"
+SWEEP32_FILE = "unet_3d_JENS_V2_sweep32_d4_bf16_ELU_LN_outsigmoid_lr0_0001_bs128__mae_ssim_0_7_V1_valloss_6.600e-02_PSNR_30.1.keras"
+
+# IRUNet-Referenz (0-basiert)
 GROUP_LEN = 41
 SERIES_LABEL_ZEROBASED = 11   # "serie_011"
 FRAME_LABEL_ZEROBASED  = 18   # "frame_018"
@@ -43,7 +47,7 @@ def load_hwN(fp: Path):
     with h5py.File(fp, "r") as f:
         high = f["/high_count/data"][:]  # (H,W,N)
         low  = f["/low_count/data"][:]   # (H,W,N)
-    # → (N,H,W,1)
+    # -> (N,H,W,1)
     high = high.transpose(2,0,1)[..., None].astype(np.float32)
     low  = low.transpose(2,0,1)[..., None].astype(np.float32)
     return high, low
@@ -96,7 +100,7 @@ def main():
     h5_path = DATA_DIR / H5_NAME
     high_all, low_all = load_hwN(h5_path)
 
-    # --- Modelle ---
+    # --- Modelle (Run14/Run21 via Muster) ---
     model14_path = find_model(PATTERN_RUN14)
     model21_path = find_model(PATTERN_RUN21)
     print(f"[Run14] Lade: {model14_path.name}")
@@ -115,16 +119,15 @@ def main():
         scale_range=[5000, 5001],
         pre_offset=0.0,
         normalize_label=True,
-        axis=None,                  # wird in deiner Klasse intern gehandhabt
+        axis=None,
         clip_before=[0., float("inf")],
         clip_after=[0., 1.],
-        batch_mode=True,            # WICHTIG: (B,5,H,W,1) → über HWC summieren
+        batch_mode=True,            # (B,5,H,W,1) -> ueber HWC summieren
     )
     Xn, Yn = normalizer.map(tf.convert_to_tensor(x5_raw), tf.convert_to_tensor(y5_raw))
     Xn = Xn.numpy(); Yn = Yn.numpy()
 
-    # --- Inferenz im NORM-Raum ---
-    # (Optional könnte man auch {"input_layer": Xn} übergeben, um die Warning zu vermeiden.)
+    # --- Inferenz im NORM-Raum (Run14/Run21) ---
     pred14_n = model14(Xn, training=False).numpy()
     pred21_n = model21(Xn, training=False).numpy()
 
@@ -135,7 +138,7 @@ def main():
     p14_n_c  = pred14_n[0, c, ..., 0]
     p21_n_c  = pred21_n[0, c, ..., 0]
 
-    # --- Metriken (normiert) ---
+    # --- Metriken (normiert) fuer Run14/Run21 ---
     print("\n[NORM metrics vs. Yn] (center slice, data_range=1.0)")
     for name, pred in [("Run14", p14_n_c), ("Run21", p21_n_c)]:
         m_mae  = mae (pred, high_n_c)
@@ -144,21 +147,70 @@ def main():
         m_ssim = float(ssim(pred, high_n_c, data_range=1.0))
         print(f"{name}: MAE={m_mae:.4f}  RMSE={m_rmse:.4f}  PSNR={m_psnr:.2f} dB  SSIM={m_ssim:.4f}")
 
-    # --- Visualisierung (normiert) ---
+    # --- Visualisierung (normiert) Run14/Run21 (unveraendert) ---
     series_1b = SERIES_LABEL_ZEROBASED + 1
     frame_1b  = FRAME_LABEL_ZEROBASED + 1
     title     = f"Serie {series_1b:02d} – Frame {frame_1b:02d} (normalized)"
     save_path = OUT_DIR / f"serie_{series_1b:02d}_frame_{frame_1b:02d}_quad_norm.png"
 
-    # packe Slices wieder auf (H,W,1) fürs Rendering
     show_quad(low_n_c[...,None], high_n_c[...,None], p14_n_c[...,None], p21_n_c[...,None],
               labels=("Low (norm)", "High (norm)", "Run14 (norm)", "Run21 (norm)"),
               title=title, save_path=save_path)
 
-    print(f"\nFertig. Gespeichert: {save_path}")
+    # ====== ZUSATZ: SWEEP32 vs SWEEP1 — einmal NORM, einmal DENORM (gleiche Reihenfolge) ======
+    # Modelle laden
+    sweep1_path  = CHECKPOINT_DIR / SWEEP1_FILE
+    sweep32_path = CHECKPOINT_DIR / SWEEP32_FILE
+    if not sweep1_path.exists():
+        raise FileNotFoundError(f"Nicht gefunden: {sweep1_path}")
+    if not sweep32_path.exists():
+        raise FileNotFoundError(f"Nicht gefunden: {sweep32_path}")
+
+    print(f"[SWEEP1] Lade:  {sweep1_path.name}")
+    print(f"[SWEEP32] Lade: {sweep32_path.name}")
+    model_sw1  = models.load_model(str(sweep1_path),  compile=False)
+    model_sw32 = models.load_model(str(sweep32_path), compile=False)
+
+    # Inferenz im NORM-Raum
+    pred_sw1_n  = model_sw1(Xn,  training=False).numpy()
+    pred_sw32_n = model_sw32(Xn, training=False).numpy()
+
+    # Zentrumsslices (norm)
+    p_sw1_norm_c  = pred_sw1_n [0, c, ..., 0]
+    p_sw32_norm_c = pred_sw32_n[0, c, ..., 0]
+
+    # === Denormalisierung: y_raw = y_norm * sum_label / scale ===
+    scale_val = float(tf.reshape(normalizer._denorm_pars['scale'], ()).numpy())
+    sum_label_center = float(np.maximum(np.sum(y5_raw[0, c, ...]), 1e-12))
+    p_sw1_denorm_c  = p_sw1_norm_c  * (sum_label_center / scale_val)
+    p_sw32_denorm_c = p_sw32_norm_c * (sum_label_center / scale_val)
+
+    # ---- Figur A: NORM-Vergleich (Low, High, sweep32 norm, sweep1 norm) ----
+    save_path_norm = OUT_DIR / f"serie_{series_1b:02d}_frame_{frame_1b:02d}_sweep32_sweep1_norm_quad.png"
+    show_quad(
+        low_n_c[...,None],                        # 1) Low (norm)
+        high_n_c[...,None],                       # 2) High (norm)
+        p_sw32_norm_c[...,None],                  # 3) sweep32 (norm)
+        p_sw1_norm_c[...,None],                   # 4) sweep1 (norm)
+        labels=("Low (norm)", "High (norm)", "sweep32 (norm)", "sweep1 (norm)"),
+        title=f"Serie {series_1b:02d} – Frame {frame_1b:02d} – sweep32 vs sweep1 (norm)",
+        save_path=save_path_norm
+    )
+
+    # ---- Figur B: DENORM-Vergleich (Low, High, sweep32 denorm, sweep1 denorm) ----
+    save_path_denorm = OUT_DIR / f"serie_{series_1b:02d}_frame_{frame_1b:02d}_sweep32_sweep1_denorm_quad.png"
+    show_quad(
+        low_n_c[...,None],                        # 1) Low (norm) bleibt links als Referenz
+        high_n_c[...,None],                       # 2) High (norm) bleibt daneben
+        p_sw32_denorm_c[...,None],                # 3) sweep32 (denorm)
+        p_sw1_denorm_c[...,None],                 # 4) sweep1 (denorm)
+        labels=("Low (norm)", "High (norm)", "sweep32 (denorm)", "sweep1 (denorm)"),
+        title=f"Serie {series_1b:02d} – Frame {frame_1b:02d} – sweep32 vs sweep1 (denorm)",
+        save_path=save_path_denorm
+    )
+
+    print(f"\nFertig. Gespeichert:\n  {save_path}\n  {save_path_norm}\n  {save_path_denorm}")
     print("[SHAPES] Xn", Xn.shape, " pred14_n", pred14_n.shape, " pred21_n", pred21_n.shape)
-    print("[MODEL14] input_shape:", model14.input_shape, " output_shape:", model14.output_shape)
-    print("[MODEL21] input_shape:", model21.input_shape, " output_shape:", model21.output_shape)
 
 if __name__ == "__main__":
     tf.get_logger().setLevel("ERROR")

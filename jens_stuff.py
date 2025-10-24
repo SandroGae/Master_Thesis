@@ -82,14 +82,15 @@ class SumScaleNormalizer(Normalizer):
     """
     def __init__(self, scale_range, pre_offset, normalize_label,
                  axis=None, clip_before=False, clip_after=False,
-                 batch_mode=False):  # <--- ergänzt
+                 *,
+                 batch_mode: bool):
         super().__init__("SumScaleNormalizer", axis, clip_before, clip_after)
         self.scale_range = list(scale_range)
         self.pre_offset = float(pre_offset)
         self.normalize_label = normalize_label
         self._min_scale = min(scale_range)
         self._max_scale = max(scale_range)
-        self.batch_mode = batch_mode            # <--- neu
+        self.batch_mode = batch_mode
         self._denorm_pars = {'pre_offset': self.pre_offset}
 
 
@@ -105,7 +106,7 @@ class SumScaleNormalizer(Normalizer):
             reduce_axes = (2, 3, 4)   # normiere pro Sample über HWC
         else:
             # Eingabe-Shape: (D, H, W, C)
-            reduce_axes = (1, 2, 3)
+            reduce_axes = (1, 2, 3)   # normiere pro Sample über HWC
 
         # --- Features ---
         x = self._pre_clipping(x + self.pre_offset)
@@ -113,7 +114,7 @@ class SumScaleNormalizer(Normalizer):
         sum_feature = tf.maximum(tf.reduce_sum(x, axis=reduce_axes, keepdims=True), eps)
         x = self._post_clipping(x / sum_feature * scale)
 
-        # --- Labels (optional) ---
+        # --- Labels ---
         if self.normalize_label:
             y = self._pre_clipping(y + self.pre_offset)
             sum_label = tf.maximum(tf.reduce_sum(y, axis=reduce_axes, keepdims=True), eps)

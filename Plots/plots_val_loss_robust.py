@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # --- CSV laden ---
-csv = r"C:\Users\sandr\VS_Master_Thesis\Plots\csv_combined.csv"
+csv = r"C:\Users\sandr\VS_Master_Thesis\Plots\csv_combined_robust.csv"
 df = pd.read_csv(csv)
 
 # --- bis zu 36 Runs identifizieren ---
@@ -23,9 +23,9 @@ out_dir.mkdir(parents=True, exist_ok=True)
 
 # --- Y-Limits fuer rescaled ---
 ylims = {
-    "val_loss": (0.15, 0.35),
-    "val_mae":  (0.00, 0.15),
-    "val_mse":  (0.00, 0.03),
+    "val_loss": (0.04, 0.15),
+    "val_mae":  (0.00, 0.08),
+    "val_mse":  (0.00, 0.01),
 }
 
 def _plot(metric_col, title, ylabel, apply_rescale: bool, show_legend: bool):
@@ -53,12 +53,12 @@ def _plot(metric_col, title, ylabel, apply_rescale: bool, show_legend: bool):
 def plot_both(metric_col, title, ylabel, filename_base):
     # 1) unskaliert MIT Legende (oben rechts, 4 Spalten)
     _plot(metric_col, title, ylabel, apply_rescale=False, show_legend=True)
-    plt.savefig(out_dir / f"{filename_base}.png", dpi=200)
+    plt.savefig(out_dir / f"{filename_base}_robust.png", dpi=200)
     plt.close()
 
     # 2) rescaled OHNE Legende
     _plot(metric_col, title, ylabel, apply_rescale=True, show_legend=False)
-    plt.savefig(out_dir / f"{filename_base}_rescaled.png", dpi=200)
+    plt.savefig(out_dir / f"{filename_base}_rescaled_robust.png", dpi=200)
     plt.close()
 
 # Plots erstellen
