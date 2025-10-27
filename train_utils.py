@@ -1,13 +1,3 @@
-# ---
-# jupyter:
-#   jupytext:
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.17.3
-# ---
-
 # %%
 # train_utils.py
 import h5py
@@ -22,119 +12,148 @@ from tensorflow.keras import callbacks
 import atexit, signal
 
 
-# TEST!!!
-# ===== Flat-Loader: keine Gruppen, keine 5er-Stacks – nur Einzelbilder (D=1) =====
+# Flat-Loader: keine Gruppen, keine 5er-Stacks – nur Einzelbilder (D=1)
 class H5Flat:
-    """Liest direkt alle Frames aus dem HDF5, ohne Gruppierung."""
-    def __init__(self, path: _Path, dtype=np.float32):
-        import h5py, numpy as np
-        f = h5py.File(str(path), "r")
-        self._f = f
-        self.high = f["/high_count/data"]   # (H,W,N)
-        self.low  = f["/low_count/data"]
+    """
+    Liest HDF5-Dateien mit Datensätzen:
+        /high_count/data
+        /low_count/data
+    Struktur: (H, W, N)
+
+    Diese Klasse lädt nie alles in den RAM,
+    sondern liest gezielt einzelne Frames oder Blöcke.
+    """
+
+    def __init__(self, path: Path, dtype=np.float32):
+        self.file = h5py.File(str(path), "r")
+        self.high = self.file["/high_count/data"]  # (H,W,N)
+        self.low  = self.file["/low_count/data"]
         H, W, N = self.high.shape
         self.H, self.W, self.N = int(H), int(W), int(N)
         self.dtype = dtype
-    def __len__(self): return self.N
-    def get_frame_pair(self, i: int):
-        import numpy as np
-        hc = np.asarray(self.high[..., i], dtype=self.dtype)  # (H,W)
-        lc = np.asarray(self.low[...,  i], dtype=self.dtype)  # (H,W)
-        # -> (1,H,W,1)
-        hc1 = hc[None, ..., None]
-        lc1 = lc[None, ..., None]
-        return lc1, hc1
+
+    def get_frame(self, i: int):
+        """Liest EINEN Frame (Index i)"""
+        hi = np.asarray(self.high[..., i], dtype=self.dtype)  # (H, W)
+        lo = np.asarray(self.low[...,  i], dtype=self.dtype)  # (H, W)
+        # → füge Batch- und Channel-Dimension hinzu
+        hi = hi[None, ..., None]  # (1, H, W, 1)
+        lo = lo[None, ..., None]
+        return lo, hi
+
+    def get_block(self, start: int, count: int):
+        """
+        Liest mehrere aufeinanderfolgende Frames aus der HDF5-Datei.
+        Gibt zwei Arrays zurück (low, high) mit Shape (M, 1, H, W, 1),
+        M = Anzahl gelesener Frames
+        """
+        # Bereich bestimmen
+        end = min(start + count, self.N)
+        num_frames = end - start  # = M
+        frame_slice = slice(start, end)
+        # Daten aus HDF5 lesen (H, W, M)
+        high_raw = np.asarray(self.high[..., frame_slice], dtype=self.dtype)
+        low_raw  = np.asarray(self.low[...,  frame_slice], dtype=self.dtype)
+        # Achsen umsortieren: (H, W, M) → (M, H, W)
+        high_reordered = np.moveaxis(high_raw, 2, 0)
+        low_reordered  = np.moveaxis(low_raw,  2, 0)
+        # Zusatzdimensionen einfügen: (M, H, W) → (M, 1, H, W, 1)
+        high_final = high_reordered[:, None, ..., None]
+        low_final  = low_reordered[:,  None, ..., None]
+        return low_final, high_final
+
     def close(self):
-        try: self._f.close()
-        except: pass
-    def __del__(self): self.close()
+        try:
+            self.file.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.close()
 
 
 def build_1stack_datasets_flat(
-    data_dir: Path, *,
-    batch_train=32, batch_eval=32,
-    preproc_train=None, preproc_eval=None,
+    data_dir: Path,
+    batch_train=32,
+    batch_eval=32,
+    read_block=128,
+    preproc_train=None,
+    preproc_eval=None,
     augmenter=None,
     deterministic=False,
     cache_after_preproc=False,
-    read_block=128,   # <<— NEU: wie viele Frames pro HDF5-Call laden
 ):
-    import tensorflow as tf, numpy as np, h5py
-    class H5Flat:
-        def __init__(self, path: Path, dtype=np.float32):
-            self.f = h5py.File(str(path), "r")
-            self.high = self.f["/high_count/data"]   # (H,W,N)
-            self.low  = self.f["/low_count/data"]
-            H, W, N = self.high.shape
-            self.H, self.W, self.N = int(H), int(W), int(N)
-            self.dtype = dtype
-        def get_block(self, start: int, count: int):
-            end = min(start+count, self.N)
-            sl = slice(start, end)
-            hi = np.asarray(self.high[..., sl], dtype=self.dtype)  # (H,W,M)
-            lo = np.asarray(self.low[...,  sl], dtype=self.dtype)  # (H,W,M)
-            # -> (M,1,H,W,1)
-            hi = np.moveaxis(hi, 2, 0)[:, None, ..., None]
-            lo = np.moveaxis(lo, 2, 0)[:, None, ..., None]
-            return lo, hi  # (M,1,H,W,1)
-        def close(self):
-            try: self.f.close()
-            except: pass
-        def __del__(self): self.close()
 
-    tr = H5Flat(Path(data_dir) / "training_data.hdf5")
-    va = H5Flat(Path(data_dir) / "validation_data.hdf5")
-    te = H5Flat(Path(data_dir) / "test_data.hdf5")
+    """
+    Erstellt drei TensorFlow-Datasets (train, val, test)
+    aus HDF5-Dateien mit Einzelbildern (D=1).
 
-    input_shape = (1, tr.H, tr.W, 1)
+   Returns:
+        train_ds, val_ds, test_ds, meta
+    """
 
-    def _make_split(flat: H5Flat, batch_size: int, shuffle: bool):
-        N = flat.N
-        # Wir erzeugen Start-Offsets fuer Bloecke, nicht fuer einzelne Frames
-        starts = tf.data.Dataset.range(0, N, read_block)
+    # Dateien öffnen
+    tr = H5Flat(data_dir / "training_data.hdf5")
+    va = H5Flat(data_dir / "validation_data.hdf5")
+    te = H5Flat(data_dir / "test_data.hdf5")
+
+    input_shape = (1, tr.H, tr.W, 1)  # D=1 → (1,H,W,1)
+
+
+    # Hilfsfunktion: baut Dataset aus einem H5Flat-Objekt
+    def make_split(flat: H5Flat, batch_size: int, shuffle: bool):
+        starts = tf.data.Dataset.range(0, flat.N, read_block)
         if shuffle:
-            starts = starts.shuffle(buffer_size=max(1, N // read_block), reshuffle_each_iteration=True)
+            starts = starts.shuffle(
+                buffer_size=max(1, flat.N // read_block),
+                reshuffle_each_iteration=True,
+            )
 
-        def _py_read_block(s):
-            s = int(s)
-            lo, hi = flat.get_block(s, read_block)  # (M,1,H,W,1)
-            return lo, hi
+        def read_block_py(start_idx):
+            start_idx = int(start_idx)
+            return flat.get_block(start_idx, read_block)  # (M,1,H,W,1)
 
-        ds = starts.map(lambda s: tf.numpy_function(_py_read_block, [s],
-                                                    Tout=(tf.float32, tf.float32)),
-                        num_parallel_calls=tf.data.AUTOTUNE)
-        # Shapes fixieren und dann unbatchen auf einzelne Frames
-        ds = ds.map(lambda x,y: (tf.ensure_shape(x, (None,)+input_shape),
-                                 tf.ensure_shape(y, (None,)+input_shape)),
-                    num_parallel_calls=tf.data.AUTOTUNE)
+        ds = starts.map(
+            lambda s: tf.numpy_function(read_block_py, [s],
+                                        Tout=(tf.float32, tf.float32)),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
+        ds = ds.map(
+            lambda x, y: (
+                tf.ensure_shape(x, (None, 1, flat.H, flat.W, 1)),
+                tf.ensure_shape(y, (None, 1, flat.H, flat.W, 1)),
+            ),
+            num_parallel_calls=tf.data.AUTOTUNE,
+        )
         ds = ds.unbatch()
 
-        # Preproc + Augment
+        # Preproc/augment wie in 5-Stack-Builder
         if preproc_train is not None and preproc_eval is not None:
-            pp = preproc_train if shuffle else preproc_eval
-            ds = ds.map(pp, num_parallel_calls=tf.data.AUTOTUNE)
+            preproc = preproc_train if shuffle else preproc_eval
+            ds = ds.map(preproc, num_parallel_calls=tf.data.AUTOTUNE)
         if augmenter is not None and shuffle:
             ds = ds.map(augmenter, num_parallel_calls=tf.data.AUTOTUNE)
 
         if cache_after_preproc:
             ds = ds.cache()
 
-        # Prefetch bis GPU
         ds = ds.batch(batch_size)
         ds = ds.apply(tf.data.experimental.copy_to_device("/GPU:0")).prefetch(1)
-        if not deterministic:
-            opts = tf.data.Options(); opts.experimental_deterministic = False
-            ds = ds.with_options(opts)
-        return ds, N
+        return ds
 
-    train_ds, Ntr = _make_split(tr, batch_train, shuffle=True)
-    val_ds,   Nva = _make_split(va, batch_eval,   shuffle=False)
-    test_ds,  Nte = _make_split(te, batch_eval,   shuffle=False)
+    train_ds = make_split(tr, batch_train, shuffle=True)
+    val_ds   = make_split(va, batch_eval,   shuffle=False)
+    test_ds  = make_split(te, batch_eval,   shuffle=False)
 
-    meta = {"H": tr.H, "W": tr.W, "D": 1, "input_shape": input_shape,
-            "n_train": Ntr, "n_val": Nva, "n_test": Nte}
+    meta = {
+        "H": tr.H, "W": tr.W, "D": 1,
+        "input_shape": (1, tr.H, tr.W, 1),
+        # “nominale” Beispielcounts – fuer _steps reicht das
+        "n_train": tr.N,
+        "n_val":   va.N,
+        "n_test":  te.N,
+    }
     return train_ds, val_ds, test_ds, meta
-
 
 
 
@@ -258,7 +277,13 @@ def build_5stack_datasets_grouped(data_dir: Path, *,
 
 
 
-# ---------- kleine Helfer ----------
+
+
+
+
+
+
+# Files benennen / ranken / Metadaten schreiben
 def _timestamp() -> str:
     return time.strftime("%Y-%m-%dT%H-%M-%S")
 
