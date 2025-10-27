@@ -47,14 +47,14 @@ AUTO = tf.data.AUTOTUNE # tensorflow wählt selbst wie viele elemente parallel g
 
 # Normalisierung identisch zu Jens (bis auf 10'000 bei val)
 preproc_train_slice = SumScaleNormalizer(
-    scale_min=5000.0, scale_max=15000.0,
+    scale_min=5000, scale_max=15000,
     pre_offset=0.0, 
     normalize_label=True, 
     batch_mode=False # 4D input (D,H,W,C) --> samples werden einzeln normalisiert
 )
 preproc_valid_slice = SumScaleNormalizer(
-    scale_min=10000.0, 
-    scale_max=10001.0,
+    scale_min=10000, 
+    scale_max=10001,
     pre_offset=0.0, 
     normalize_label=True, 
     batch_mode=False

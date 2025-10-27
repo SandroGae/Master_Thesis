@@ -28,7 +28,7 @@ class SumScaleNormalizer:
       4) final auf [0, 1] clippen
     """
 
-    def __init__(self, scale_min=5000.0, scale_max=15000.0, pre_offset=0.0, normalize_label=True, batch_mode=True):
+    def __init__(self, scale_min=5000, scale_max=15000, pre_offset=0.0, normalize_label=True, batch_mode=True):
         self.scale_min = float(scale_min)
         self.scale_max = float(scale_max)
         self.pre_offset = float(pre_offset)
@@ -56,12 +56,14 @@ class SumScaleNormalizer:
 
         axes = (2,3,4) if self.batch_mode else (1,2,3)
         x_sum = tf.maximum(tf.reduce_sum(x_pc, axis=axes, keepdims=True), eps)
-        x_scale = tf.cast(tf.random.uniform((1,), minval=self.scale_min, maxval=self.scale_max, dtype=tf.int32), tf.float32)
+        minv = int(self.scale_min)
+        maxv = int(self.scale_max)
+        x_scale = tf.cast(tf.random.uniform((1,), minval=minv, maxval=maxv, dtype=tf.int32), tf.float32)
         x_norm = self._finite_clip01((x_pc / x_sum) * x_scale)
 
         if self.normalize_label:
             y_sum = tf.maximum(tf.reduce_sum(y_pc, axis=axes, keepdims=True), eps)
-            y_scale = tf.cast(tf.random.uniform((1,), minval=self.scale_min, maxval=self.scale_max, dtype=tf.int32), tf.float32)
+            y_scale = tf.cast(tf.random.uniform((1,), minval=minv, maxval=maxv, dtype=tf.int32), tf.float32)
             y_norm = self._finite_clip01((y_pc / y_sum) * y_scale)
         else:
             y_norm = y
