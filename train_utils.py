@@ -182,19 +182,21 @@ class H5Groups:
 
     def __len__(self): return self.num_groups
 
-    def get_group_windows(self, g: int):
-        import numpy as np
-        s = g * self.group_len
-        e = s + self.group_len
-        hi = np.asarray(self.high[..., s:e], dtype=self.dtype)  # (H,W,41)
-        lo = np.asarray(self.low[...,  s:e], dtype=self.dtype)  # (H,W,41)
-        # baue alle 37 Fenster in einem Rutsch: (37,5,H,W,1)
-        idx = np.arange(41-5+1)[:,None] + np.arange(5)[None,:]  # (37,5)
-        hi5 = hi[..., idx]   # (H,W,37,5)
-        lo5 = lo[..., idx]   # (H,W,37,5)
-        hi5 = np.moveaxis(hi5, (2,3,0,1), (0,1,2,3))[..., None]  # -> (37,5,H,W,1)
-        lo5 = np.moveaxis(lo5, (2,3,0,1), (0,1,2,3))[..., None]
-        return lo5, hi5  # (B=37, D=5, H, W, 1)
+    def get_group_windows(self, group_idx: int, win: int = 5):
+        start = group_idx * self.group_len
+        end = start + self.group_len
+        hi = np.asarray(self.high[..., start:end], dtype=self.dtype)  # (H,W,group_len)
+        lo = np.asarray(self.low[...,  start:end], dtype=self.dtype)  # (H,W,group_len)
+        # Alle Sliding-Window-Indizes: (group_len - win + 1, win)
+        idx = np.arange(self.group_len - win + 1)[:, None] + np.arange(win)[None, :]
+        # (H,W,37,5)
+        hi5 = hi[..., idx]
+        lo5 = lo[..., idx]
+        # -> (37,5,H,W,1)
+        hi5 = np.moveaxis(hi5, (2, 3, 0, 1), (0, 1, 2, 3))[..., None]
+        lo5 = np.moveaxis(lo5, (2, 3, 0, 1), (0, 1, 2, 3))[..., None]
+        return lo5, hi5
+
 
     def __del__(self):
         try: self.f.close()

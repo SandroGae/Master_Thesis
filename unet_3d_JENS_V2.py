@@ -45,25 +45,22 @@ AUTO = tf.data.AUTOTUNE # tensorflow wählt selbst wie viele elemente parallel g
 # 1–3) Daten-Streaming (kein RAM-Fullload)
 # ==============================
 
-# Normalisierung identisch zu Jens (bis auf 10'000 bei val)
+# Normalisierung identisch zu Jens
 preproc_train_slice = SumScaleNormalizer(
-    scale_range=[5000, 15001],
-    pre_offset=0.0,
-    normalize_label=True, # Gleiche Normalisierung für high count Bilder
-    axis=None, # SumScaleNormalizer macht daraus axis(2,3,4) also (H,W,C) --> pro Bild wird summiert nicht pro Volumen
-    batch_mode=True, # Skalierung geschieht pro Sample im Batch (False = Saklierungsfaktor über ganzes Datenset geschätzt)
-    clip_before=[0., float("inf")],
-    clip_after=[0., 1.]
-)
-preproc_valid_slice = SumScaleNormalizer(
-    scale_range=[5000, 5001],
+    scale_min=5000, 
+    scale_max=15000,
     pre_offset=0.0,
     normalize_label=True,
-    axis=None,
-    batch_mode=True,
-    clip_before=[0., float("inf")],
-    clip_after=[0., 1.]
+    batch_mode=False   # 4D Einzel-Sample (D,H,W,C)
 )
+preproc_valid_slice = SumScaleNormalizer(
+    scale_min=10000, 
+    scale_max=10001,
+    pre_offset=0.0,
+    normalize_label=True,
+    batch_mode=False   # 4D Einzel-Sample
+)
+
 
 BATCH_SIZE = 32
 EPOCHS = 0
@@ -81,16 +78,11 @@ def map_slice_wise(normalizer):
     return _fn
 
 def augment_5stack_flips(x, y):
-    # Spiegelt x und y zufällig links-rechts und oben-unten
-    # returrns: geflipptes paar (x, y)
-    do_lr = tf.random.uniform(()) < 0.5  # left-right (W)
-    do_ud = tf.random.uniform(()) < 0.5  # up-down (H)
-    def fliplr(t): return tf.reverse(t, axis=[2])  # W
-    def flipud(t): return tf.reverse(t, axis=[1])  # H
+    # Spiegelt x und y zufällig links-rechts
+    do_lr = tf.random.uniform(()) < 0.5
+    fliplr = lambda t: tf.reverse(t, axis=[2])  # 4D: (D,H,W,C) -> W ist axis 2
     x = tf.cond(do_lr, lambda: fliplr(x), lambda: x)
     y = tf.cond(do_lr, lambda: fliplr(y), lambda: y)
-    x = tf.cond(do_ud, lambda: flipud(x), lambda: x)
-    y = tf.cond(do_ud, lambda: flipud(y), lambda: y)
     return x, y
 
 print(">>> Phase 1: Baue Datensatz via train_utils...")
@@ -165,7 +157,7 @@ def unet3d(input_shape=(5,192,240,1), base_filters=16):
     out = layers.Conv3D(1, (1,1,1), activation="sigmoid",
                         kernel_initializer="he_normal")(c8)
 
-    return models.Model(inputs, out, name=f"3D_U-Net_JENS_d4_bf{base_filters}_out_sigmoid")
+    return models.Model(inputs=inputs, outputs=out, name=f"3D_U-Net_JENS_d4_bf{base_filters}_out_sigmoid")
 
 
 # %%
@@ -216,7 +208,7 @@ class CombinedMAE_SSIM_Loss(tf.keras.losses.Loss):
 
 model = unet3d(input_shape=INPUT_SHAPE, base_filters=16)
 model.compile(optimizer=AdamW(learning_rate=1e-4),
-    loss=CombinedMAE_SSIM_Loss(alpha=0.7),
+    loss=tf.keras.losses.MeanAbsoluteError(name="mae_loss"),
     metrics=[ssim_metric, tf.keras.metrics.MeanAbsoluteError(name="mae"), 
     tf.keras.metrics.MeanSquaredError(name="mse"), psnr_metric],
     jit_compile=False # Schon bei Imports deaktiviert, als Absicherung gedacht
@@ -235,8 +227,8 @@ run_meta = {
     "epochs": EPOCHS,
     "early_stopping": {"monitor": "val_loss", "patience": 200},
     "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-    "alpha": 0.7,
-    "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
+    # "alpha": 0.7,
+    # "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
 }
 
 cbs, bf, ckpt_best = build_standard_callbacks(
@@ -346,11 +338,8 @@ def build_unet3d(input_shape, base_filters=16, depth=3,
                         kernel_initializer="he_normal")(x)
 
     model_name = name or f"UNet3D_d{depth}_bf{base_filters}_out{output_activation}"
-    return models.Model(inputs, out, name=model_name)
+    return models.Model(inputs=inputs, outputs=out, name=(name or f"UNet3D_d{depth}_bf{base_filters}_out{output_activation}"))
 
-
-def get_loss_fixed():
-    return CombinedMAE_SSIM_Loss(alpha=0.7, name="mae_ssim_0p7")
 
 # Sweep-Parameter
 DEPTHS         = [3, 4]
@@ -430,7 +419,7 @@ def run_mini_sweep():
                             "epochs": MAX_EPOCHS_SCOUT,
                             "early_stopping": {"monitor": "val_loss", "patience": 10**9},
                             "data_prep": {"size": 5, "group_len": 41, "dtype": "float32"},
-                            "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
+                            # "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7}
                         }
                         cbs_scout, _, _ = build_standard_callbacks(
                             ckpt_root=ckpt_root_scout,
@@ -440,7 +429,7 @@ def run_mini_sweep():
                             reduce_on_plateau=False,
                             include_nan_guards=True,
                             include_logger=True,
-                            code_name=f"unet_3d_JENS_V2_sweep{runs}_{tag}",
+                            code_name=f"unet_3d_JENS_V2_sweep{runs}_{tag}_3D",
                             verbose_ckpt=0
                         )
                         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -480,7 +469,7 @@ def run_mini_sweep():
                                 name=f"Scout_{tag}"
                             )
                             m.compile(optimizer=AdamW(learning_rate=lr),
-                                loss=get_loss_fixed(),
+                                loss=tf.keras.losses.MeanAbsoluteError(name="mae_loss"),
                                 metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae"), # SSIM removed
                                         tf.keras.metrics.MeanSquaredError(name="mse"),
                                         psnr_metric],
