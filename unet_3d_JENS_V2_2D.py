@@ -169,7 +169,7 @@ def unet3d(input_shape=(5,192,240,1), base_filters=16):
     out = layers.Conv3D(1, (1,1,1), activation="sigmoid",
                         kernel_initializer="he_normal")(c8)
 
-    return models.Model(inputs, out, name=f"3D_U-Net_JENS_d4_bf{base_filters}_out_sigmoid")
+    return models.Model(inputs=inputs, outputs=out, name=f"3D_U-Net_JENS_d4_bf{base_filters}_out_sigmoid")
 
 
 # %%
@@ -359,7 +359,7 @@ def build_unet3d(input_shape, base_filters=16, depth=4, output_activation="sigmo
         x = layers.Conv3D(f, (3,3,3), padding="same", kernel_initializer="he_normal", activation="relu")(x)
 
     out = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal")(x)
-    return models.Model(inputs, out, name or f"UNet3D_d{depth}_bf{base_filters}_out{output_activation}")
+    return models.Model(inputs=inputs, outputs=out, name=(name or f"UNet3D_d{depth}_bf{base_filters}_out{output_activation}"))
 
 
 def _build_model(input_shape, base_filters, depth, out_act, lr, name):
