@@ -405,7 +405,7 @@ def run_mini_sweep():
                         if runs < START_AT:
                             continue  # vorangehende Runs ueberspringen
 
-                        raw_tag = f"d{depth}_bf{bf}_ReLU_LN_out{outa}_lr{lr:g}_bs{bs}__mae+ssim:0.7"
+                        raw_tag = f"d{depth}_bf{bf}_ReLU_LN_out{outa}_lr{lr:g}_bs{bs}__mae"  #+ssim:0.7"
                         tag = _safe_tag(raw_tag)
 
                         # ---- Basiswahl eff_bs (schwere Configs runtersetzen) ----
