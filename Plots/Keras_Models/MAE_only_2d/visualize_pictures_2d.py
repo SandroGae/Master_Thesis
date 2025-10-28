@@ -34,13 +34,17 @@ SELECT_LIST = [
     "unet3d_scout_sweep5_d4_bf8_outsigmoid_lr0_0003_bs32_V1_valloss_2.667e-02_PSNR_24.keras",
     "unet3d_scout_sweep6_d4_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.164e-02_PSNR_21.4.keras",
     "unet3d_scout_sweep7_d4_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.880e-02_PSNR_24.keras",
-    "unet3d_scout_sweep8_d4_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.737e-02_PSNR_22.keras"
+    "unet3d_scout_sweep8_d4_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.737e-02_PSNR_22.keras",
+    "unet3d_scout_sweep9_d4_bf24_outsigmoid_lr0_0003_bs32_V1_valloss_2.947e-02_PSNR_23.8.keras",
+    "unet3d_scout_sweep10_d4_bf24_outsigmoid_lr1e-05_bs32_V1_valloss_4.107e-02_PSNR_21.2.keras",
+    "unet3d_scout_sweep11_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.895e-02_PSNR_24.keras",
+    "unet3d_scout_sweep12_d4_bf32_outsigmoid_lr1e-05_bs32_V1_valloss_3.824e-02_PSNR_21.9.keras"
 ]
 
 
 def choose_model(list):
     """Choose the model you want to load"""
-    number = int(input("Choose your run (1–8): "))
+    number = int(input("Choose your run (1–N): "))
     index = number - 1
     path = CHECKPOINT_DIR / list[index]
     print(f"Loading model: {path.name}")

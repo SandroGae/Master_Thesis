@@ -26,7 +26,7 @@ absl_logging.set_verbosity(absl_logging.FATAL)
 from pathlib import Path
 import math
 import re
-from tensorflow.keras.callbacks import CSVLogger, Callback
+from tensorflow.keras.callbacks import CSVLogger, Callback, ReduceLROnPlateau
 from tensorflow.keras import regularizers, constraints, layers, models
 from tensorflow.keras.optimizers import AdamW
 from datetime import datetime
@@ -148,21 +148,16 @@ def unet3d(input_shape=(5,192,240,1), base_filters=16):
     c2 = conv_block(p1, base_filters*2)              ; p2 = layers.MaxPooling3D((1,2,2))(c2)
     c3 = conv_block(p2, base_filters*4)              ; p3 = layers.MaxPooling3D((1,2,2))(c3)
     c4 = conv_block(p3, base_filters*8)              ; p4 = layers.MaxPooling3D((1,2,2))(c4)
-
     # Bottleneck
     bn = conv_block(p4, base_filters*16)
-
     # Decoder
     u4 = layers.Conv3DTranspose(base_filters*8, (1,2,2), (1,2,2), padding="same")(bn)
     # Skip connection von c4 nach u4
     u4 = layers.Concatenate()([u4, c4])              ; c5 = conv_block(u4, base_filters*8)
-
     u3 = layers.Conv3DTranspose(base_filters*4, (1,2,2), (1,2,2), padding="same")(c5)
     u3 = layers.Concatenate()([u3, c3])              ; c6 = conv_block(u3, base_filters*4)
-
     u2 = layers.Conv3DTranspose(base_filters*2, (1,2,2), (1,2,2), padding="same")(c6)
     u2 = layers.Concatenate()([u2, c2])              ; c7 = conv_block(u2, base_filters*2)
-
     u1 = layers.Conv3DTranspose(base_filters,   (1,2,2), (1,2,2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])              ; c8 = conv_block(u1, base_filters)
 
@@ -306,9 +301,9 @@ else:
 
 # %%
 # ==============================
-# Mini-Sweep: Depth, Base-Filters, Out-Act, LR
+# Mini-Sweep
 # ==============================
-# ----- Sweep-Settings -----
+# Sweep-Setting
 START_AT         = int(os.environ.get("START_AT", "1"))
 CSV_DIR_SWEEP    = Path.home() / "data" / "logs_csv_scout_JENS_V2"
 CKPT_ROOT_SWEEP  = Path.home() / "data" / "checkpoints_3d_unet_scout_JENS_V2"
@@ -317,11 +312,12 @@ CKPT_ROOT_SWEEP.mkdir(parents=True, exist_ok=True)
 
 # Sweep-Parameter
 DEPTHS         = [4, 5]
-BASE_FILTERS   = [24, 32] # 8 removed
+BASE_FILTERS   = [24, 32,64] # 8 removed
 OUT_ACTS       = ["sigmoid"]
-LEARNING_RATES = [3e-4, 1e-5] # 1e-4, 3e-5 removed
+# LEARNING_RATES = [3e-4] # 1e-4, 1e-5, 3e-5 removed
+LR_START = 3e-4  # Start-Learning-Rate für alle Runs
 BATCH_SIZES    = [32] # 128 removed
-MAX_EPOCHS_SCOUT = 20
+MAX_EPOCHS_SCOUT = 100
 
 
 def _safe_tag(s: str) -> str:
@@ -354,8 +350,7 @@ def build_unet3d(input_shape, base_filters=16, depth=4, output_activation="sigmo
     # Decoder
     for skip in reversed(skips):
         f //= 2
-        x = layers.Conv3DTranspose(f, (1,2,2), strides=(1,2,2), padding="same",
-                                   kernel_initializer="he_normal", activation="relu")(x)
+        x = layers.Conv3DTranspose(f, (1,2,2), strides=(1,2,2), padding="same", kernel_initializer="he_normal", activation="relu")(x)
         x = layers.Concatenate()([x, skip])
         x = layers.Conv3D(f, (3,3,3), padding="same", kernel_initializer="he_normal", activation="relu")(x)
         x = layers.Conv3D(f, (3,3,3), padding="same", kernel_initializer="he_normal", activation="relu")(x)
@@ -368,8 +363,8 @@ def _build_model(input_shape, base_filters, depth, out_act, lr, name):
     m = build_unet3d(input_shape, base_filters=base_filters, depth=depth,
                      output_activation=out_act, name=name)
     m.compile(
-        optimizer=AdamW(learning_rate=lr), # AdamW nicht identisch zu JENS
-        loss=tf.keras.losses.MeanAbsoluteError(),   # <- nur MAE
+        optimizer=AdamW(learning_rate=lr),  # Start-LR
+        loss=tf.keras.losses.MeanAbsoluteError(),
         metrics=[
             tf.keras.metrics.MeanAbsoluteError(name="mae"),
             tf.keras.metrics.MeanSquaredError(name="mse"),
@@ -379,8 +374,27 @@ def _build_model(input_shape, base_filters, depth, out_act, lr, name):
     )
     return m
 
+class LrTracker(Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
+        logs["lr"] = lr
 
-def _prepare_callbacks(tag, batch_size):
+
+class SweepMeta(Callback):
+    def __init__(self, meta: dict):
+        super().__init__()
+        self.meta = {str(k): v for k, v in meta.items()}
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is None:
+            logs = {}
+        # konstante Metadaten pro Epoche mitschreiben
+        for k, v in self.meta.items():
+            logs[k] = v
+
+
+
+def _prepare_callbacks(tag, batch_size, depth, bf, outa, lr_start, max_epochs):
     run_meta = {
         "batch_size": batch_size,
         "epochs": MAX_EPOCHS_SCOUT,
@@ -388,27 +402,52 @@ def _prepare_callbacks(tag, batch_size):
         "data_prep": {"size": 1, "group_len": None, "dtype": "float32"},
         "alpha": 0.7, "loss_components": {"mae": 0.3, "ssim": 0.7},
     }
+
     cbs, _, _ = build_standard_callbacks(
         ckpt_root=CKPT_ROOT_SWEEP,
         run_meta=run_meta,
         monitor="val_loss",
-        patience_es=10**9,            # faktisch: kein ES im Scout
-        reduce_on_plateau=False,      # kurz, konstant trainieren
+        patience_es=10**9,            # faktisch deaktiviert
+        reduce_on_plateau=False,
         include_nan_guards=True,
         include_logger=True,
         code_name=f"unet3d_scout_{tag}",
         verbose_ckpt=0
     )
+
+    meta_cb = SweepMeta({
+    "sweep_tag": tag,
+    "depth": depth,
+    "base_filters": bf,
+    "out_act": outa,
+    "batch_size": batch_size,
+    "lr_start": lr_start,
+    "max_epochs_scout": max_epochs,
+    })
+
+    rlrop = ReduceLROnPlateau(
+        monitor="val_loss",
+        patience=5,
+        factor=0.5,
+        min_lr=1e-6,
+        # optional: min_delta=1e-4,
+        verbose=1
+    )
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     csv_path = CSV_DIR_SWEEP / f"{tag}_{stamp}.csv"
     csv_cb = CSVLogger(str(csv_path), separator=",", append=False)
-    return list(cbs) + [csv_cb]
+
+    # Reihenfolge: RLROP -> (deine Standard-Callbacks) -> Meta -> LR-Tracker -> CSV
+    return [rlrop] + list(cbs) + [meta_cb, LrTracker(), csv_cb]
+
+
 
 def run_mini_sweep():
     runs = 0
 
     for bs in BATCH_SIZES:
-        # Datasets EINMAL fuer dieses bs (Augment->Normalize bereits in pipeline_*)
+        # Datasets einmal für dieses bs
         train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
             data_dir=Path.home() / "data" / "original_data",
             batch_train=bs, batch_eval=bs,
@@ -425,30 +464,30 @@ def run_mini_sweep():
         for depth in DEPTHS:
             for bf in BASE_FILTERS:
                 for outa in OUT_ACTS:
-                    for lr in LEARNING_RATES:
-                        runs += 1
-                        if runs < START_AT:
-                            continue
+                    runs += 1
+                    if runs < START_AT:
+                        continue
 
-                        raw_tag = f"sweep{runs}_d{depth}_bf{bf}_out{outa}_lr{lr:g}_bs{bs}"
-                        tag = _safe_tag(raw_tag)
-                        print(f"\n[SWEEP] {raw_tag}")
+                    raw_tag = f"sweep{runs}_d{depth}_bf{bf}_out{outa}_lr{LR_START:g}_bs{bs}"
+                    tag = _safe_tag(raw_tag)
+                    print(f"\n[SWEEP] {raw_tag}")
 
-                        callbacks_run = _prepare_callbacks(tag, bs)
-                        model = _build_model(meta["input_shape"], bf, depth, outa, lr, name=f"Scout_{tag}")
+                    callbacks_run = _prepare_callbacks(tag, bs, depth, bf, outa, LR_START, MAX_EPOCHS_SCOUT)
+                    model = _build_model(meta["input_shape"], bf, depth, outa, LR_START, name=f"Scout_{tag}")
 
-                        # Einfacher Fit (kein Rebatch/Retry; fuege deinen Retry-Block wieder ein, falls du CUDNN-Scratch-Fehler kennst)
-                        model.fit(
-                            train_ds.repeat(MAX_EPOCHS_SCOUT),
-                            validation_data=val_ds.repeat(MAX_EPOCHS_SCOUT),
-                            epochs=MAX_EPOCHS_SCOUT,
-                            steps_per_epoch=spe,
-                            validation_steps=vste,
-                            callbacks=callbacks_run,
-                            verbose=0,
-                        )
-                        _ = model.evaluate(val_ds,  steps=vste, return_dict=True, verbose=0)
-                        _ = model.evaluate(test_ds, steps=tste, return_dict=True, verbose=0)
+
+                    model.fit(
+                        train_ds.repeat(MAX_EPOCHS_SCOUT),
+                        validation_data=val_ds.repeat(MAX_EPOCHS_SCOUT),
+                        epochs=MAX_EPOCHS_SCOUT,
+                        steps_per_epoch=spe,
+                        validation_steps=vste,
+                        callbacks=callbacks_run,
+                        verbose=0,
+                    )
+                    _ = model.evaluate(val_ds,  steps=vste, return_dict=True, verbose=0)
+                    _ = model.evaluate(test_ds, steps=tste, return_dict=True, verbose=0)
+
 
     print(f"\n[SWEEP] Completed {runs} runs. CSVs in {CSV_DIR_SWEEP}")
 
