@@ -64,18 +64,6 @@ preproc_valid_slice = SumScaleNormalizer(
 BATCH_SIZE = 32
 EPOCHS = 0
 
-def map_slice_wise(normalizer):
-    def _finite01(t):
-        # Sichert Robustheit gegen NaN/Inf
-        t = tf.cast(t, tf.float32) # alle Operationen in float32
-        t = tf.where(tf.math.is_finite(t), t, tf.zeros_like(t)) # NaN/Inf -> 0
-        return tf.clip_by_value(t, 0.0, 1.0) # Clip [0,1]
-    def _fn(x, y):
-        # Slice-weise Normalisierung (pro d über H,W,C), danach Sicherheits-Clip [0,1]
-        x_norm, y_norm = normalizer.map(x, y)
-        return _finite01(x_norm), _finite01(y_norm)
-    return _fn
-
 def augment_fliplr_only(x, y):
     # Augmentation: nur Left-Right wie bei Jens
     do_lr = tf.random.uniform(()) < 0.5
@@ -107,8 +95,8 @@ train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
     batch_eval=BATCH_SIZE,
     preproc_train=pipeline_train,
     preproc_eval=pipeline_val,
-    augmenter=None,
-    deterministic=False,
+    read_block=128
+    out_rank=5
     cache_after_preproc=False
 )
 
@@ -450,16 +438,19 @@ def run_mini_sweep():
         # Datasets einmal für dieses bs
         train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
             data_dir=Path.home() / "data" / "original_data",
-            batch_train=bs, batch_eval=bs,
+            batch_train=bs,
+            batch_eval=bs,
+            read_block=128,
             preproc_train=pipeline_train,
             preproc_eval=pipeline_val,
-            augmenter=None,
-            deterministic=False,
-            cache_after_preproc=False
+            out_rank=5,                 # 5 für 3D-UNet, 4 falls du 2D sweepen willst
+            cache_after_preproc=False,
         )
+
         spe  = _steps(meta, "train", bs)
         vste = _steps(meta, "val",   bs)
         tste = _steps(meta, "test",  bs)
+
 
         for depth in DEPTHS:
             for bf in BASE_FILTERS:

@@ -1,0 +1,260 @@
+# unet_3d_JENS_V2_2D.py
+# ==============================
+# 0) Imports & global setup
+# ==============================
+import os
+# Deaktiviere XLA (just in time compiler) aus Stabilitätsgründen
+os.environ["TF_DISABLE_XLA"] = "1"
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
+# Behebe "Failed to allocate scratch space errors (testet verschiedene Faltungsalgorithmen bei der ersten Iteration)"
+os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
+# Etfernt hartes Workspace-Limit (512 MB war zu klein)
+os.environ.pop("TF_CUDNN_WORKSPACE_LIMIT_IN_MB", None)
+# GPU alloziert nur benötigte Menge an VRAM
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+# Weniger TF/C++-Spam (INFO+WARNING weg, ERROR bleibt)
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
+import tensorflow as tf
+tf.config.optimizer.set_jit(False)
+# Unterdrückt nervige Warnungen im Log
+tf.get_logger().setLevel("ERROR")
+from absl import logging as absl_logging
+# XLA/absl-errors unterdrücken
+absl_logging.set_verbosity(absl_logging.FATAL)
+
+from pathlib import Path
+import re
+from tensorflow.keras.callbacks import CSVLogger, Callback, ReduceLROnPlateau
+from tensorflow.keras import layers, models
+from tensorflow.keras.optimizers import AdamW
+from datetime import datetime
+import math
+
+from jens_stuff import SumScaleNormalizer, reset_random_seeds
+from train_utils import build_1stack_datasets_flat, clip01, build_standard_callbacks
+
+
+# %%
+# ==============================
+# Model of Jens
+# ==============================
+def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
+    """VDSR model architecture (Very Deep Super-Resolution Neural Network).
+
+    - 'he_normal' weights initializer
+    - 64 filters per layer
+    - 20 convolutional layers
+    - parametric rectifying linear unit (PReLU) as activation
+
+    Reference: 
+    J. Kim, J. K. Lee, and K. M. Lee, 
+    “Accurate Image Super-Resolution Using Very Deep Convolutional Networks,” 
+    in 2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR), Jun. 2016, pp. 1646–1654. 
+    doi: 10.1109/CVPR.2016.182.
+
+    Parameters
+    ----------
+    input_shape : tuple[int]
+        Input shape in the form of (# pixels in x, # pixels in y, 1)
+    filters : int
+        Number of filters per layer
+    kernel_initializer : string
+        Kernel initializer to be used as defined by keras.initializers
+    
+    Returns
+    -------
+    keras.Model
+    """
+
+    # Initialize a parametric linear rectifier unit
+    para_relu = tf.keras.layers.PReLU(alpha_initializer=tf.keras.initializers.constant(0.25))
+
+    # Create the neural network
+    input = tf.keras.layers.Input(shape=input_shape)
+    x = tf.keras.layers.Conv2D(filters=filters, kernel_size=3, strides=1, activation=para_relu, kernel_initializer=kernel_initializer, padding='same') (input)
+
+    for _ in range(19):
+        x = tf.keras.layers.Conv2D(filters=filters, kernel_size=3, strides=1, kernel_initializer=kernel_initializer, padding='same') (x)
+        x = tf.keras.layers.Activation(para_relu) (x)
+
+    x = tf.keras.layers.Conv2D(filters=1, kernel_size=3, kernel_initializer=kernel_initializer, padding='same') (x)
+    model = tf.keras.Model(input, x, name="VDSR")
+
+    return model
+
+
+
+# %%
+# ==============================
+# Daten-Streaming (kein RAM-Fullload)
+# ==============================
+
+# Normalisierung identisch zu Jens (bis auf 10'000 bei val)
+preproc_train_slice = SumScaleNormalizer(
+    scale_min=5000, scale_max=15000,
+    pre_offset=0.0, 
+    normalize_label=True, 
+    batch_mode=False # 4D input (D,H,W,C) --> samples werden einzeln normalisiert
+)
+preproc_valid_slice = SumScaleNormalizer(
+    scale_min=10000, 
+    scale_max=10001,
+    pre_offset=0.0, 
+    normalize_label=True, 
+    batch_mode=False
+)
+
+
+BATCH_SIZE = 8
+EPOCHS = 100
+
+
+def augment_fliplr_only(x, y):
+    # Augmentation: nur Left-Right wie bei Jens
+    do_lr = tf.random.uniform(()) < 0.5
+    fliplr = lambda t: tf.reverse(t, axis=[2])  # 4D: (D,H,W,C) -> W ist axis 2 for 5D: (B,D,H,W,C) -> W is axis 3!!!
+    x = tf.cond(do_lr, lambda: fliplr(x), lambda: x)
+    y = tf.cond(do_lr, lambda: fliplr(y), lambda: y)
+    return x, y
+
+
+def pipeline_train(x, y):
+    # Pipelines: Augment -> Normalize -> Sicherheits-Clip
+    x, y = augment_fliplr_only(x, y)                     # 1) augment
+    x, y = preproc_train_slice.map(x, y)                 # 2) normalize
+    return clip01(x), clip01(y)                          # 3) safety
+
+def pipeline_val(x, y):
+    # Jens augmentiert auch Validation
+    x, y = augment_fliplr_only(x, y)                     # 1) augment
+    x, y = preproc_valid_slice.map(x, y)                 # 2) normalize
+    return clip01(x), clip01(y)                          # 3) safety
+
+
+print(">>> Phase 1: Baue Datensatz (flat, D=1)...")
+
+train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
+    data_dir=Path.home() / "data" / "original_data",
+    batch_train=BATCH_SIZE,
+    batch_eval=BATCH_SIZE,
+    read_block=128,
+    preproc_train=pipeline_train,
+    preproc_eval=pipeline_val,
+    out_rank=4,
+    cache_after_preproc=False,
+)
+
+
+INPUT_SHAPE = meta["input_shape"]
+print(">>> Datasets created (D =", meta["D"], ")")
+
+def _steps(meta, split, batch):
+    N = {"train": meta["n_train"], "val": meta["n_val"], "test": meta["n_test"]}[split]
+    return math.ceil(N / batch)
+
+
+# %%
+# ==============================
+# PSNR metric
+# ==============================
+
+def psnr_metric(y_true, y_pred):
+    # PSNR Metrik
+    yt = clip01(y_true); yp = clip01(y_pred)
+    return tf.image.psnr(yt, yp, max_val=1.0)
+
+psnr_metric.__name__ = "psnr" # logger name
+
+
+
+# %%
+# ==============================
+# Compile
+# ==============================
+
+
+model = VDSR(input_shape=INPUT_SHAPE)
+model.compile(loss=tf.keras.losses.MeanAbsoluteError(), optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005, amsgrad=True), metrics=['mae'])
+
+
+# %%
+# ==============================
+# Callbacks + CSV_logging
+# ==============================
+
+ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
+
+# Dictionary für callbacks, checkpoints, logger
+run_meta = {
+    "batch_size": BATCH_SIZE,
+    "epochs": EPOCHS,
+    "early_stopping": {"monitor": "val_loss", "patience": 200},
+    "data_prep": {"size": 1, "group_len": None, "dtype": "float32"},
+    "alpha": 0.7,
+    "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
+}
+
+cbs, bf, ckpt_best = build_standard_callbacks(
+    ckpt_root=ckpt_root,
+    run_meta=run_meta,
+    monitor="val_loss",
+    patience_es=200,
+    reduce_on_plateau=True,
+    reduce_factor=0.5,
+    reduce_patience=10,
+    min_lr=1e-6,
+    include_nan_guards=True,
+    include_logger=True,
+    code_name="unet_3d_JENS_V2",
+    verbose_ckpt=1
+)
+
+# CSV logger
+CSV_DIR = Path.home() / "data" / "logs_csv"
+CSV_DIR.mkdir(parents=True, exist_ok=True)
+
+stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+csv_path = CSV_DIR / f"{bf.code}_train_{stamp}.csv"
+
+csv_cb = CSVLogger(filename=str(csv_path), separator=",", append=False)
+# CSV-Logger zu den Callbacks packen
+cbs = list(cbs) + [csv_cb]
+
+
+
+# %%
+# ==============================
+# Training + kurze Evaluierung
+# ==============================
+print(">>> Phase 2: GPU training starts now!")
+
+steps_per_epoch  = _steps(meta, "train", BATCH_SIZE)
+validation_steps = _steps(meta, "val",   BATCH_SIZE)
+
+if EPOCHS > 0:
+    train_ds_rep = train_ds.repeat(EPOCHS)
+    val_ds_rep   = val_ds.repeat(EPOCHS)
+
+    model.fit(
+        train_ds_rep,
+        validation_data=val_ds_rep,
+        epochs=EPOCHS,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps,
+        callbacks=cbs,
+        verbose=0,
+    )
+
+    print(">>> Phase 3: Training complete!")
+    final_val  = model.evaluate(val_ds,  return_dict=True, verbose=0)
+    final_test = model.evaluate(test_ds, return_dict=True, verbose=0)
+    print("FINAL VAL:",  {k: float(v) for k, v in final_val.items()})
+    print("FINAL TEST:", {k: float(v) for k, v in final_test.items()})
+else:
+    print(">>> Skipping main training (EPOCHS=0).")
+
+
+
+
+
