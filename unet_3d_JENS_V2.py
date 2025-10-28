@@ -342,10 +342,10 @@ def build_unet3d(input_shape, base_filters=16, depth=3,
 
 
 # Sweep-Parameter
-DEPTHS         = [3, 4]
-BASE_FILTERS   = [8, 16] # 24 removed
+DEPTHS         = [4, 5]
+BASE_FILTERS   = [16, 24] # 8 removed
 OUT_ACTS       = ["sigmoid"]
-LEARNING_RATES = [3e-4, 3e-5] # 1e-4 removed
+LEARNING_RATES = [3e-4, 1e-5] # 1e-4, 3e-5 removed
 BATCH_SIZES    = [32] # 128 removed
 MAX_EPOCHS_SCOUT = 20
 

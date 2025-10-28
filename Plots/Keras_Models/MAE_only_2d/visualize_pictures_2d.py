@@ -10,16 +10,16 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 
 # Projekt-Root in sys.path (damit jens_stuff auffindbar ist)
-ROOT = Path(__file__).resolve().parents[1] if "__file__" in globals() else Path.cwd()
+ROOT = Path(__file__).resolve().parents[3] if "__file__" in globals() else Path.cwd()
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from jens_stuff import SumScaleNormalizer
+from jens_stuff import SumScaleNormalizer, compute_denorm_factor_from_xnorm
 
 # Pfade
 DATA_DIR       = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
 H5_NAME        = "test_data.hdf5"
-CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots")
+CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\MAE_only_2d")
 OUT_DIR        = CHECKPOINT_DIR
 SAVE_DPI       = 200
 
@@ -27,20 +27,28 @@ PICTURE_INDEX = 469
 
 # Choosing keras models
 SELECT_LIST = [
-    "unet_3d_JENS_V2_sweep2_d3_bf8_ReLU_LN_outsigmoid_lr3e-05_bs32__mae_V1_valloss_8.804e-02_PSNR_27.2.keras"
+    "unet3d_scout_sweep1_d3_bf8_outsigmoid_lr0_0003_bs32_V1_valloss_3.195e-02_PSNR_23.3.keras",
+    "unet3d_scout_sweep2_d3_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.308e-02_PSNR_21.3.keras",
+    "unet3d_scout_sweep3_d3_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.915e-02_PSNR_24.1.keras",
+    "unet3d_scout_sweep4_d3_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.956e-02_PSNR_21.7.keras",
+    "unet3d_scout_sweep5_d4_bf8_outsigmoid_lr0_0003_bs32_V1_valloss_2.667e-02_PSNR_24.keras",
+    "unet3d_scout_sweep6_d4_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.164e-02_PSNR_21.4.keras",
+    "unet3d_scout_sweep7_d4_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.880e-02_PSNR_24.keras",
+    "unet3d_scout_sweep8_d4_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.737e-02_PSNR_22.keras"
 ]
 
 
 def choose_model(list):
     """Choose the model you want to load"""
-    number = int(input("Choose your run: "))
+    number = int(input("Choose your run (1–8): "))
     index = number - 1
     path = CHECKPOINT_DIR / list[index]
-    print(type(path))
-    return load_model(str(path), compile=False)
+    print(f"Loading model: {path.name}")
+    model = load_model(str(path), compile=False)
+    return model, number
 
 
-model = choose_model(SELECT_LIST)
+model, run_number = choose_model(SELECT_LIST)
 
 # Lade Testdaten
 h5_path = DATA_DIR / H5_NAME
@@ -54,13 +62,11 @@ with h5py.File(h5_path, "r") as f:
 
 # Normalisierung Jens Stil
 normalizer = SumScaleNormalizer(
-    scale_range=[5000, 15001],
+    scale_min=5000,
+    scale_max=15000,
     pre_offset=0.0,
     normalize_label=True,
-    axis=None,
     batch_mode=True, # Jedes Sample separat normalisieren
-    clip_before=[0., float("inf")],
-    clip_after=[0., 1.]
 )
 x = tf.convert_to_tensor(low_img[None, None, :, :, None], dtype=tf.float32)  # (1,1,H,W,1)
 y = tf.convert_to_tensor(high_img[None, None, :, :, None], dtype=tf.float32) # (1,1,H,W,1)
@@ -70,11 +76,9 @@ x_norm, y_norm = normalizer.map(x, y)
 y_pred = model.predict(x_norm, verbose=0)[0, 0, :, :, 0]   # (H,W)
 
 # --- Denorm: benutze LABEL-Summe, nicht feature-sum ---
-scale_val  = float(tf.reshape(normalizer._denorm_pars['scale'], ()).numpy())  # skalar
-sum_label  = float(np.maximum(np.sum(high_img), 1e-12))                        # skalar
-
-y_pred_denorm = y_pred * (sum_label / scale_val)
-
+sum_label = float(np.maximum(np.sum(high_img), 1e-12))
+denorm_factor = compute_denorm_factor_from_xnorm(x_norm, sum_label, batch_mode=True)
+y_pred_denorm = y_pred * float(tf.reshape(denorm_factor, ()).numpy())
 
 
 # Visualisierung
@@ -94,8 +98,8 @@ def simple_normalize(image: np.ndarray) -> Normalize:
 
 
 # Zielpfad
-save_dir = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\plots_serie_11_frame_18")
-out_png = save_dir / "viz_p1p99_serie11_frame18.png"
+save_dir = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\MAE_only_2d")
+out_png = save_dir / f"visualized_sweep_{run_number}.png"
 
 # Figuren-Setup
 fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(12, 5), constrained_layout=True, dpi=200)

@@ -69,4 +69,39 @@ class SumScaleNormalizer:
             y_norm = y
 
         return x_norm, y_norm
+    
+
+def compute_denorm_factor_from_xnorm(
+    x_norm: tf.Tensor,
+    sum_label_ref,
+    batch_mode: bool = True,
+    eps: float = 1e-12,):
+    """
+    Rekonstruiert den Denormalisierungsfaktor nur aus x_norm:
+      x_norm ≈ (x_pc / sum(x_pc)) * scale  ⇒  sum(x_norm) = scale.
+    Der gesuchte Faktor ist:  sum_label_ref / scale.
+
+    Args:
+      x_norm         : Tensor (B,D,H,W,C) bei batch_mode=True, sonst (D,H,W,C)
+      sum_label_ref  : Referenzsumme der High-Counts (z.B. np.sum(high_img))
+      batch_mode     : True ⇒ über (H,W,C) summieren; False ⇒ über (D,H,W,C)
+      eps            : numerische Stabilität
+
+    Returns:
+      Skalar-Tensor mit dem Denorm-Faktor.
+    """
+    x_norm = tf.cast(x_norm, tf.float32)
+    # Achsen wie in deinem Normalizer: pro Sample (und Slice) über H,W,C summieren
+    axes = (2, 3, 4) if batch_mode else (1, 2, 3)
+    scale_est = tf.reduce_sum(x_norm, axis=axes)  # Form: (B,D) oder Skalar
+    # Für Single-Sample+Single-Slice zu Skalar quetschen
+    scale_est = tf.reshape(scale_est, ())
+    scale_est = tf.maximum(scale_est, tf.constant(eps, tf.float32))
+
+    sum_label_ref = tf.cast(sum_label_ref, tf.float32)
+    if not tf.is_tensor(sum_label_ref):
+        sum_label_ref = tf.convert_to_tensor(sum_label_ref, dtype=tf.float32)
+
+    return sum_label_ref / scale_est
+
 
