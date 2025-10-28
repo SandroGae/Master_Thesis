@@ -125,9 +125,10 @@ def build_1stack_datasets_flat(
         # Falls 2D-Modelle (z.B. VDSR) gewuenscht: D-Achse (axis=1) entfernen
         if out_rank == 4:
             ds = ds.map(
-                lambda x, y: (tf.squeeze(x, axis=1), tf.squeeze(y, axis=1)),
+                lambda x, y: (tf.squeeze(x, axis=0), tf.squeeze(y, axis=0)),
                 num_parallel_calls=tf.data.AUTOTUNE,
-            )
+    )
+
 
         ds = ds.batch(batch_size)
         ds = ds.prefetch(tf.data.AUTOTUNE)
