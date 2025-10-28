@@ -24,10 +24,10 @@ from absl import logging as absl_logging
 absl_logging.set_verbosity(absl_logging.FATAL)
 
 from pathlib import Path
-import math
 import re
+import math
 from tensorflow.keras.callbacks import CSVLogger, Callback, ReduceLROnPlateau
-from tensorflow.keras import regularizers, constraints, layers, models
+from tensorflow.keras import layers, models
 from tensorflow.keras.optimizers import AdamW
 from datetime import datetime
 
@@ -100,6 +100,7 @@ def pipeline_val(x, y):
 
 
 print(">>> Phase 1: Baue Datensatz (flat, D=1)...")
+
 train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
     data_dir=Path.home() / "data" / "original_data",
     batch_train=BATCH_SIZE,
@@ -117,7 +118,6 @@ print(">>> Datasets created (D =", meta["D"], ")")
 
 def _steps(meta, split, batch):
     N = {"train": meta["n_train"], "val": meta["n_val"], "test": meta["n_test"]}[split]
-    import math
     return math.ceil(N / batch)
 
 
@@ -311,8 +311,8 @@ CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 CKPT_ROOT_SWEEP.mkdir(parents=True, exist_ok=True)
 
 # Sweep-Parameter
-DEPTHS         = [4, 5]
-BASE_FILTERS   = [32] # 8 removed
+DEPTHS         = [4]
+BASE_FILTERS   = [68] # 8 removed
 OUT_ACTS       = ["sigmoid"]
 # LEARNING_RATES = [3e-4] # 1e-4, 1e-5, 3e-5 removed
 LR_START = 3e-4  # Start-Learning-Rate für alle Runs
