@@ -317,7 +317,7 @@ CKPT_ROOT_SWEEP.mkdir(parents=True, exist_ok=True)
 
 # Sweep-Parameter
 DEPTHS         = [4, 5]
-BASE_FILTERS   = [16, 24] # 8 removed
+BASE_FILTERS   = [24, 32] # 8 removed
 OUT_ACTS       = ["sigmoid"]
 LEARNING_RATES = [3e-4, 1e-5] # 1e-4, 3e-5 removed
 BATCH_SIZES    = [32] # 128 removed
