@@ -315,12 +315,14 @@ CKPT_ROOT_SWEEP  = Path.home() / "data" / "checkpoints_3d_unet_scout_JENS_V2"
 CSV_DIR_SWEEP.mkdir(parents=True, exist_ok=True)
 CKPT_ROOT_SWEEP.mkdir(parents=True, exist_ok=True)
 
-DEPTHS           = [3, 4]
-BASE_FILTERS     = [8, 16]
-OUT_ACTS         = ["sigmoid"]
-LEARNING_RATES   = [3e-4, 3e-5]
-BATCH_SIZES      = [32]
+# Sweep-Parameter
+DEPTHS         = [4, 5]
+BASE_FILTERS   = [16, 24] # 8 removed
+OUT_ACTS       = ["sigmoid"]
+LEARNING_RATES = [3e-4, 1e-5] # 1e-4, 3e-5 removed
+BATCH_SIZES    = [32] # 128 removed
 MAX_EPOCHS_SCOUT = 20
+
 
 def _safe_tag(s: str) -> str:
     t = re.sub(r"[^A-Za-z0-9_.\\/>-]", "_", s)
