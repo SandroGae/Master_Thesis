@@ -312,7 +312,7 @@ CKPT_ROOT_SWEEP.mkdir(parents=True, exist_ok=True)
 
 # Sweep-Parameter
 DEPTHS         = [4, 5]
-BASE_FILTERS   = [24, 32,64] # 8 removed
+BASE_FILTERS   = [32] # 8 removed
 OUT_ACTS       = ["sigmoid"]
 # LEARNING_RATES = [3e-4] # 1e-4, 1e-5, 3e-5 removed
 LR_START = 3e-4  # Start-Learning-Rate für alle Runs
