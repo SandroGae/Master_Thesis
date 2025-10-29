@@ -4,6 +4,8 @@
 # ==============================
 #!/usr/bin/env python3
 import os
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0"
+os.environ["TF_XLA_ENABLE_XLA_DEVICES"] = "0"  # zusätzlich hart aus
 import tensorflow as tf
 tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
 
