@@ -5,6 +5,7 @@
 #!/usr/bin/env python3
 import os
 import tensorflow as tf
+tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
 
 # Exakt wie bei Jens Setup
 USE_GPU = True
