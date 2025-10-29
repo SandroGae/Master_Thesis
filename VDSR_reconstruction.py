@@ -4,33 +4,24 @@
 # ==============================
 #!/usr/bin/env python3
 import os
-# Deaktiviere XLA (just in time compiler) aus Stabilitätsgründen
-os.environ["TF_DISABLE_XLA"] = "1"
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
-# Behebe "Failed to allocate scratch space errors (testet verschiedene Faltungsalgorithmen bei der ersten Iteration)"
-os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
-# Etfernt hartes Workspace-Limit (512 MB war zu klein)
-os.environ.pop("TF_CUDNN_WORKSPACE_LIMIT_IN_MB", None)
-# GPU alloziert nur benötigte Menge an VRAM
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-# Weniger TF/C++-Spam (INFO+WARNING weg, ERROR bleibt)
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
+# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0"
+# os.environ["TF_XLA_ENABLE_XLA_DEVICES"] = "0"  # zusätzlich hart aus
 import tensorflow as tf
-tf.config.optimizer.set_jit(False)
-# Unterdrückt nervige Warnungen im Log
-tf.get_logger().setLevel("ERROR")
-from absl import logging as absl_logging
-# XLA/absl-errors unterdrücken
-absl_logging.set_verbosity(absl_logging.FATAL)
+tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
+
+# Sichtbare GPUs loggen und Growth aktivieren (kein hartes VRAM-Limit setzen)
+gpus = tf.config.list_physical_devices('GPU')
+print("GPUs sichtbar:", gpus)
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+else:
+    print("WARN: Keine GPU sichtbar – läuft auf CPU.")
 
 from pathlib import Path
-import re
-import math
-from tensorflow.keras.callbacks import CSVLogger, Callback, ReduceLROnPlateau
-from tensorflow.keras import layers, models
-from tensorflow.keras.optimizers import AdamW
+from tensorflow.keras.callbacks import CSVLogger, EarlyStopping, LearningRateScheduler
 from datetime import datetime
+import math
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from train_utils import build_1stack_datasets_flat, clip01, build_standard_callbacks
