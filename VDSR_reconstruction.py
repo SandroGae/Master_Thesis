@@ -2,32 +2,29 @@
 # ==============================
 # 0) Imports & global setup
 # ==============================
+#!/usr/bin/env python3
 import os
-# Deaktiviere XLA (just in time compiler) aus Stabilitätsgründen
-os.environ["TF_DISABLE_XLA"] = "1"
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
-# Behebe "Failed to allocate scratch space errors (testet verschiedene Faltungsalgorithmen bei der ersten Iteration)"
-os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
-# Etfernt hartes Workspace-Limit (512 MB war zu klein)
-os.environ.pop("TF_CUDNN_WORKSPACE_LIMIT_IN_MB", None)
-# GPU alloziert nur benötigte Menge an VRAM
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-# Weniger TF/C++-Spam (INFO+WARNING weg, ERROR bleibt)
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
 import tensorflow as tf
-tf.config.optimizer.set_jit(False)
-# Unterdrückt nervige Warnungen im Log
-tf.get_logger().setLevel("ERROR")
-from absl import logging as absl_logging
-# XLA/absl-errors unterdrücken
-absl_logging.set_verbosity(absl_logging.FATAL)
+
+# Exakt wie bei Jens Setup
+USE_GPU = True
+GPU_ID = 0
+GPU_MEM_MB = 64000  # 64 GB
+
+if USE_GPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(GPU_ID)
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            tf.config.experimental.set_virtual_device_configuration(
+                gpus[0],
+                [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=GPU_MEM_MB)]
+            )
+        except RuntimeError as e:
+            print(e)
 
 from pathlib import Path
-import re
-from tensorflow.keras.callbacks import CSVLogger, Callback, ReduceLROnPlateau
-from tensorflow.keras import layers, models
-from tensorflow.keras.optimizers import AdamW
+from tensorflow.keras.callbacks import CSVLogger, EarlyStopping, LearningRateScheduler
 from datetime import datetime
 import math
 
@@ -109,6 +106,14 @@ preproc_valid_slice = SumScaleNormalizer(
 BATCH_SIZE = 8
 EPOCHS = 100
 
+def lr_scheduler(epoch, lr):
+    # Jens: nur falls lr >= 100 würde reduziert – mit 5e-4 bleibt LR konstant.
+    if lr < 100:
+        return lr
+    else:
+        return lr * 0.5 ** (epoch // 100)
+
+
 
 def augment_fliplr_only(x, y):
     # Augmentation: nur Left-Right wie bei Jens
@@ -133,6 +138,9 @@ def pipeline_val(x, y):
 
 
 print(">>> Phase 1: Baue Datensatz (flat, D=1)...")
+
+reset_random_seeds(0)
+
 
 train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
     data_dir=Path.home() / "data" / "original_data",
@@ -189,10 +197,10 @@ ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
-    "early_stopping": {"monitor": "val_loss", "patience": 200},
+    # "early_stopping": {"monitor": "val_loss", "patience": 200},
     "data_prep": {"size": 1, "group_len": None, "dtype": "float32"},
-    "alpha": 0.7,
-    "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
+    "alpha": 1
+    #"loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
 }
 
 cbs, bf, ckpt_best = build_standard_callbacks(
@@ -200,15 +208,20 @@ cbs, bf, ckpt_best = build_standard_callbacks(
     run_meta=run_meta,
     monitor="val_loss",
     patience_es=200,
-    reduce_on_plateau=True,
-    reduce_factor=0.5,
-    reduce_patience=10,
+    reduce_on_plateau=False,
+    reduce_factor=1,
+    reduce_patience=100,
     min_lr=1e-6,
     include_nan_guards=True,
     include_logger=True,
     code_name="unet_3d_JENS_V2",
     verbose_ckpt=1
 )
+
+# EarlyStopping komplett entfernen, damit es wirklich Jens-like ist
+cbs = [cb for cb in cbs if not isinstance(cb, EarlyStopping)]
+# Jens-like (faktisch tut er nichts) Scheduler hinzufügen
+cbs.append(LearningRateScheduler(lr_scheduler))
 
 # CSV logger
 CSV_DIR = Path.home() / "data" / "logs_csv"

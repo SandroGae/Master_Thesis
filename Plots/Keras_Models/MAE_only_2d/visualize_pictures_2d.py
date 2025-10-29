@@ -29,16 +29,18 @@ PICTURE_INDEX = 469
 SELECT_LIST = [
     "unet3d_scout_sweep1_d3_bf8_outsigmoid_lr0_0003_bs32_V1_valloss_3.195e-02_PSNR_23.3.keras",
     "unet3d_scout_sweep2_d3_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.308e-02_PSNR_21.3.keras",
-    "unet3d_scout_sweep3_d3_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.915e-02_PSNR_24.1.keras",
+    "unet3d_scout_sweep3_d3_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.915e-02_PSNR_24.1.keras",    # 3
     "unet3d_scout_sweep4_d3_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.956e-02_PSNR_21.7.keras",
     "unet3d_scout_sweep5_d4_bf8_outsigmoid_lr0_0003_bs32_V1_valloss_2.667e-02_PSNR_24.keras",
-    "unet3d_scout_sweep6_d4_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.164e-02_PSNR_21.4.keras",
+    "unet3d_scout_sweep6_d4_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.164e-02_PSNR_21.4.keras",      # 6
     "unet3d_scout_sweep7_d4_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.880e-02_PSNR_24.keras",
     "unet3d_scout_sweep8_d4_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.737e-02_PSNR_22.keras",
-    "unet3d_scout_sweep9_d4_bf24_outsigmoid_lr0_0003_bs32_V1_valloss_2.947e-02_PSNR_23.8.keras",
+    "unet3d_scout_sweep9_d4_bf24_outsigmoid_lr0_0003_bs32_V1_valloss_2.947e-02_PSNR_23.8.keras",    # 9
     "unet3d_scout_sweep10_d4_bf24_outsigmoid_lr1e-05_bs32_V1_valloss_4.107e-02_PSNR_21.2.keras",
     "unet3d_scout_sweep11_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.895e-02_PSNR_24.keras",
-    "unet3d_scout_sweep12_d4_bf32_outsigmoid_lr1e-05_bs32_V1_valloss_3.824e-02_PSNR_21.9.keras"
+    "unet3d_scout_sweep12_d4_bf32_outsigmoid_lr1e-05_bs32_V1_valloss_3.824e-02_PSNR_21.9.keras",     # 12
+    "unet3d_scout_sweep13_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.488e-02_PSNR_24.5.keras",    # 100 epochs, my unet
+    "unet3d_scout_sweep14_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.827e-02_PSNR_24.3.keras"     # 100 epochs, VDSR Jens
 ]
 
 
@@ -79,10 +81,11 @@ x_norm, y_norm = normalizer.map(x, y)
 # Prediction
 y_pred = model.predict(x_norm, verbose=0)[0, 0, :, :, 0]   # (H,W)
 
-# --- Denorm: benutze LABEL-Summe, nicht feature-sum ---
-sum_label = float(np.maximum(np.sum(high_img), 1e-12))
-denorm_factor = compute_denorm_factor_from_xnorm(x_norm, sum_label, batch_mode=True)
-y_pred_denorm = y_pred * float(tf.reshape(denorm_factor, ()).numpy())
+# Denormaliesierung
+sum_label  = tf.reduce_sum(y)                      # Summe High in Originaleinheiten
+sum_y_norm = tf.reduce_sum(y_norm)                 # Summe normalisiertes Label
+denorm_factor = tf.maximum(sum_label, 1e-12) / tf.maximum(sum_y_norm, 1e-12)
+y_pred_denorm = y_pred * float(denorm_factor.numpy())
 
 
 # Visualisierung

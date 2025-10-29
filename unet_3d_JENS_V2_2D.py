@@ -97,9 +97,7 @@ train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
     preproc_eval=pipeline_val,
     read_block=128
     out_rank=5
-    cache_after_preproc=False
-)
-
+    cache_after_preproc=False)
 
 INPUT_SHAPE = meta["input_shape"]
 print(">>> Datasets created (D =", meta["D"], ")")
