@@ -1,8 +1,6 @@
 # unet_3d_JENS_V2_2D.py
-# ==============================
-# 0) Imports & global setup
-# ==============================
-import os
+
+"""
 # Deaktiviere XLA (just in time compiler) aus Stabilitätsgründen
 os.environ["TF_DISABLE_XLA"] = "1"
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
@@ -22,6 +20,13 @@ tf.get_logger().setLevel("ERROR")
 from absl import logging as absl_logging
 # XLA/absl-errors unterdrücken
 absl_logging.set_verbosity(absl_logging.FATAL)
+"""
+# ==============================
+# 0) Imports & global setup
+# ==============================
+import os
+import tensorflow as tf
+tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
 
 from pathlib import Path
 import re
