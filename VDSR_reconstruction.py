@@ -9,22 +9,14 @@ os.environ["TF_XLA_ENABLE_XLA_DEVICES"] = "0"  # zusätzlich hart aus
 import tensorflow as tf
 tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
 
-# Exakt wie bei Jens Setup
-USE_GPU = True
-GPU_ID = 0
-GPU_MEM_MB = 64000  # 64 GB
-
-if USE_GPU:
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(GPU_ID)
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        try:
-            tf.config.experimental.set_virtual_device_configuration(
-                gpus[0],
-                [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=GPU_MEM_MB)]
-            )
-        except RuntimeError as e:
-            print(e)
+# Sichtbare GPUs loggen und Growth aktivieren (kein hartes VRAM-Limit setzen)
+gpus = tf.config.list_physical_devices('GPU')
+print("GPUs sichtbar:", gpus)
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+else:
+    print("WARN: Keine GPU sichtbar – läuft auf CPU.")
 
 from pathlib import Path
 from tensorflow.keras.callbacks import CSVLogger, EarlyStopping, LearningRateScheduler
