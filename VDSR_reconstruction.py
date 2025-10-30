@@ -3,8 +3,8 @@
 # 0) Imports & global setup
 # ==============================
 #!/usr/bin/env python3
-import os
 import tensorflow as tf
+print("[0] start", flush=True)
 tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
 
 # Sichtbare GPUs loggen und Growth aktivieren (kein hartes VRAM-Limit setzen)
@@ -14,16 +14,18 @@ if gpus:
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 else:
-    print("WARN: Keine GPU sichtbar – läuft auf CPU.")
+    print("WARN: Keine GPU sichtbar –> läuft auf CPU.")
 
 from pathlib import Path
+print("[1] bli", flush=True)
 from tensorflow.keras.callbacks import CSVLogger, EarlyStopping, LearningRateScheduler
+print("[2] bla", flush=True)
 from datetime import datetime
 import math
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from train_utils import build_1stack_datasets_flat, clip01, build_standard_callbacks
-
+print("[3] blub", flush=True)
 
 # %%
 # ==============================
