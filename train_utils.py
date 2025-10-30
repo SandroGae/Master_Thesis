@@ -112,6 +112,8 @@ def build_1stack_datasets_flat(
 
         # In Einzelsamples aufloesen: (M,1,H,W,1) -> M * (1,H,W,1)
         ds = ds.unbatch()
+        if shuffle:
+            ds = ds.shuffle(buffer_size=flat.N, reshuffle_each_iteration=True)
 
         # Preprocessing (Training vs. Eval)
         if (preproc_train is not None) and (preproc_eval is not None):
@@ -135,7 +137,7 @@ def build_1stack_datasets_flat(
         return ds
 
     train_ds = make_split(tr, batch_train, shuffle=True)
-    val_ds   = make_split(va, batch_eval,   shuffle=False)
+    val_ds   = make_split(va, batch_eval,   shuffle=True)
     test_ds  = make_split(te, batch_eval,   shuffle=False)
 
     # Input-Shape fuer das jeweilige Modell
@@ -150,9 +152,14 @@ def build_1stack_datasets_flat(
 
 
 
-# universeller Clamper (nützlich für Loss/Metric-Helfer)
+
+# Clamper auf [0, 1]
 def clip01(x: tf.Tensor) -> tf.Tensor:
     return tf.clip_by_value(tf.cast(x, tf.float32), 0.0, 1.0)
+
+
+
+
 
 # ---- gruppenweiser Reader + vektorisiertes Fenster-Building ----
 class H5Groups:
@@ -272,9 +279,10 @@ def build_5stack_datasets_grouped(data_dir: Path, *,
 
 
 
-
-
+# =============================================
 # Files benennen / ranken / Metadaten schreiben
+# =============================================
+
 def _timestamp() -> str:
     return time.strftime("%Y-%m-%dT%H-%M-%S")
 

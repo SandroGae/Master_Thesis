@@ -1,10 +1,9 @@
-# unet_3d_JENS_V2_2D.py
+# VDSR_reconstruction.py
 # ==============================
 # 0) Imports & global setup
 # ==============================
 #!/usr/bin/env python3
 import tensorflow as tf
-print("[0] start", flush=True)
 tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
 
 # Sichtbare GPUs loggen und Growth aktivieren (kein hartes VRAM-Limit setzen)
@@ -17,21 +16,33 @@ else:
     print("WARN: Keine GPU sichtbar –> läuft auf CPU.")
 
 from pathlib import Path
-print("[1] bli", flush=True)
-from tensorflow.keras.callbacks import CSVLogger, EarlyStopping, LearningRateScheduler
-print("[2] bla", flush=True)
+from tensorflow.keras.callbacks import CSVLogger, EarlyStopping
 from datetime import datetime
-import math
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from train_utils import build_1stack_datasets_flat, clip01, build_standard_callbacks
-print("[3] blub", flush=True)
 
 # %%
 # ==============================
 # Model of Jens
 # ==============================
 def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
+    prelu_shared = tf.keras.layers.PReLU(
+        alpha_initializer=tf.keras.initializers.Constant(0.25)
+    )
+    inp = tf.keras.layers.Input(shape=input_shape)
+    x = tf.keras.layers.Conv2D(filters, 3, padding='same',
+                               kernel_initializer=kernel_initializer)(inp)
+    x = prelu_shared(x)  # gleiche Instanz
+
+    for _ in range(19):
+        x = tf.keras.layers.Conv2D(filters, 3, padding='same',
+                                   kernel_initializer=kernel_initializer)(x)
+        x = prelu_shared(x)  # gleiche Instanz
+
+    out = tf.keras.layers.Conv2D(1, 3, padding='same',
+                                 kernel_initializer=kernel_initializer)(x)
+    return tf.keras.Model(inp, out, name="VDSR")
     """VDSR model architecture (Very Deep Super-Resolution Neural Network).
 
     - 'he_normal' weights initializer
@@ -58,7 +69,7 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     -------
     keras.Model
     """
-
+    """
     inp = tf.keras.layers.Input(shape=input_shape)
     x = tf.keras.layers.Conv2D(filters, 3, padding='same',
                                kernel_initializer=kernel_initializer)(inp)
@@ -72,7 +83,7 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     out = tf.keras.layers.Conv2D(1, 3, padding='same',
                                  kernel_initializer=kernel_initializer)(x)
     return tf.keras.Model(inp, out, name="VDSR")
-
+    """
     """
     # Initialize a parametric linear rectifier unit
     para_relu = tf.keras.layers.PReLU(alpha_initializer=tf.keras.initializers.constant(0.25))
@@ -105,8 +116,7 @@ preproc_train_slice = SumScaleNormalizer(
     batch_mode=False # 4D input (D,H,W,C) --> samples werden einzeln normalisiert
 )
 preproc_valid_slice = SumScaleNormalizer(
-    scale_min=10000, 
-    scale_max=10001,
+    scale_min=10000, scale_max=10001,
     pre_offset=0.0, 
     normalize_label=True, 
     batch_mode=False
@@ -154,13 +164,11 @@ train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
     cache_after_preproc=False,
 )
 
-
 INPUT_SHAPE = meta["input_shape"]
 print(">>> Datasets created (D =", meta["D"], ")")
 
-def _steps(meta, split, batch):
-    N = {"train": meta["n_train"], "val": meta["n_val"], "test": meta["n_test"]}[split]
-    return math.ceil(N / batch)
+steps_per_epoch  = meta["n_train"] // BATCH_SIZE
+validation_steps = meta["n_val"]   // BATCH_SIZE
 
 
 # %%
@@ -239,9 +247,6 @@ cbs = list(cbs) + [csv_cb]
 # Training
 # ==============================
 print(">>> Phase 2: GPU training starts now!")
-
-steps_per_epoch  = _steps(meta, "train", BATCH_SIZE)
-validation_steps = _steps(meta, "val",   BATCH_SIZE)
 
 if EPOCHS > 0:
     train_ds_rep = train_ds.repeat(EPOCHS)

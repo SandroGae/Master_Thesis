@@ -37,14 +37,14 @@ class SumScaleNormalizer:
 
     def _finite_clip01(self, t):
         t = tf.cast(t, tf.float32) # Einheitlicher dtype
-        t = tf.where(tf.math.is_finite(t), t, 0.0) # NaN/Inf -> 0
+        t = tf.where(tf.math.is_finite(t), t, 0.0) # Robustheit: NaN/Inf -> 0
         return tf.clip_by_value(t, 0.0, 1.0) # [0,1]
 
     def _reduce_axes(self, x):
-        if self.batch_mode == True: # 5D (B,D,H,W,C) -> (H,W,C)
+        if self.batch_mode == True: # Wenn Input 5D (B,D,H,W,C) -> (H,W,C)
             return (2, 3, 4)
-        else:
-            return (1, 2, 3)        # 4D (D,H,W,C)-> (H,W,C)
+        elif self.batch_mode == False:
+            return (1, 2, 3)        # Wenn Input 4D (D,H,W,C)-> (H,W,C)
 
     def map(self, x, y):
         eps = tf.constant(1e-12, tf.float32)

@@ -223,10 +223,10 @@ ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
-    "early_stopping": {"monitor": "val_loss", "patience": 200},
+    # "early_stopping": {"monitor": "val_loss", "patience": None},
     "data_prep": {"size": 1, "group_len": None, "dtype": "float32"},
-    "alpha": 0.7,
-    "loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
+    # "alpha": 0.7,
+    "loss_components": {"mae": 1.0}  # einfache SSIM
 }
 
 cbs, bf, ckpt_best = build_standard_callbacks(

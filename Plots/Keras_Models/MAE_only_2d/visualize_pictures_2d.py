@@ -43,7 +43,8 @@ SELECT_LIST = [
     "unet3d_scout_sweep13_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.488e-02_PSNR_24.5.keras",    # 100 epochs, my unet
     "unet3d_scout_sweep14_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.827e-02_PSNR_24.3.keras",     # 100 epochs, VDSR 
     "unet3d_scout_sweep15_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.561e-02_PSNR_24.3.keras",
-    "unet3d_scout_sweep16_JENS_V2_V2_valloss_2.770e-02.keras"
+    "unet3d_scout_sweep16_JENS_V2_V2_valloss_2.770e-02.keras",
+    "unet3d_scout_sweep17_JENS_V2_V3_valloss_2.818e-02.keras"
 ]
 
 
@@ -53,7 +54,7 @@ def choose_model(list):
     index = number - 1
     path = CHECKPOINT_DIR / list[index]
     print(f"Loading model: {path.name}")
-    model = keras.models.load_model(path, compile=False, safe_mode=False)
+    model = load_model(str(path), compile=False)
     return model, number
 
 
