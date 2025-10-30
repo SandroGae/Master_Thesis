@@ -4,9 +4,13 @@
 # ==============================
 #!/usr/bin/env python3
 print("[0]", flush=True)
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=" + os.environ.get("CUDA_HOME", "/usr/local/cuda")
+print("[1]", flush=True)
 import tensorflow as tf
 tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
-print("[1]", flush=True)
+print("[2]", flush=True)
 # Sichtbare GPUs loggen und Growth aktivieren (kein hartes VRAM-Limit setzen)
 gpus = tf.config.list_physical_devices('GPU')
 print("GPUs sichtbar:", gpus)
@@ -15,7 +19,7 @@ if gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 else:
     print("WARN: Keine GPU sichtbar –> läuft auf CPU.")
-print("[2]", flush=True)
+print("[3]", flush=True)
 from pathlib import Path
 from tensorflow.keras.callbacks import CSVLogger, EarlyStopping
 from datetime import datetime
