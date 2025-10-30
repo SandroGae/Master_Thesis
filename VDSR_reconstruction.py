@@ -6,7 +6,6 @@
 print("[0]", flush=True)
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=" + os.environ.get("CUDA_HOME", "/usr/local/cuda")
 print("[1]", flush=True)
 import tensorflow as tf
 tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
