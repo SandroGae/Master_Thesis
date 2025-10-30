@@ -6,7 +6,8 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from keras.models import load_model
-import matplotlib.pyplot as plt
+from tensorflow import keras
+load_model = keras.models.load_model
 from matplotlib.colors import Normalize
 
 # Projekt-Root in sys.path (damit jens_stuff auffindbar ist)
@@ -40,7 +41,9 @@ SELECT_LIST = [
     "unet3d_scout_sweep11_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.895e-02_PSNR_24.keras",
     "unet3d_scout_sweep12_d4_bf32_outsigmoid_lr1e-05_bs32_V1_valloss_3.824e-02_PSNR_21.9.keras",     # 12
     "unet3d_scout_sweep13_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.488e-02_PSNR_24.5.keras",    # 100 epochs, my unet
-    "unet3d_scout_sweep14_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.827e-02_PSNR_24.3.keras"     # 100 epochs, VDSR Jens
+    "unet3d_scout_sweep14_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.827e-02_PSNR_24.3.keras",     # 100 epochs, VDSR 
+    "unet3d_scout_sweep15_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.561e-02_PSNR_24.3.keras",
+    "unet3d_scout_sweep16_JENS_V2_V2_valloss_2.770e-02.keras"
 ]
 
 
@@ -50,7 +53,7 @@ def choose_model(list):
     index = number - 1
     path = CHECKPOINT_DIR / list[index]
     print(f"Loading model: {path.name}")
-    model = load_model(str(path), compile=False)
+    model = keras.models.load_model(path, compile=False, safe_mode=False)
     return model, number
 
 
@@ -79,7 +82,13 @@ y = tf.convert_to_tensor(high_img[None, None, :, :, None], dtype=tf.float32) # (
 x_norm, y_norm = normalizer.map(x, y)
 
 # Prediction
-y_pred = model.predict(x_norm, verbose=0)[0, 0, :, :, 0]   # (H,W)
+try:
+    # Versuch mit 5D Tensor wie alle U-nets
+    y_pred = model.predict(x_norm, verbose=0)[0, 0, :, :, 0]
+except Exception:
+    # Fallback: Modell erwartet 4D (VDSR-Stil)
+    x4 = x_norm[:, 0, ...]        # (1,H,W,1)
+    y_pred = model.predict(x4, verbose=0)[0, :, :, 0]
 
 # Denormaliesierung
 sum_label  = tf.reduce_sum(y)                      # Summe High in Originaleinheiten

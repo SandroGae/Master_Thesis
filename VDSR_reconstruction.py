@@ -4,8 +4,6 @@
 # ==============================
 #!/usr/bin/env python3
 import os
-# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0"
-# os.environ["TF_XLA_ENABLE_XLA_DEVICES"] = "0"  # zusätzlich hart aus
 import tensorflow as tf
 tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
 
@@ -59,6 +57,21 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     keras.Model
     """
 
+    inp = tf.keras.layers.Input(shape=input_shape)
+    x = tf.keras.layers.Conv2D(filters, 3, padding='same',
+                               kernel_initializer=kernel_initializer)(inp)
+    x = tf.keras.layers.PReLU(shared_axes=[1, 2])(x)   # echte Layer, mit alpha-Variable
+
+    for _ in range(19):
+        x = tf.keras.layers.Conv2D(filters, 3, padding='same',
+                                   kernel_initializer=kernel_initializer)(x)
+        x = tf.keras.layers.PReLU(shared_axes=[1, 2])(x)
+
+    out = tf.keras.layers.Conv2D(1, 3, padding='same',
+                                 kernel_initializer=kernel_initializer)(x)
+    return tf.keras.Model(inp, out, name="VDSR")
+
+    """
     # Initialize a parametric linear rectifier unit
     para_relu = tf.keras.layers.PReLU(alpha_initializer=tf.keras.initializers.constant(0.25))
 
@@ -74,7 +87,7 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     model = tf.keras.Model(input, x, name="VDSR")
 
     return model
-
+    """
 
 
 # %%
@@ -101,19 +114,10 @@ preproc_valid_slice = SumScaleNormalizer(
 BATCH_SIZE = 8
 EPOCHS = 100
 
-def lr_scheduler(epoch, lr):
-    # Jens: nur falls lr >= 100 würde reduziert – mit 5e-4 bleibt LR konstant.
-    if lr < 100:
-        return lr
-    else:
-        return lr * 0.5 ** (epoch // 100)
-
-
-
 def augment_fliplr_only(x, y):
     # Augmentation: nur Left-Right wie bei Jens
     do_lr = tf.random.uniform(()) < 0.5
-    fliplr = lambda t: tf.reverse(t, axis=[2])  # 4D: (D,H,W,C) -> W ist axis 2 for 5D: (B,D,H,W,C) -> W is axis 3!!!
+    fliplr = lambda t: tf.reverse(t, axis=[2])  # 4D: (D,H,W,C) -> W ist axis 2 (for 5D: (B,D,H,W,C) -> W is axis 3!!!)
     x = tf.cond(do_lr, lambda: fliplr(x), lambda: x)
     y = tf.cond(do_lr, lambda: fliplr(y), lambda: y)
     return x, y
@@ -192,10 +196,10 @@ ckpt_root = Path.home() / "data" / "checkpoints_3d_unet"
 run_meta = {
     "batch_size": BATCH_SIZE,
     "epochs": EPOCHS,
-    # "early_stopping": {"monitor": "val_loss", "patience": 200},
+    # "early_stopping": {"monitor": "val_loss", "patience": None},
     "data_prep": {"size": 1, "group_len": None, "dtype": "float32"},
-    "alpha": 1
-    #"loss_components": {"mae": 0.3, "ssim": 0.7}  # einfache SSIM
+    # "alpha": 0.3,
+    "loss_components": {"mae": 1.0}  # einfache MAE
 }
 
 cbs, bf, ckpt_best = build_standard_callbacks(
@@ -215,12 +219,9 @@ cbs, bf, ckpt_best = build_standard_callbacks(
 
 # EarlyStopping komplett entfernen, damit es wirklich Jens-like ist
 cbs = [cb for cb in cbs if not isinstance(cb, EarlyStopping)]
-# Jens-like (faktisch tut er nichts) Scheduler hinzufügen
-cbs.append(LearningRateScheduler(lr_scheduler))
 
 # CSV logger
 CSV_DIR = Path.home() / "data" / "logs_csv"
-CSV_DIR.mkdir(parents=True, exist_ok=True)
 
 stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 csv_path = CSV_DIR / f"{bf.code}_train_{stamp}.csv"
@@ -233,7 +234,7 @@ cbs = list(cbs) + [csv_cb]
 
 # %%
 # ==============================
-# Training + kurze Evaluierung
+# Training
 # ==============================
 print(">>> Phase 2: GPU training starts now!")
 
