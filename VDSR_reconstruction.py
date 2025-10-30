@@ -28,20 +28,25 @@ from train_utils import build_1stack_datasets_flat, clip01, build_standard_callb
 # ==============================
 def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     prelu_shared = tf.keras.layers.PReLU(
-        alpha_initializer=tf.keras.initializers.Constant(0.25)
+            shared_axes=[1, 2],
+            alpha_initializer=tf.keras.initializers.Constant(0.25),
+            name="prelu_shared"
     )
-    inp = tf.keras.layers.Input(shape=input_shape)
+    inp = tf.keras.layers.Input(shape=input_shape, name="input")
     x = tf.keras.layers.Conv2D(filters, 3, padding='same',
-                               kernel_initializer=kernel_initializer)(inp)
-    x = prelu_shared(x)  # gleiche Instanz
+                            kernel_initializer=kernel_initializer,
+                            name="conv_in")(inp)
+    x = prelu_shared(x)
 
-    for _ in range(19):
+    for i in range(1, 20):
         x = tf.keras.layers.Conv2D(filters, 3, padding='same',
-                                   kernel_initializer=kernel_initializer)(x)
-        x = prelu_shared(x)  # gleiche Instanz
+                                kernel_initializer=kernel_initializer,
+                                name=f"conv_{i:02d}")(x)
+        x = prelu_shared(x)
 
     out = tf.keras.layers.Conv2D(1, 3, padding='same',
-                                 kernel_initializer=kernel_initializer)(x)
+                                kernel_initializer=kernel_initializer,
+                                name="conv_out")(x)
     return tf.keras.Model(inp, out, name="VDSR")
     """VDSR model architecture (Very Deep Super-Resolution Neural Network).
 
