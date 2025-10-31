@@ -21,6 +21,7 @@ from train_utils import build_1stack_datasets_flat, clip01, build_standard_callb
 # ==============================
 # Model of Jens
 # ==============================
+"""
 def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     prelu_shared = tf.keras.layers.PReLU(
             shared_axes=[1, 2],
@@ -43,6 +44,10 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
                                 kernel_initializer=kernel_initializer,
                                 name="conv_out")(x)
     return tf.keras.Model(inp, out, name="VDSR")
+    """
+
+# Jens original Code
+def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     """VDSR model architecture (Very Deep Super-Resolution Neural Network).
 
     - 'he_normal' weights initializer
@@ -69,22 +74,7 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     -------
     keras.Model
     """
-    """
-    inp = tf.keras.layers.Input(shape=input_shape)
-    x = tf.keras.layers.Conv2D(filters, 3, padding='same',
-                               kernel_initializer=kernel_initializer)(inp)
-    x = tf.keras.layers.PReLU(shared_axes=[1, 2])(x)   # echte Layer, mit alpha-Variable
 
-    for _ in range(19):
-        x = tf.keras.layers.Conv2D(filters, 3, padding='same',
-                                   kernel_initializer=kernel_initializer)(x)
-        x = tf.keras.layers.PReLU(shared_axes=[1, 2])(x)
-
-    out = tf.keras.layers.Conv2D(1, 3, padding='same',
-                                 kernel_initializer=kernel_initializer)(x)
-    return tf.keras.Model(inp, out, name="VDSR")
-    """
-    """
     # Initialize a parametric linear rectifier unit
     para_relu = tf.keras.layers.PReLU(alpha_initializer=tf.keras.initializers.constant(0.25))
 
@@ -100,7 +90,6 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     model = tf.keras.Model(input, x, name="VDSR")
 
     return model
-    """
 
 
 # %%
@@ -108,7 +97,7 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
 # Daten-Streaming (kein RAM-Fullload)
 # ==============================
 
-# Normalisierung identisch zu Jens (bis auf 10'000 bei val)
+# Normalisierung identisch zu Jens
 preproc_train_slice = SumScaleNormalizer(
     scale_min=5000, scale_max=15000,
     pre_offset=0.0, 
@@ -149,7 +138,6 @@ def pipeline_val(x, y):
 
 
 print(">>> Phase 1: Baue Datensatz (flat, D=1)...")
-
 reset_random_seeds(0)
 
 
