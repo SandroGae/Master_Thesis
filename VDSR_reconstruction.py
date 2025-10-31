@@ -4,31 +4,12 @@
 # ==============================
 #!/usr/bin/env python3
 
-print("[0]", flush=True)
 import os
-# Deaktiviere XLA (just in time compiler) aus Stabilitätsgründen
-os.environ["TF_DISABLE_XLA"] = "1"
+# XLA vor dem Import von TensorFlow abschalten
 os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
-# Behebe "Failed to allocate scratch space errors (testet verschiedene Faltungsalgorithmen bei der ersten Iteration)"
-os.environ["TF_CUDNN_USE_AUTOTUNE"] = "0"
-# Etfernt hartes Workspace-Limit (512 MB war zu klein)
-os.environ.pop("TF_CUDNN_WORKSPACE_LIMIT_IN_MB", None)
-# GPU alloziert nur benötigte Menge an VRAM
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
-
-print("[1]", flush=True)
 import tensorflow as tf
-tf.config.optimizer.set_jit(False)  # XLA JIT aus!!!
-print("[2]", flush=True)
-# Sichtbare GPUs loggen und Growth aktivieren (kein hartes VRAM-Limit setzen)
-gpus = tf.config.list_physical_devices('GPU')
-print("GPUs sichtbar:", gpus)
-if gpus:
-    for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
-else:
-    print("WARN: Keine GPU sichtbar –> läuft auf CPU.")
-print("[3]", flush=True)
+tf.config.optimizer.set_jit(False)  # XLA JIT aus
+
 from pathlib import Path
 from tensorflow.keras.callbacks import CSVLogger, EarlyStopping
 from datetime import datetime
