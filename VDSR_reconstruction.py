@@ -15,13 +15,12 @@ from tensorflow.keras.callbacks import CSVLogger, EarlyStopping
 from datetime import datetime
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
-from train_utils import build_1stack_datasets_flat, clip01, build_standard_callbacks
+from train_utils import build_VDSR_datasets, clip01, build_standard_callbacks
 
 # %%
 # ==============================
 # Model of Jens
 # ==============================
-"""
 def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
     prelu_shared = tf.keras.layers.PReLU(
             shared_axes=[1, 2],
@@ -44,7 +43,7 @@ def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
                                 kernel_initializer=kernel_initializer,
                                 name="conv_out")(x)
     return tf.keras.Model(inp, out, name="VDSR")
-    """
+
 
 # Jens original Code
 def VDSR(input_shape, filters=64, kernel_initializer='he_normal'):
@@ -141,14 +140,13 @@ print(">>> Phase 1: Baue Datensatz (flat, D=1)...")
 reset_random_seeds(0)
 
 
-train_ds, val_ds, test_ds, meta = build_1stack_datasets_flat(
+train_ds, val_ds, test_ds, meta = build_VDSR_datasets(
     data_dir=Path.home() / "data" / "original_data",
     batch_train=BATCH_SIZE,
     batch_eval=BATCH_SIZE,
     read_block=128,
     preproc_train=pipeline_train,
     preproc_eval=pipeline_val,
-    out_rank=4,
     cache_after_preproc=False,
 )
 

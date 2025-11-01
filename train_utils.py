@@ -11,6 +11,128 @@ import tensorflow as tf
 from tensorflow.keras import callbacks
 import atexit, signal
 
+def build_VDSR_datasets(
+    data_dir,
+    batch_train,
+    batch_eval,
+    read_block,
+    preproc_train,
+    preproc_eval,
+    cache_after_preproc,
+):
+    """
+    Liest 2D-Bilder (H,W,N) aus den HDF5-Dateien:
+        /high_count/data und /low_count/data
+    und baut daraus tf.data.Datasets für Training, Validation und Test.
+    Rückgabe: (train_ds, val_ds, test_ds, meta)
+    """
+
+    # Hilfsfunktion: Blockweises Laden für Performance!
+    def read_hdf5_block(h5file, start, count, dtype=np.float32):
+        end = min(start + count, h5file["/high_count/data"].shape[2])
+        sl = slice(start, end)
+        high = np.asarray(h5file["/high_count/data"][..., sl], dtype=dtype)
+        low  = np.asarray(h5file["/low_count/data"][...,  sl], dtype=dtype)
+
+        print(f"[read_hdf5_block] Roh-Shape high={high.shape}, low={low.shape}")
+
+        # (H,W,M) → (M,H,W,1)
+        high = np.moveaxis(high, 2, 0)[..., None]
+        low  = np.moveaxis(low,  2, 0)[..., None]
+
+        print(f"[read_hdf5_block] Nach Rearrange high={high.shape}, low={low.shape}")
+        return low, high
+
+
+    # Öffne Dateien
+    tr_file = h5py.File(str(data_dir / "training_data.hdf5"), "r")
+    va_file = h5py.File(str(data_dir / "validation_data.hdf5"), "r")
+    te_file = h5py.File(str(data_dir / "test_data.hdf5"), "r")
+
+    H, W, Ntr = tr_file["/high_count/data"].shape
+    Nva = va_file["/high_count/data"].shape[2]
+    Nte = te_file["/high_count/data"].shape[2]
+
+    print(f"[build_VDSR_datasets] Shapes: train={Ntr}, val={Nva}, test={Nte}  |  Image size: ({H}x{W})")
+
+    # ==========================
+    # Hilfsfunktion für Dataset-Erzeugung
+    # ==========================
+    def make_dataset(h5file, n_images, batch_size, shuffle, preproc_fn):
+        starts = tf.data.Dataset.range(0, n_images, read_block)
+        if shuffle:
+            starts = starts.shuffle(buffer_size=max(1, n_images // read_block),
+                                    reshuffle_each_iteration=True)
+        print(f"[make_dataset] n_images={n_images}, batch_size={batch_size}, read_block={read_block}, shuffle={shuffle}")
+
+        def load_block_py(start_idx):
+            start_idx = int(start_idx)
+            print(f"[make_dataset -> load_block_py] Lade Block ab Index {start_idx}")
+            low, high = read_hdf5_block(h5file, start_idx, read_block)
+            print(f"[make_dataset -> load_block_py] Rückgabe-Shape low={low.shape}, high={high.shape}")
+            return low, high  # numpy arrays
+
+        ds = starts.map(
+            lambda s: tf.numpy_function(load_block_py, [s], Tout=(tf.float32, tf.float32)),
+            num_parallel_calls=tf.data.AUTOTUNE
+        )
+
+        ds = ds.unbatch()  # (M,H,W,1)
+        print(f"[make_dataset] Nach unbatch → einzelne Samples (H,W,1)")
+
+        if shuffle:
+            ds = ds.shuffle(buffer_size=n_images, reshuffle_each_iteration=True)
+            print(f"[make_dataset] Shuffle aktiviert (buffer={n_images})")
+
+        # Preprocessing
+        ds = ds.map(preproc_fn, num_parallel_calls=tf.data.AUTOTUNE)
+        print("[make_dataset] Preprocessing-Funktion angewendet")
+
+        if cache_after_preproc:
+            ds = ds.cache()
+            print("[make_dataset] Dataset nach Preprocessing gecached")
+
+        ds = ds.batch(batch_size)
+        ds = ds.prefetch(tf.data.AUTOTUNE)
+        print(f"[make_dataset] Dataset finalisiert mit Batching + Prefetching\n")
+        return ds
+
+    # ==========================
+    # Baue train / val / test
+    # ==========================
+    print("[build_VDSR_datasets] Erzeuge train_ds ...")
+    train_ds = make_dataset(tr_file, Ntr, batch_train, shuffle=True,  preproc_fn=preproc_train)
+    print("[build_VDSR_datasets] Erzeuge val_ds ...")
+    val_ds   = make_dataset(va_file, Nva, batch_eval, shuffle=True,  preproc_fn=preproc_eval)
+    print("[build_VDSR_datasets] Erzeuge test_ds ...")
+    test_ds  = make_dataset(te_file, Nte, batch_eval, shuffle=False, preproc_fn=preproc_eval)
+
+    # ==========================
+    # Meta-Daten
+    # ==========================
+    input_shape = (H, W, 1)
+    meta = {
+        "H": H, "W": W, "D": 1,
+        "input_shape": input_shape,
+        "n_train": Ntr, "n_val": Nva, "n_test": Nte,
+    }
+
+    # Quick sanity-check: nimm eine Batchprobe und drucke Shapes
+    print("[build_VDSR_datasets] Prüfe Beispielbatch ...")
+    for xb, yb in train_ds.take(1):
+        print(f"[Sample check] x_batch shape: {xb.shape}, y_batch shape: {yb.shape}")
+        print(f"[Sample check] dtype x={xb.dtype}, y={yb.dtype}")
+        break
+
+    print("[build_VDSR_datasets] Finished building datasets.")
+    return train_ds, val_ds, test_ds, meta
+
+
+
+
+
+
+
 
 
 # Flat-Loader: Einzelbilder (D=1)
@@ -32,8 +154,8 @@ class H5Flat:
 
     def get_block(self, start: int, count: int):
         """
-        Liest mehrere aufeinanderfolgende Frames:
-        Rueckgabe (low, high) mit Shape (M, 1, H, W, 1), M = Anzahl Frames.
+        Liest mehrere aufeinanderfolgende Frames (war Bottleneck)
+        Rückgabe (low, high) mit Shape (M, 1, H, W, 1), M = Anzahl Frames.
         """
         end = min(start + count, self.N)
         frame_slice = slice(start, end)
@@ -68,31 +190,32 @@ def build_1stack_datasets_flat(
     read_block: int,
     preproc_train,
     preproc_eval,
-    out_rank: int,          # 5 für Conv3D, 4 für Conv2D!!!
+    out_rank: int, # 5 für Conv3D, 4 für Conv2D!!!
     cache_after_preproc: bool = False,
 ):
 
     """
-    Erstellt tf.data.Datasets (train, val, test) aus:
-        training_data.hdf5, validation_data.hdf5, test_data.hdf5
+    Erstellt tf.data.Datasets (train, val, test)
     """
     # Dateien oeffnen
     tr = H5Flat(data_dir / "training_data.hdf5")
     va = H5Flat(data_dir / "validation_data.hdf5")
     te = H5Flat(data_dir / "test_data.hdf5")
 
-    # Hilfsfunktion fuer einen Split
+    # Hilfsfunktion für einen Split
     def make_split(flat: H5Flat, batch_size: int, shuffle: bool):
         starts = tf.data.Dataset.range(0, flat.N, read_block)
         if shuffle:
+            # Shufflet die Blockstarts
             starts = starts.shuffle(
                 buffer_size=max(1, flat.N // read_block),
                 reshuffle_each_iteration=True,
             )
 
         def read_block_py(start_idx):
+            # Dient nur zur I/O effizienz
             start_idx = int(start_idx)
-            return flat.get_block(start_idx, read_block)  # (M,1,H,W,1) fuer (x,y)
+            return flat.get_block(start_idx, read_block)  # (M,1,H,W,1)
 
         ds = starts.map(
             lambda s: tf.numpy_function(
@@ -110,9 +233,10 @@ def build_1stack_datasets_flat(
             num_parallel_calls=tf.data.AUTOTUNE,
         )
 
-        # In Einzelsamples aufloesen: (M,1,H,W,1) -> M * (1,H,W,1)
+        # In Einzelsamples auflösen: (M,1,H,W,1) -> M * (1,H,W,1)
         ds = ds.unbatch()
         if shuffle:
+            # Shufflet die Einzelbilder nochmals global
             ds = ds.shuffle(buffer_size=flat.N, reshuffle_each_iteration=True)
 
         # Preprocessing (Training vs. Eval)
@@ -124,7 +248,7 @@ def build_1stack_datasets_flat(
         if cache_after_preproc:
             ds = ds.cache()
 
-        # Falls 2D-Modelle (z.B. VDSR) gewuenscht: D-Achse (axis=1) entfernen
+        # Falls 4D Tensoren (wie in VDSR) -> D-Achse (axis=1) entfernen -> (B, H, W, C =1)
         if out_rank == 4:
             ds = ds.map(
                 lambda x, y: (tf.squeeze(x, axis=0), tf.squeeze(y, axis=0)),
@@ -156,7 +280,6 @@ def build_1stack_datasets_flat(
 # Clamper auf [0, 1]
 def clip01(x: tf.Tensor) -> tf.Tensor:
     return tf.clip_by_value(tf.cast(x, tf.float32), 0.0, 1.0)
-
 
 
 

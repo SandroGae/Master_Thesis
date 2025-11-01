@@ -25,8 +25,6 @@ absl_logging.set_verbosity(absl_logging.FATAL)
 
 from pathlib import Path
 import math
-import re
-from datetime import datetime  # nicht noetig fuer Checks, aber neutral zu lassen
 
 from jens_stuff import SumScaleNormalizer, reset_random_seeds
 from train_utils import build_5stack_datasets_grouped, clip01
@@ -43,22 +41,16 @@ AUTO = tf.data.AUTOTUNE  # tensorflow waehlt selbst wie viele elemente parallel 
 
 # Normalisierung identisch zu Jens
 preproc_train_slice = SumScaleNormalizer(
-    scale_range=[5000, 15001],
-    pre_offset=0.0,
-    normalize_label=True,  # Gleiche Normalisierung fuer high count Bilder
-    axis=(2, 3, 4),        # Summation über Height, Width, Channels
-    batch_mode=True,       # Skalierung geschieht pro Sample im Batch (False = Skalierungsfaktor ueber ganzes Datenset geschaetzt)
-    clip_before=[0., float("inf")],
-    clip_after=[0., 1.]
+    scale_min=5000, scale_max=15000,
+    pre_offset=0.0, 
+    normalize_label=True, 
+    batch_mode=False    # 4D input (D,H,W,C) --> samples werden einzeln normalisiert
 )
 preproc_valid_slice = SumScaleNormalizer(
-    scale_range=[5000, 5001],
-    pre_offset=0.0,
-    normalize_label=True,
-    axis=(2, 3, 4),
-    batch_mode=True,
-    clip_before=[0., float("inf")],
-    clip_after=[0., 1.]
+    scale_min=10000, scale_max=10001,
+    pre_offset=0.0, 
+    normalize_label=True, 
+    batch_mode=False
 )
 
 BATCH_SIZE = 32

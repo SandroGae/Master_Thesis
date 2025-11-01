@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[3] if "__file__" in globals() else Path.
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from jens_stuff import SumScaleNormalizer, compute_denorm_factor_from_xnorm
+from jens_stuff import SumScaleNormalizer
 
 # Pfade
 DATA_DIR       = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
@@ -93,19 +93,18 @@ except Exception:
     x4 = x_norm[:, 0, ...]        # (1,H,W,1)
     y_pred = model.predict(x4, verbose=0)[0, :, :, 0]
 
-# Denormaliesierung
-sum_label  = tf.reduce_sum(y)                      # Summe High in Originaleinheiten
-sum_y_norm = tf.reduce_sum(y_norm)                 # Summe normalisiertes Label
+# Denormalisierung
+sum_label  = tf.reduce_sum(y)                      # Summiere counts in originalem high count Bild
+sum_y_norm = tf.reduce_sum(y_norm)                 # Summiere counts in normalisiertem high count Bild
 denorm_factor = tf.maximum(sum_label, 1e-12) / tf.maximum(sum_y_norm, 1e-12)
-y_pred_denorm = y_pred * float(denorm_factor.numpy())
+y_pred_denorm = y_pred * float(denorm_factor.numpy()) # Skaliere Prediction zurück
 
 
 # Visualisierung
 def simple_normalize(image: np.ndarray) -> Normalize:
     """
-    Kleinste 0.1%-Werte weiss, grösste 99.9%-Werte schwarz.
+    Kleinste 0.5%-Werte weiss, grösste 99.5%-Werte schwarz.
     """
-    # Berechne die Perzentile 0.5 und 99.5
     vmin, vmax = np.percentile(image, [0.5, 99.5])
 
     return Normalize(vmin=vmin, vmax=vmax)
