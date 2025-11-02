@@ -170,8 +170,8 @@ X_train, y_train = shuffle_initial(X_train, y_train, seed=0)
 X_val,   y_val   = shuffle_initial(X_val,   y_val,   seed=1)
 
 # Data Augmentation auf Train und Val (Nur horizontal flip, mit p=0.5):
-flipped_train = random_lr_flip(X_train, y_train, p=0.5, seed=0)
-flipped_val   = random_lr_flip(X_val,   y_val,   p=0.5, seed=1)
+random_lr_flip(X_train, y_train, p=0.5, seed=0)
+random_lr_flip(X_val,   y_val,   p=0.5, seed=1)
 
 # Normalisierung 
 X_train, y_train = normalization(X_train, y_train, seed=0, scale_range=(5000,15000))
@@ -182,10 +182,11 @@ BATCH_SIZE = 8
 
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4,amsgrad=True)
+LOG_DIR = Path.home()/ "data" / "checkpoints_VDSR"
 callbacks = [
-    make_epoch_ckpt_callback(RUN_NAME),      # speichert nur das beste Modell in ~/data/checkpoints_VDSR
-    tf.keras.callbacks.CSVLogger(f"{RUN_NAME}.csv", append=True),
-    tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}")
+    make_epoch_ckpt_callback(RUN_NAME),     # speichert nur das beste Modell in ~/data/checkpoints_VDSR
+    tf.keras.callbacks.CSVLogger(str(LOG_DIR / f"{RUN_NAME}.csv"), append=True),
+    tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}"),
 ]
 
 # Compilieren

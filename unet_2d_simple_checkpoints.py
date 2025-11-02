@@ -1,4 +1,4 @@
-# VDSR_checkpoints.py
+# unet_2d_simple_checkpoints.py
 from __future__ import annotations
 import os, io, json, tempfile
 from pathlib import Path
@@ -8,7 +8,7 @@ import tensorflow as tf
 
 # Zielverzeichnis fuer Modelle/JSONs
 def get_out_dirs() -> Path:
-    root = Path.home() / "data" / "checkpoints_VDSR"
+    root = Path.home() / "data" / "checkpoints_unet_2d_simple"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -138,7 +138,7 @@ def finalize_run(
     final_csv = root / f"{base_name}.csv"
     if csv_tmp.exists():
         os.replace(csv_tmp, final_csv)
-                   
+
     return str(final_keras)
 
 
