@@ -146,6 +146,7 @@ def normalization(X, y, seed=None, scale_range=None):
 
 # %%
 # Daten einlesen
+print("Lade Daten...")
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
 
@@ -194,6 +195,7 @@ model.compile(
     metrics=['mae', 'mse', psnr_metric]
 )
 
+print("Training beginnt...")
 history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
@@ -218,4 +220,5 @@ meta = make_meta_dict(
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
+print("Training beendet...")
 
