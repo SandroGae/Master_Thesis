@@ -225,4 +225,3 @@ meta = make_meta_dict(
 final_path = finalize_run(model, history, RUN_NAME, meta)
 
 print("Training beendet...")
-
