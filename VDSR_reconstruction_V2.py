@@ -205,7 +205,7 @@ history = model.fit(
     epochs=100,
     shuffle=True, # Shuffel intern pro Epoche
     callbacks=callbacks,
-    verbose=0
+    verbose=1
 )
 
 # Meta bauen
