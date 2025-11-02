@@ -1,23 +1,19 @@
 # VDSR_checkpoints.py
 from __future__ import annotations
-import os, io, json, shutil
+import io, json
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
 
 
 
-
-
 def get_out_dirs():
     root = Path.home() / "data" / "checkpoints_VDSR"
-    temp  = root / "TEMPORARY"
-    return root, temp
+    return root
 
-# Callback: speichert alle Epochen nach TEMPORARY
 def make_epoch_ckpt_callback(run_name: str):
-    root, _ = get_out_dirs()
-    # Speichere nur die bisher beste Epoche nach val_loss
+    """Speichert nur das beste Modell"""
+    root = get_out_dirs()
     pattern = str(root / f"{run_name}__best.keras")
     return tf.keras.callbacks.ModelCheckpoint(
         filepath=pattern,
@@ -28,42 +24,36 @@ def make_epoch_ckpt_callback(run_name: str):
         verbose=0,
     )
 
-# Finale Persistierung
 def _model_summary_str(model: tf.keras.Model) -> str:
-    s = io.StringIO(); model.summary(print_fn=lambda x: s.write(x + "\n")); return s.getvalue()
-
+    s = io.StringIO()
+    model.summary(print_fn=lambda x: s.write(x + "\n"))
+    return s.getvalue()
 
 def finalize_run(model, history, run_name, meta):
-    root, _ = get_out_dirs()
+    root = get_out_dirs()
 
-    # Beste Epoche aus History bestimmen
+    # Beste Epoche bestimmen
     hist = history.history
     val = np.array(hist["val_loss"], dtype=float)
-    trn = np.array(hist["loss"], dtype=float)
+    trn = np.array(hist["loss"],     dtype=float)
     best_idx   = int(np.argmin(val))
     best_epoch = best_idx + 1
     best_trn   = float(trn[best_idx])
     best_val   = float(val[best_idx])
 
-    # Metriken (MSE & PSNR) zur besten Epoche herausziehen
+    # Weitere Metriken (optional vorhanden)
     def _pick(name: str):
         arr = hist.get(name)
         return float(arr[best_idx]) if arr is not None else None
-
     best_val_mse = _pick("val_mse")
-
-    # PSNR kann je nach Funktionsname unterschiedlich heissen
     best_val_psnr = None
     for k in ("val_psnr", "val_psnr_metric"):
         v = hist.get(k)
         if v is not None:
-            best_val_psnr = float(v[best_idx])
-            break
+            best_val_psnr = float(v[best_idx]); break
 
-    # Pfad zum bereits gespeicherten besten Modell
     best_path = root / f"{run_name}__best.keras"
 
-    # JSON schreiben
     payload = dict(meta or {})
     payload.update({
         "run_name": run_name,
@@ -78,15 +68,23 @@ def finalize_run(model, history, run_name, meta):
         "keras_path": str(best_path),
         "history": {k: [float(x) for x in v] for k, v in hist.items()},
     })
+
+    # NumPy → JSON-safe
+    def _to_jsonable(x):
+        if isinstance(x, (np.floating,)):  return float(x)
+        if isinstance(x, (np.integer,)):   return int(x)
+        if isinstance(x, (np.ndarray,)):   return x.tolist()
+        return x
+    def _sanitize(obj):
+        if isinstance(obj, dict):  return {k: _sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list):  return [_sanitize(v) for v in obj]
+        return _to_jsonable(obj)
+
     with open(root / f"{run_name}__best.json", "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(_sanitize(payload), f, indent=2)
 
     return str(best_path)
 
-
-
-
-# Hilfsdaten für Meta
 def make_meta_dict(script_name: str,
                    batch_size: int,
                    epochs: int,

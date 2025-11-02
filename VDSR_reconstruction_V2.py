@@ -5,11 +5,7 @@
 #!/usr/bin/env python3
 
 # import os
-# XLA vor dem Import von TensorFlow abschalten
-# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
-
 from pathlib import Path
 import h5py
 import numpy as np
@@ -185,8 +181,8 @@ BATCH_SIZE = 8
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4,amsgrad=True)
 callbacks = [
-    make_epoch_ckpt_callback(RUN_NAME),     # speichert alle Epochen nach TEMPORARY
-    tf.keras.callbacks.CSVLogger(f"{RUN_NAME}_history.csv", append=True),
+    make_epoch_ckpt_callback(RUN_NAME),      # speichert nur das beste Modell in ~/data/checkpoints_VDSR
+    tf.keras.callbacks.CSVLogger(f"{RUN_NAME}.csv", append=True),
     tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}")
 ]
 
@@ -202,7 +198,7 @@ history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
     batch_size=8,
-    epochs=100,
+    epochs=1,
     shuffle=True, # Shuffel intern pro Epoche
     callbacks=callbacks,
     verbose=1
