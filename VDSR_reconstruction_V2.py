@@ -10,6 +10,10 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+SEED = 42
+tf.random.set_seed(SEED)
+np.random.seed(SEED)
+
 from VDSR_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 
 # %%
@@ -84,7 +88,7 @@ def load_split(h5_path):
 
     return low_count, high_count
 
-def shuffle_initial(X, y, seed):
+def shuffle_initial(X, y, seed=None):
     """
     Shuffelt X und y mit der gleichen Permutation
     """
@@ -93,6 +97,56 @@ def shuffle_initial(X, y, seed):
     indices = np.arange(N) # Array mit Inizes[0, 1, 2, ..., N-1]
     rng.shuffle(indices)
     return X[indices], y[indices]   # Arrays nach Permutation neu anordnen
+
+
+def augment_and_normalize_2d(scale_min: float, scale_max: float, p: float = 0.5):
+    """
+    Macht pro Sample in der Pipeline:
+      1) Horizontal-Flip mit probability p
+      2) Clipping auf [0, ∞)
+      3) Normierung pro Bild durch Summe über Bild (H,W,C=1)
+      4) zufällige Skalierung in [scale_min, scale_max]
+      5) Clipping auf [0, 1]
+    Erwartet x,y im Format (H, W, C) mit dtype float32.
+    """
+    def _map(x, y):
+        # Flip links-rechts
+        u = tf.random.uniform([], dtype=tf.float32)             # ~ U[0,1)
+        do_flip = tf.less(u, tf.cast(p, tf.float32))            # bool
+        x = tf.cond(do_flip, lambda: tf.reverse(x, axis=[1]), lambda: x)  # axis=1 = Width
+        y = tf.cond(do_flip, lambda: tf.reverse(y, axis=[1]), lambda: y)
+
+        # --- 2) Clipping auf [0, ∞)
+        x = tf.nn.relu(x)
+        y = tf.nn.relu(y)
+
+        # --- 3) Normierung pro Bild (Summe über H,W,C)
+        # Form nach reduce_sum (mit keepdims) ist (1,1,1), broadcastet korrekt auf (H,W,C)
+        sum_x = tf.reduce_sum(x, axis=[0, 1, 2], keepdims=True) + 1e-12
+        sum_y = tf.reduce_sum(y, axis=[0, 1, 2], keepdims=True) + 1e-12
+        x = x / sum_x
+        y = y / sum_y
+
+        # --- 4) Zufällige Skalierung pro Sample
+        # Shape (1,1,1) -> broadcastet über (H,W,C)
+        scale = tf.random.uniform(shape=[1, 1, 1],
+                                  minval=tf.cast(scale_min, tf.float32),
+                                  maxval=tf.cast(scale_max, tf.float32),
+                                  dtype=tf.float32)
+        x = x * scale
+        y = y * scale
+
+        # --- 5) Clipping auf [0, 1]
+        x = tf.clip_by_value(x, 0.0, 1.0)
+        y = tf.clip_by_value(y, 0.0, 1.0)
+        return x, y
+
+    return _map
+
+
+
+
+
 
 def random_lr_flip(X, y, p=0.5, seed=None):
     """
@@ -146,7 +200,7 @@ def normalization(X, y, seed=None, scale_range=None):
 
 # %%
 # Daten einlesen
-print("Lade Daten...")
+print("Lese Daten ein...")
 
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
@@ -166,16 +220,16 @@ X_val,   y_val   = load_split(FILES["validation"])
 
 # %%
 # Einmaliges initiales Shuffle (separat für Training und Validation):
-X_train, y_train = shuffle_initial(X_train, y_train, seed=0)
-X_val,   y_val   = shuffle_initial(X_val,   y_val,   seed=1)
+X_train, y_train = shuffle_initial(X_train, y_train, SEED)
+X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 
 # Data Augmentation auf Train und Val (Nur horizontal flip, mit p=0.5):
-random_lr_flip(X_train, y_train, p=0.5, seed=0)
-random_lr_flip(X_val,   y_val,   p=0.5, seed=1)
+# random_lr_flip(X_train, y_train, p=0.5, SEED)
+# random_lr_flip(X_val,   y_val,   p=0.5, SEED)
 
 # Normalisierung 
-X_train, y_train = normalization(X_train, y_train, seed=0, scale_range=(5000,15000))
-X_val,   y_val   = normalization(X_val,   y_val,   seed=1, scale_range=(10000,10001))
+# X_train, y_train = normalization(X_train, y_train, SEED, scale_range=(5000,15000))
+# X_val,   y_val   = normalization(X_val,   y_val,   SEED, scale_range=(10000,10001))
 
 # Batches hinzufügen
 BATCH_SIZE = 8
@@ -197,14 +251,34 @@ model.compile(
     metrics=['mae', 'mse', psnr_metric]
 )
 
+
+print("Erstelle Trainingsaten...")
+
+AUTOTUNE = tf.data.AUTOTUNE
+
+# Sicherstellen alles ist float 32
+X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
+X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
+
+# Test: Mit Flip, Skala [5000, 15000]
+train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
+            .map(augment_and_normalize_2d(5000.0, 15000.0, p=0.5), num_parallel_calls=tf.data.AUTOTUNE)
+            .batch(BATCH_SIZE)
+            .prefetch(tf.data.AUTOTUNE))
+
+# Validation: kein Flip, quasi fixe Skala [10000, 10001]
+val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
+          .map(augment_and_normalize_2d(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
+          .batch(BATCH_SIZE)
+          .prefetch(tf.data.AUTOTUNE))
+
 print("Training beginnt...")
 
 history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    batch_size=8,
+    train_ds,
+    validation_data=val_ds,
     epochs=100,
-    shuffle=True, # Shuffel intern pro Epoche
     callbacks=callbacks,
     verbose=1
 )
