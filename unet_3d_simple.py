@@ -249,7 +249,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=2,
+    epochs=100,
     callbacks=callbacks,
     verbose=1
 )
