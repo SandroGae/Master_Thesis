@@ -166,6 +166,17 @@ def normalization_3d(X, y, seed=None, scale_range=None):
     X = X / sum_X
     y = y / sum_y
 
+    # (pro Volumen):
+    # sum_X = np.sum(X, axis=(1, 2, 3, 4), keepdims=True) + 1e-12 # Nimmt ganzes Volumen! --> Depth, Height, Width und Channel für Summe (N_vols, D, H, W, C=1)
+    # sum_y = np.sum(y, axis=(1, 2, 3, 4), keepdims=True) + 1e-12
+
+    # (pro Slice):
+    sum_X = np.sum(X, axis=(2, 3, 4), keepdims=True) + 1e-12  # Nimmt einzelne Bilder! --> Height, Width und Channel für Summe (N_vols, D, H, W, C=1)
+    sum_y = np.sum(y, axis=(2, 3, 4), keepdims=True) + 1e-12
+
+    X = X / sum_X
+    y = y / sum_y
+
     # Zufälliger Faktor uniform aus [5000, 15000] oder [10000, 10001]
     N_vols = len(X)
     rng = np.random.default_rng(seed)
