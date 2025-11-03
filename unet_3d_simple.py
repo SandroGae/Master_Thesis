@@ -93,8 +93,8 @@ def load_split(h5_path):
 
 def make_sliding_windows(X, y, series_len=None, depth=None):
     """
-    X, y: (N, H, W, 1)
-    return: (N_vols, Depth, H, W, 1)
+    X, y: (N, H, W, C=1)
+    return: (N_vols, Depth, H, W, C=1)
     """
     N, H, W, C = X.shape
     assert N % series_len == 0, f"N={N} nicht durch series_len={series_len} teilbar"
@@ -110,10 +110,10 @@ def make_sliding_windows(X, y, series_len=None, depth=None):
         blockY = y[start:start+series_len]  # (41,H,W,C=1)
 
         for start_idx in range(0, n_vols_per_series, 1):
-            X_volumes.append(blockX[start_idx : start_idx + depth])  # (5,H,W,1)
-            y_volumes.append(blockY[start_idx : start_idx + depth])  # (5,H,W,1)
+            X_volumes.append(blockX[start_idx : start_idx + depth])  # Liste aus 37 Volumen mit Dimension (5,192,240,C=1) pro Durchlauf bis zu 80 Serien * 37 Volumes = 2960 Elementen
+            y_volumes.append(blockY[start_idx : start_idx + depth])
 
-    X_volumes = np.stack(X_volumes, axis=0)
+    X_volumes = np.stack(X_volumes, axis=0) # [(5,192,240,C=1), (5,192,240,C=1), (5,192,240,C=1), ... , (5,192,240,C=1)] --> (N_vols = 2960, 5, 192, 240, 1)
     y_volumes = np.stack(y_volumes, axis=0)
     return X_volumes, y_volumes
 
@@ -161,7 +161,7 @@ def normalization_3d(X, y, seed=None, scale_range=None):
     y = np.clip(y, 0, None)
 
     # Durch Summe teilen (um Division durch 0 zu vermeiden: +1e-12)
-    sum_X = np.sum(X, axis=(1, 2, 3, 4), keepdims=True) + 1e-12 # Takes Depth, Height, Width und Channel für Summe (N_vols, D, H, W, C=1)
+    sum_X = np.sum(X, axis=(1, 2, 3, 4), keepdims=True) + 1e-12 # Nimmt ganzes Volumen! --> Depth, Height, Width und Channel für Summe (N_vols, D, H, W, C=1)
     sum_y = np.sum(y, axis=(1, 2, 3, 4), keepdims=True) + 1e-12
     X = X / sum_X
     y = y / sum_y
@@ -169,7 +169,7 @@ def normalization_3d(X, y, seed=None, scale_range=None):
     # Zufälliger Faktor uniform aus [5000, 15000] oder [10000, 10001]
     N_vols = len(X)
     rng = np.random.default_rng(seed)
-    scale = rng.uniform(scale_range[0], scale_range[1], size=(N_vols, 1, 1, 1, 1)).astype(np.float32) # Zieht aus [0, 1]
+    scale = rng.uniform(scale_range[0], scale_range[1], size=(N_vols, 1, 1, 1, 1)).astype(np.float32) # Zieht aus [a, b] ([5000, 15000] oder [10000, 10001])
     X_scaled = X * scale
     y_scaled = y * scale
 
@@ -200,7 +200,7 @@ X_val,   y_val   = load_split(FILES["validation"])
 # print("VAL    X:", X_val.shape,   X_val.dtype)    # (820, 192, 240, 1) float32
 # print("VAL    y:", y_val.shape,   y_val.dtype)    # (820, 192, 240, 1) float32
 
-# Mache daraus Volumen im Format (????)
+# Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
 DEPTH = 5
 SERIES_LEN = 41
 X_train, y_train = make_sliding_windows(X_train, y_train, SERIES_LEN, DEPTH)
