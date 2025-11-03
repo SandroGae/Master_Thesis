@@ -46,7 +46,9 @@ SELECT_LIST = [
     "unet3d_scout_sweep16_JENS_V2_V2_valloss_2.770e-02.keras", # 100 epochs, VDSR 
     "unet3d_scout_sweep17_JENS_V2_V3_valloss_2.818e-02.keras", # 100 epochs, VDSR 
     "unet3d_scout_sweep18_JENS_V2_V4_valloss_5.690e-02.keras", # 100 epochs, VDSR 
-    "unet3d_scout_sweep19_JENS_V2_V5_valloss_5.696e-02.keras" # 100 epochs, VDSR 
+    "unet3d_scout_sweep19_JENS_V2_V5_valloss_5.696e-02.keras", # 100 epochs, VDSR
+    "unet_2d_simple_loss0.0147_val0.0162.keras",
+    "VDSR_reconstruction_V2_loss0.0125_val0.0137.keras"
 ]
 
 
