@@ -22,7 +22,7 @@ from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, m
 
 # %%
 # Simples unet in 3d
-POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein poolng über depth
+POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_3d(x, filters, kernel_size=(1, 3, 3), padding="same"):
     ki = "he_normal"
@@ -164,15 +164,12 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         x = x / sum_x
         y = y / sum_y
 
-        # Zufalls-Skalierung
+        # Zufalls-Skalierung + Clip auf [0,1]
         D = tf.shape(x)[0]  # Depth
         scale = tf.random.uniform([D,1,1,1], minval=tf.cast(scale_min, tf.float32), maxval=tf.cast(scale_max, tf.float32), dtype=tf.float32)
         x = tf.clip_by_value(x * scale, 0.0, 1.0)
         y = tf.clip_by_value(y * scale, 0.0, 1.0)
 
-        # Clip auf [0,1]
-        x = tf.clip_by_value(x, 0.0, 1.0)
-        y = tf.clip_by_value(y, 0.0, 1.0)
         return x, y
     return _map
 
@@ -228,7 +225,7 @@ model.compile(
     metrics=['mae', 'mse', psnr_metric_3d_per_sample]
 )
 
-print("Erstelle Trainingsaten...")
+print("Erstelle Trainingsdaten…")
 
 AUTOTUNE = tf.data.AUTOTUNE
 
@@ -250,11 +247,9 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
 print("Training beginnt...")
 
 history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    batch_size=8,
+    train_ds,
+    validation_data=val_ds,
     epochs=100,
-    shuffle=True, # Shuffel intern pro Epoche
     callbacks=callbacks,
     verbose=1
 )
@@ -266,10 +261,10 @@ meta = make_meta_dict(
     epochs=100,
     optimizer=optimizer,
     learning_rate=5e-4,
-    input_shape=(192,240,1),
+    input_shape=(5, 192, 240, 1),  # 3D-Input
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "mae", "metrics": ["mae", "mse", "psnr"]}
+    extra={"loss": "mae", "metrics": ["mae", "mse", "psnr_metric_3d_per_sample"]}
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
