@@ -14,10 +14,14 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+SEED = 42
+tf.random.set_seed(SEED)
+np.random.seed(SEED)
+
 from unet_2d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 
 # %%
-# Simples unet
+# Simples unet in 2d
 POOL_HW = (2, 2)  # (H, W)
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
@@ -55,7 +59,7 @@ def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmo
     u1 = layers.Conv2DTranspose(base_filters, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_2d(u1, base_filters)
 
-    # Output: 1 Kanal, Sigmoid (0..1)
+    # Output Sigmoid
     out = layers.Conv2D(1, (1, 1), activation=output_activation,
                         kernel_initializer="he_normal", use_bias=True, name="output")(c8)
 
@@ -72,7 +76,7 @@ def psnr_metric(y_true, y_pred):
 
 def load_split(h5_path):
     """
-    Lädt Daten aus HDF5-Datei und formatiert sie passend für VDSR
+    Lädt Daten aus HDF5-Datei und formatiert sie passend für 2d unet
     """
     with h5py.File(h5_path, "r") as f:
         low_count = f["low_count/data"][:]      # (H, W, N)
@@ -88,6 +92,8 @@ def load_split(h5_path):
 
     return low_count, high_count
 
+
+
 def shuffle_initial(X, y, seed):
     """
     Shuffelt X und y mit der gleichen Permutation
@@ -98,53 +104,50 @@ def shuffle_initial(X, y, seed):
     rng.shuffle(indices)
     return X[indices], y[indices]   # Arrays nach Permutation neu anordnen
 
-def random_lr_flip(X, y, p=0.5, seed=None):
+
+def augment_and_normalize_2d(scale_min: float, scale_max: float, p: float = 0.5):
     """
-    Links rechts FLip mit Wahrscheinlichkeit p
+    Macht pro Sample in der Pipeline:
+      1) Horizontal-Flip mit probability p
+      2) Clipping auf [0, ∞)
+      3) Normierung pro Bild durch Summe über Bild (H,W,C=1)
+      4) zufällige Skalierung in [scale_min, scale_max]
+      5) Clipping auf [0, 1]
+    Erwartet x,y im Format (H, W, C) mit dtype float32.
     """
-    rng = np.random.default_rng(seed) # Zufallsgenerator mit Seed
-    N = len(X)
-    indices = np.arange(N) # Array mit Inizes[0, 1, 2, ..., N-1]
-    random_values = rng.random(N) # uniform in [0, 1)
-    flip_indices = indices[random_values < p]
-    X[flip_indices] = X[flip_indices, :, ::-1, :] # Reverse pixelreihenfolge bei Width (N, H, W, C)
-    y[flip_indices] = y[flip_indices, :, ::-1, :]
+    def _map(x, y):
+        # Flip links-rechts
+        prob = tf.random.uniform(shape=[], minval=0.0, maxval=1.0, dtype=tf.float32) # zieht uniform aus [0, 1)
+        flip_mask = tf.less(prob, tf.cast(p, tf.float32))  # bool
+        def _flip(t): 
+            return tf.reverse(t, axis=[1])       # axis=1 = Width
+        x = tf.cond(flip_mask, lambda: _flip(x), lambda: x)
+        y = tf.cond(flip_mask, lambda: _flip(y), lambda: y)
 
+        # Clipping auf [0, ∞)
+        x = tf.nn.relu(x)
+        y = tf.nn.relu(y)
 
-def normalization(X, y, seed=None, scale_range=None):
-    """
-    Normalisiert LC- und HC-Bilder analog wie Jens:
-    1) Clipping auf [0, ∞)
-    2) Normierung jedes Bildes durch seine Summe
-    3) Multiplikation mit einem zufälligen Faktor ∈ [5000, 15000] für tain und val!
-    4) Clipping auf [0, 1]
+        # Normierung pro Bild (Summe über H,W,C)
+        sum_x = tf.reduce_sum(x, axis=[0, 1, 2], keepdims=True) + 1e-12 # (1,1,1) bleibt (1,1,1)
+        sum_y = tf.reduce_sum(y, axis=[0, 1, 2], keepdims=True) + 1e-12
+        x = x / sum_x
+        y = y / sum_y
 
-    Parameter
-    ----------
-    X, y : Arrays der Form (N, H, W, C=1)
-    seed : Zufalls-Seed für Reproduzierbarkeit
-    """
-    X = np.clip(X, 0, None)
-    y = np.clip(y, 0, None)
+        # Zufällige Skalierung pro Sample
+        scale = tf.random.uniform(shape=[1, 1, 1],
+                                  minval=tf.cast(scale_min, tf.float32),
+                                  maxval=tf.cast(scale_max, tf.float32),
+                                  dtype=tf.float32)
+        x = x * scale
+        y = y * scale
 
-    # Durch Summe teilen (um Division durch 0 zu vermeiden: +1e-12)
-    sum_X = np.sum(X, axis=(1, 2, 3), keepdims=True) + 1e-12 # Takes Height, Width und Channel für Summe (N, H, W, C)
-    sum_y = np.sum(y, axis=(1, 2, 3), keepdims=True) + 1e-12
-    X = X / sum_X
-    y = y / sum_y
+        # Clipping auf [0, 1]
+        x = tf.clip_by_value(x, 0.0, 1.0)
+        y = tf.clip_by_value(y, 0.0, 1.0)
+        return x, y
 
-    # Zufälliger Faktor uniform aus [5000, 15000]
-    N = len(X)
-    rng = np.random.default_rng(seed)
-    scale = rng.uniform(scale_range[0], scale_range[1], size=(N,1,1,1)).astype(np.float32)
-    X_scaled = X * scale
-    y_scaled = y * scale
-
-    # Finales Clipping auf [0, 1]
-    X = np.clip(X_scaled, 0, 1)
-    y = np.clip(y_scaled, 0, 1)
-
-    return X.astype(np.float32), y.astype(np.float32)
+    return _map
 
 
 
@@ -170,16 +173,10 @@ X_val,   y_val   = load_split(FILES["validation"])
 
 # %%
 # Einmaliges initiales Shuffle (separat für Training und Validation):
-X_train, y_train = shuffle_initial(X_train, y_train, seed=0)
-X_val,   y_val   = shuffle_initial(X_val,   y_val,   seed=1)
+X_train, y_train = shuffle_initial(X_train, y_train, SEED)
+X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 
-# Data Augmentation auf Train und Val (Nur horizontal flip, mit p=0.5):
-random_lr_flip(X_train, y_train, p=0.5, seed=0)
-random_lr_flip(X_val,   y_val,   p=0.5, seed=1)
 
-# Normalisierung 
-X_train, y_train = normalization(X_train, y_train, seed=0, scale_range=(5000,15000))
-X_val,   y_val   = normalization(X_val,   y_val,   seed=1, scale_range=(10000,10001))
 
 # Batches hinzufügen
 BATCH_SIZE = 8
@@ -201,14 +198,32 @@ model.compile(
     metrics=['mae', 'mse', psnr_metric]
 )
 
+print("Erstelle Trainingsaten...")
+
+AUTOTUNE = tf.data.AUTOTUNE
+
+# Sicherstellen alles ist float 32
+X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
+X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
+
+train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
+            .map(augment_and_normalize_2d(5000.0, 15000.0, p=0.5), num_parallel_calls=AUTOTUNE)
+            .batch(BATCH_SIZE)
+            .prefetch(AUTOTUNE))
+
+val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
+          .map(augment_and_normalize_2d(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
+          .batch(BATCH_SIZE)
+          .prefetch(AUTOTUNE))
+
+
 print("Training beginnt...")
 
 history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    batch_size=8,
+    train_ds,
+    validation_data=val_ds,
     epochs=100,
-    shuffle=True, # Shuffel intern pro Epoche
     callbacks=callbacks,
     verbose=1
 )
