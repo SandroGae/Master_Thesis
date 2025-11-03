@@ -63,10 +63,12 @@ def unet_3d(input_shape=(5, 192, 240, 1), base_filters=16, output_activation="si
 
 
 
-# Metriken
-def psnr_metric_3d(y_true, y_pred):
-    mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred))
-    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
+# Metrik: PSNR pro Sample (Volumen)
+def psnr_metric_3d_per_sample(y_true, y_pred):
+    # y_*: (N, D, H, W, C) in [0,1]
+    mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3,4))  # (N,)
+    psnr = 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)               # (N,)
+    return psnr  # Keras zeigt dir den Mittelwert über N an
 
 
 
@@ -234,7 +236,7 @@ model = unet_3d(input_shape=(5, 192, 240, 1))
 model.compile(
     optimizer=optimizer,
     loss='mae',       # MAE only
-    metrics=['mae', 'mse', psnr_metric_3d]
+    metrics=['mae', 'mse', psnr_metric_3d_per_sample]
 )
 
 print("Training beginnt...")
@@ -243,7 +245,7 @@ history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
     batch_size=8,
-    epochs=3,
+    epochs=100,
     shuffle=True, # Shuffel intern pro Epoche
     callbacks=callbacks,
     verbose=1
