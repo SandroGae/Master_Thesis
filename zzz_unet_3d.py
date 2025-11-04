@@ -1,19 +1,5 @@
-# ---
-# jupyter:
-#   jupytext:
-#     text_representation:
-#       extension: .py
-#       format_name: percent
-#       format_version: '1.3'
-#       jupytext_version: 1.17.3
-#   kernelspec:
-#     display_name: dl
-#     language: python
-#     name: python3
-# ---
-
 # %%
-# unet_3d.py  MAE only
+# zzz_unet_3d.py  MAE only
 
 import os
 from pathlib import Path

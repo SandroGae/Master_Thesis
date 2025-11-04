@@ -5,8 +5,11 @@ import matplotlib.pyplot as plt
 # === CSV-Pfad anpassen ===
 FILE_2d = "unet_2d_simple_loss0.0135_val0.0142.csv"
 FILE_3d = "unet_3d_simple_loss0.0131_val0.0144.csv"
+FILE_2d_200 = "unet_2d_simple_loss0.0118_val0.0135_epochs200.csv"
 FILE_VDSR = "VDSR_reconstruction_V2_loss0.0132_val0.0133.csv"
-csv_path = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\CSV_data") / FILE_3d
+csv_path = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\CSV_data") / FILE_2d_200
+
+num_epochs = 200
 
 # Laden
 df = pd.read_csv(csv_path)
@@ -31,7 +34,8 @@ plt.title("Train-/Val-Loss")
 plt.grid(True, linestyle="--", alpha=0.4)
 plt.legend()
 
-out_png = csv_path.with_name(csv_path.stem + "_loss_plot.png")
+out_png = csv_path.with_name(f"{csv_path.stem}_loss_plot_epochs{num_epochs}.png")
+
 plt.tight_layout()
 plt.savefig(out_png, dpi=200)
 plt.close()

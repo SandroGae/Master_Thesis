@@ -1,4 +1,4 @@
-# unet_2d_simple.py
+# unet_2d_SSIM.py
 # ==============================
 # 0) Imports & global setup
 # ==============================
@@ -71,6 +71,23 @@ def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmo
 def psnr_metric(y_true, y_pred):
     # y_true, y_pred in [0, 1]
     return tf.reduce_mean(tf.image.psnr(y_true, y_pred, max_val=1.0))
+
+# Loss function
+def combined_mae_ssim(y_true, y_pred, alpha=0.7):
+    """
+    Loss = (1-alpha)*MAE + alpha*(1-SSIM)
+    alpha=0.7  → 70% SSIM, 30% MAE
+    Erwartet Werte in [0,1].
+    """
+    # Clip zur Sicherheit
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+
+    mae  = tf.reduce_mean(tf.abs(y_true - y_pred))
+    # SSIM über Batch mitteln; Standardfenster (11x11)
+    ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+
+    return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
 
 
 
@@ -152,7 +169,7 @@ print("Lade Daten...")
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
 
-RUN_NAME = "unet_2d_simple"
+RUN_NAME = "unet_2d_SSIM"
 
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
@@ -187,7 +204,7 @@ callbacks = [
 model = unet_2d(input_shape=(192, 240, 1))
 model.compile(
     optimizer=optimizer,
-    loss='mae',       # MAE only
+    loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.7),  # 70% SSIM, 30% MAE
     metrics=['mae', 'mse', psnr_metric]
 )
 
@@ -231,7 +248,7 @@ meta = make_meta_dict(
     input_shape=(192,240,1),
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "mae", "metrics": ["mae", "mse", "psnr"]}
+    extra={"loss": "combined_mae_ssim(alpha=0.7)", "metrics": ["mae", "mse", "psnr"]}
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
