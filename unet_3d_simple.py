@@ -245,7 +245,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=100,
+    epochs=200,
     callbacks=callbacks,
     verbose=1
 )
@@ -254,7 +254,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=100,
+    epochs=200,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(5, 192, 240, 1),  # 3D-Input
