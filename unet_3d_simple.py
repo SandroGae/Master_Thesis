@@ -144,15 +144,11 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
       4) Zufalls-Skalierung je Sample: eigene Skala pro Slice (Form (D,1,1,1))
       5) Clip auf [0,1]
     """
-    def _map(x, y):
-        # Flip über Breite (axis=2 bei (D,H,W,C)? Vorsicht: deine Reihenfolge ist (D,H,W,C)
-        # Nun ist W die Achse 2 (0:D, 1:H, 2:W, 3:C).
-        prob = tf.random.uniform([], 0.0, 1.0, dtype=tf.float32)
-        flip_mask = tf.less(prob, tf.cast(p, tf.float32))
-        def _flip(t): 
-            return tf.reverse(t, axis=[2])  # axis=2 = Width bei (D,H,W,C)
-        x = tf.cond(flip_mask, lambda: _flip(x), lambda: x)
-        y = tf.cond(flip_mask, lambda: _flip(y), lambda: y)
+    def map_volume(x, y):
+        # Flip, hier ist W Achse 2 (0:D, 1:H, 2:W, 3:C) und die flippen wir
+        flip = tf.random.uniform(shape=[], minval=0.0, maxval=1.0, dtype=tf.float32) < tf.constant(p, tf.float32)
+        x = tf.cond(flip, lambda: tf.reverse(x, axis=[2]), lambda: x)
+        y = tf.cond(flip, lambda: tf.reverse(y, axis=[2]), lambda: y)
 
         # Clip >= 0
         x = tf.nn.relu(x)
@@ -171,7 +167,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         y = tf.clip_by_value(y * scale, 0.0, 1.0)
 
         return x, y
-    return _map
+    return map_volume
 
 
 
@@ -233,8 +229,8 @@ AUTOTUNE = tf.data.AUTOTUNE
 X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
 X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
 
-train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
-            .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
+train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train)) # input (N,D,H,W,C) --> N * (D,H,W,C)
+            .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True) # reshuffle jede Iteration
             .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=tf.data.AUTOTUNE)
             .batch(BATCH_SIZE)
             .prefetch(tf.data.AUTOTUNE))

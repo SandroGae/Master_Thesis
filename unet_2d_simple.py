@@ -115,14 +115,11 @@ def augment_and_normalize_2d(scale_min: float, scale_max: float, p: float = 0.5)
       5) Clipping auf [0, 1]
     Erwartet x,y im Format (H, W, C) mit dtype float32.
     """
-    def _map(x, y):
-        # Flip links-rechts
-        prob = tf.random.uniform(shape=[], minval=0.0, maxval=1.0, dtype=tf.float32) # zieht uniform aus [0, 1)
-        flip_mask = tf.less(prob, tf.cast(p, tf.float32))  # bool
-        def _flip(t): 
-            return tf.reverse(t, axis=[1])       # axis=1 = Width
-        x = tf.cond(flip_mask, lambda: _flip(x), lambda: x)
-        y = tf.cond(flip_mask, lambda: _flip(y), lambda: y)
+    def map_picture(x, y):
+        # Flip, hier ist W Achse 1 (0:H, 1:W, 2:C) und die flippen wir
+        flip = tf.random.uniform(shape=[], minval=0.0, maxval=1.0, dtype=tf.float32) < tf.constant(p, tf.float32)
+        x = tf.cond(flip, lambda: tf.reverse(x, axis=[1]), lambda: x)
+        y = tf.cond(flip, lambda: tf.reverse(y, axis=[1]), lambda: y)
 
         # Clipping auf [0, ∞)
         x = tf.nn.relu(x)
@@ -135,10 +132,7 @@ def augment_and_normalize_2d(scale_min: float, scale_max: float, p: float = 0.5)
         y = y / sum_y
 
         # Zufällige Skalierung pro Sample
-        scale = tf.random.uniform(shape=[1, 1, 1],
-                                  minval=tf.cast(scale_min, tf.float32),
-                                  maxval=tf.cast(scale_max, tf.float32),
-                                  dtype=tf.float32)
+        scale = tf.random.uniform(shape=[1, 1, 1], minval=tf.cast(scale_min, tf.float32), maxval=tf.cast(scale_max, tf.float32), dtype=tf.float32)
         x = x * scale
         y = y * scale
 
@@ -147,7 +141,7 @@ def augment_and_normalize_2d(scale_min: float, scale_max: float, p: float = 0.5)
         y = tf.clip_by_value(y, 0.0, 1.0)
         return x, y
 
-    return _map
+    return map_picture
 
 
 
@@ -223,7 +217,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=100,
+    epochs=200,
     callbacks=callbacks,
     verbose=1
 )
@@ -232,7 +226,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=100,
+    epochs=200,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(192,240,1),

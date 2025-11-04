@@ -48,7 +48,10 @@ SELECT_LIST = [
     "unet3d_scout_sweep18_JENS_V2_V4_valloss_5.690e-02.keras", # 100 epochs, VDSR 
     "unet3d_scout_sweep19_JENS_V2_V5_valloss_5.696e-02.keras", # 100 epochs, VDSR
     "unet_2d_simple_loss0.0147_val0.0162.keras",
-    "VDSR_reconstruction_V2_loss0.0125_val0.0137.keras"
+    "VDSR_reconstruction_V2_loss0.0125_val0.0137.keras",
+    "VDSR_reconstruction_V2_loss0.0132_val0.0133.keras",
+    "unet_2d_simple_loss0.0135_val0.0142.keras",
+    "unet_3d_simple_loss0.0131_val0.0144.keras" # 3D!!!!!!
 ]
 
 
@@ -76,8 +79,8 @@ with h5py.File(h5_path, "r") as f:
 
 # Normalisierung Jens Stil
 normalizer = SumScaleNormalizer(
-    scale_min=5000,
-    scale_max=15000,
+    scale_min=10000,
+    scale_max=10001,
     pre_offset=0.0,
     normalize_label=True,
     batch_mode=True, # Jedes Sample separat normalisieren
