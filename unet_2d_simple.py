@@ -219,7 +219,7 @@ history = model.fit(
     validation_data=val_ds,
     epochs=200,
     callbacks=callbacks,
-    verbose=1
+    verbose=2
 )
 
 # Meta bauen

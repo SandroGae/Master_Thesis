@@ -20,7 +20,7 @@ from jens_stuff import SumScaleNormalizer
 # Pfade
 DATA_DIR       = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
 H5_NAME        = "test_data.hdf5"
-CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\MAE_only_2d")
+CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\MAE_only")
 OUT_DIR        = CHECKPOINT_DIR
 SAVE_DPI       = 200
 
@@ -28,30 +28,8 @@ PICTURE_INDEX = 469
 
 # Choosing keras models
 SELECT_LIST = [
-    "unet3d_scout_sweep1_d3_bf8_outsigmoid_lr0_0003_bs32_V1_valloss_3.195e-02_PSNR_23.3.keras",
-    "unet3d_scout_sweep2_d3_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.308e-02_PSNR_21.3.keras",
-    "unet3d_scout_sweep3_d3_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.915e-02_PSNR_24.1.keras",    # 3
-    "unet3d_scout_sweep4_d3_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.956e-02_PSNR_21.7.keras",
-    "unet3d_scout_sweep5_d4_bf8_outsigmoid_lr0_0003_bs32_V1_valloss_2.667e-02_PSNR_24.keras",
-    "unet3d_scout_sweep6_d4_bf8_outsigmoid_lr3e-05_bs32_V1_valloss_4.164e-02_PSNR_21.4.keras",      # 6
-    "unet3d_scout_sweep7_d4_bf16_outsigmoid_lr0_0003_bs32_V1_valloss_2.880e-02_PSNR_24.keras",
-    "unet3d_scout_sweep8_d4_bf16_outsigmoid_lr3e-05_bs32_V1_valloss_3.737e-02_PSNR_22.keras",
-    "unet3d_scout_sweep9_d4_bf24_outsigmoid_lr0_0003_bs32_V1_valloss_2.947e-02_PSNR_23.8.keras",    # 9
-    "unet3d_scout_sweep10_d4_bf24_outsigmoid_lr1e-05_bs32_V1_valloss_4.107e-02_PSNR_21.2.keras",
-    "unet3d_scout_sweep11_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.895e-02_PSNR_24.keras",
-    "unet3d_scout_sweep12_d4_bf32_outsigmoid_lr1e-05_bs32_V1_valloss_3.824e-02_PSNR_21.9.keras",     # 12
-    "unet3d_scout_sweep13_d4_bf32_outsigmoid_lr0_0003_bs32_V1_valloss_2.488e-02_PSNR_24.5.keras",    # 100 epochs, my unet
-    "unet3d_scout_sweep14_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.827e-02_PSNR_24.3.keras", # 100 epochs, VDSR 
-    "unet3d_scout_sweep15_d4_bf68_outsigmoid_lr0_0003_bs32_V1_valloss_2.561e-02_PSNR_24.3.keras", # 100 epochs, VDSR
-    "unet3d_scout_sweep16_JENS_V2_V2_valloss_2.770e-02.keras", # 100 epochs, VDSR 
-    "unet3d_scout_sweep17_JENS_V2_V3_valloss_2.818e-02.keras", # 100 epochs, VDSR 
-    "unet3d_scout_sweep18_JENS_V2_V4_valloss_5.690e-02.keras", # 100 epochs, VDSR 
-    "unet3d_scout_sweep19_JENS_V2_V5_valloss_5.696e-02.keras", # 100 epochs, VDSR
-    "unet_2d_simple_loss0.0147_val0.0162.keras",
-    "VDSR_reconstruction_V2_loss0.0125_val0.0137.keras",
-    "VDSR_reconstruction_V2_loss0.0132_val0.0133.keras",
-    "unet_2d_simple_loss0.0135_val0.0142.keras",
-    "unet_3d_simple_loss0.0131_val0.0144.keras" # 3D!!!!!!
+    "VDSR_reconstruction_V2_loss0.0132_val0.0133_epochs100.keras",
+    "unet_2d_simple_loss0.0135_val0.0142_epochs100.keras"
 ]
 
 
@@ -116,7 +94,7 @@ def simple_normalize(image: np.ndarray) -> Normalize:
 
 
 # Zielpfad
-save_dir = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\MAE_only_2d")
+save_dir = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\MAE_only")
 out_png = save_dir / f"visualized_sweep_{run_number}.png"
 
 # Figuren-Setup
