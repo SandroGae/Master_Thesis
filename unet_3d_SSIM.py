@@ -231,6 +231,7 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
 
 # ==== GEÄNDERT: neuer Log/Checkpoint-Ordner ==================================
 LOG_DIR = Path.home()/ "data" / "checkpoints_unet_3d_simple_SSIM"
+LOG_DIR.mkdir(parents=True, exist_ok=True) 
 # =============================================================================
 
 callbacks = [
