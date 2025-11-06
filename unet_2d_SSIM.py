@@ -72,22 +72,56 @@ def psnr_metric(y_true, y_pred):
     # y_true, y_pred in [0, 1]
     return tf.reduce_mean(tf.image.psnr(y_true, y_pred, max_val=1.0))
 
+
 # Loss function
-def combined_mae_ssim(y_true, y_pred, alpha=0.7):
-    """
-    Loss = (1-alpha)*MAE + alpha*(1-SSIM)
-    alpha=0.7  → 70% SSIM, 30% MAE
-    Erwartet Werte in [0,1].
-    """
-    # Clip zur Sicherheit
-    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
-    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+# def combined_mae_ssim(y_true, y_pred, alpha=0.7):
+#     """
+#     Loss = (1-alpha)*MAE + alpha*(1-SSIM)
+#     alpha=0.7  → 70% SSIM, 30% MAE
+#     Erwartet Werte in [0,1]
+#     Eingabe: (B,H,W,1)
+#     """
+#     # Clip zur Sicherheit
+#     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+#     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
 
-    mae  = tf.reduce_mean(tf.abs(y_true - y_pred))
-    # SSIM über Batch mitteln; Standardfenster (11x11)
-    ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+#     mae  = tf.reduce_mean(tf.abs(y_true - y_pred)) # Über den ganzen Batch
+#     # SSIM über Batch mitteln; Standardfenster (11x11)
+#     ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
 
-    return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
+#     return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
+
+
+def combined_mae_msssim(y_true, y_pred, alpha=0.7, data_range=1.0, power_factors=None):
+    """
+    Loss = (1-alpha)*MAE + alpha*(1 - MS-SSIM)
+    alpha=0.7  → 70% MS-SSIM, 30% MAE
+    Erwartet Werte in [0,1]
+    - Formate: (B,H,W,1), dptye float32/float16 kompatibel.
+
+    Parameter:
+      data_range (dynamic range): Maximalwert der Daten (z.B. 1.0 oder 255.0)
+      power_factors (MS-SSIM Gewichte, power factors): Liste wie [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
+                         Wenn None → TensorFlows Default.
+    """
+    # Sicherheit: Begrenzen auf gueltigen Bereich
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, float(data_range))
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, float(data_range))
+
+    # Auf [0,1] normierte MAE, damit die Skalen zusammenpassen, falls data_range != 1
+    # (optional, aber sauber: MAE relativ zum data_range)
+    mae = tf.reduce_mean(tf.abs(y_true - y_pred)) / float(data_range)
+
+    # MS-SSIM ueber den Batch mitteln
+    msssim = tf.image.ssim_multiscale(
+        y_true, y_pred,
+        max_val=float(data_range),
+        power_factors=power_factors  # None => TF-Defaults
+    )
+    msssim = tf.reduce_mean(msssim)
+
+    return (1.0 - alpha) * mae + alpha * (1.0 - msssim)
+
 
 
 
@@ -204,7 +238,7 @@ callbacks = [
 model = unet_2d(input_shape=(192, 240, 1))
 model.compile(
     optimizer=optimizer,
-    loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.7),  # 70% SSIM, 30% MAE
+    loss=lambda y_true, y_pred: combined_mae_msssim(y_true, y_pred, alpha=0.7, data_range=1.0, power_factors=None),
     metrics=['mae', 'mse', psnr_metric]
 )
 
@@ -233,7 +267,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=200,
+    epochs=100,
     callbacks=callbacks,
     verbose=2
 )
@@ -242,7 +276,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=200,
+    epochs=100,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(192,240,1),

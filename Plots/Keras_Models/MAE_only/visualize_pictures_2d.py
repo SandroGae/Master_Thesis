@@ -20,7 +20,8 @@ PICTURE_INDEX  = 469
 SELECT_LIST = [
     "VDSR_reconstruction_V2_loss0.0132_val0.0133_epochs100.keras",
     "unet_2d_simple_loss0.0135_val0.0142_epochs100.keras",
-    "unet_2d_simple_loss0.0118_val0.0135_epochs200.keras"
+    "unet_2d_simple_loss0.0118_val0.0135_epochs200.keras",
+    "unet_2d_SSIM_loss0.0605_val0.0787_epochs200.keras"
 ]
 
 def choose_model(list_):

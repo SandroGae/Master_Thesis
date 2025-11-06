@@ -21,7 +21,8 @@ CENTER_SLICE  = 2     # mittlere Slice in [0..4]
 
 # Modelle
 SELECT_LIST = [
-    "unet_3d_simple_loss0.0131_val0.0144_epochs100.keras"
+    "unet_3d_simple_loss0.0131_val0.0144_epochs100.keras",
+    "unet_3d_simple_SSIM_loss0.0608_val0.0794_epochs100.keras"
 ]
 
 def choose_model(list_):
