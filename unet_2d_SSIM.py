@@ -92,32 +92,25 @@ def psnr_metric(y_true, y_pred):
 #     return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
 
 
+import tensorflow as tf
+
 def combined_mae_msssim(y_true, y_pred, alpha=0.7, data_range=1.0, power_factors=None):
     """
     Loss = (1-alpha)*MAE + alpha*(1 - MS-SSIM)
-    alpha=0.7  → 70% MS-SSIM, 30% MAE
-    Erwartet Werte in [0,1]
-    - Formate: (B,H,W,1), dptye float32/float16 kompatibel.
-
-    Parameter:
-      data_range (dynamic range): Maximalwert der Daten (z.B. 1.0 oder 255.0)
-      power_factors (MS-SSIM Gewichte, power factors): Liste wie [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
-                         Wenn None → TensorFlows Default.
+    Erwartet (B,H,W,1), Werte in [0, data_range].
     """
-    # Sicherheit: Begrenzen auf gueltigen Bereich
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, float(data_range))
     y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, float(data_range))
 
-    # Auf [0,1] normierte MAE, damit die Skalen zusammenpassen, falls data_range != 1
-    # (optional, aber sauber: MAE relativ zum data_range)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred)) / float(data_range)
 
-    # MS-SSIM ueber den Batch mitteln
-    msssim = tf.image.ssim_multiscale(
-        y_true, y_pred,
-        max_val=float(data_range),
-        power_factors=power_factors  # None => TF-Defaults
-    )
+    # MS-SSIM: in TF 2.10 power_factors NICHT als None übergeben!
+    if power_factors is None:
+        msssim = tf.image.ssim_multiscale(y_true, y_pred, max_val=float(data_range))
+    else:
+        msssim = tf.image.ssim_multiscale(
+            y_true, y_pred, max_val=float(data_range), power_factors=power_factors
+        )
     msssim = tf.reduce_mean(msssim)
 
     return (1.0 - alpha) * mae + alpha * (1.0 - msssim)
