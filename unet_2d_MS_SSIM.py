@@ -66,15 +66,16 @@ def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmo
 
 
 # Loss function
+# Wang, Z., Simoncelli, E.P., Bovik, A.C.
+# Multiscale Structural Similarity for Image Quality Assessment.
+# IEEE Asilomar Conference on Signals, Systems and Computers, 2003.
 # MS-SSIM als Metrik (metric)
 def msssim_metric(y_true, y_pred):
+    # Safety Clip + Foat 32 sicherstellen
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
     y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-    pf = (0.0448, 0.2856, 0.3001, 0.2363)  # 4 Skalen
-    m = tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0,
-                                 filter_size=11, filter_sigma=1.5,
-                                 k1=0.01, k2=0.03,
-                                 power_factors=pf)  # (B,)
+    pf = (0.0448, 0.2856, 0.3001, 0.2363)  # 4 Skalen kopiert von Paper oben
+    m = tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03, power_factors=pf)  # (B,)
     return tf.reduce_mean(m)
 
 # Kombinierte Loss mit MS-SSIM (mit Checks)
@@ -85,14 +86,11 @@ def combined_mae_msssim(y_true, y_pred, alpha=0.7):
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
 
     pf = (0.0448, 0.2856, 0.3001, 0.2363)  # 4 Skalen
-    msssim = tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0,
-                                      filter_size=11, filter_sigma=1.5,
-                                      k1=0.01, k2=0.03,
-                                      power_factors=pf)
+    msssim = tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03, power_factors=pf)
     # Numerik absichern
-    msssim = tf.clip_by_value(msssim, 0.0, 1.0)
-    msssim = tf.debugging.check_numerics(msssim, "msssim_nan")
-    msssim = tf.reduce_mean(msssim)
+    # msssim = tf.clip_by_value(msssim, 0.0, 1.0)
+    # msssim = tf.debugging.check_numerics(msssim, "msssim_nan")
+    # msssim = tf.reduce_mean(msssim)
 
     loss = (1.0 - alpha) * mae + alpha * (1.0 - msssim)
     return tf.debugging.check_numerics(loss, "loss_nan")
