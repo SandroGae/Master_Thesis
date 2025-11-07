@@ -83,8 +83,8 @@ def combined_mae_msssim(y_true, y_pred, alpha=0.7):
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
 
-    mae     = tf.reduce_mean(tf.abs(y_true - y_pred))
-    msssim  = tf.reduce_mean(tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03))
+    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
+    msssim = tf.reduce_mean(tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03))
     return (1.0 - alpha) * mae + alpha * (1.0 - msssim)
 
 
@@ -204,7 +204,6 @@ model.compile(
     metrics=['mae', 'mse', psnr_metric, msssim_metric]
 )
 
-
 print("Erstelle Trainingsaten...")
 
 AUTOTUNE = tf.data.AUTOTUNE
@@ -246,7 +245,6 @@ meta = make_meta_dict(
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
     extra={"loss": "combined_mae_msssim(alpha=0.7)", "metrics": ["mae", "mse", "psnr", "msssim"]}
-
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
