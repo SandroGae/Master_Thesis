@@ -65,18 +65,13 @@ def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmo
     return models.Model(inputs, out, name="unet_2d_simple_relu_sigmoid")
 
 
+# Loss function
 # MS-SSIM als Metrik (metric)
 def msssim_metric(y_true, y_pred):
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
     y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
     msssim = tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03)  # (B,)
     return tf.reduce_mean(msssim)
-
-# PSNR als Mettrik
-def psnr_metric(y_true, y_pred):
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-    return tf.reduce_mean(tf.image.psnr(y_true, y_pred, max_val=1.0))
 
 # Kombinierte Loss mit MS-SSIM
 def combined_mae_msssim(y_true, y_pred, alpha=0.7):
@@ -186,15 +181,9 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 BATCH_SIZE = 8
 
 # Optimizer + callbacks
-optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, # 10x kleiner
-    amsgrad=True,
-    clipnorm=1.0 # Begrenzt Grösse der Gradientenvektoren
-)
-
+optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4,amsgrad=True)
 LOG_DIR = Path.home()/ "data" / "checkpoints_unet_2d_simple"
 callbacks = [
-    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=3, min_lr=1e-6, verbose=2),
-    tf.keras.callbacks.TerminateOnNaN(),  # bricht ab statt 100 Epochen NaN
     make_epoch_ckpt_callback(RUN_NAME),     # speichert nur das beste Modell in ~/data/checkpoints_unet_2d_simple
     tf.keras.callbacks.CSVLogger(str(LOG_DIR / f"{RUN_NAME}.csv"), append=True),
     tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}"),
