@@ -186,7 +186,7 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 BATCH_SIZE = 8
 
 # Optimizer + callbacks
-optimizer = tf.keras.optimizers.Adam(learning_rate=5e-5, # 10x kleiner
+optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, # 10x kleiner
     amsgrad=True,
     clipnorm=1.0 # Begrenzt Grösse der Gradientenvektoren
 )
