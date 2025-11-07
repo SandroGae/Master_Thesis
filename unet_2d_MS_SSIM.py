@@ -204,7 +204,7 @@ model.compile(
     metrics=['mae', 'mse', psnr_metric, msssim_metric]
 )
 
-print("Erstelle Trainingsaten...")
+print("Erstelle Trainingsdaten...")
 
 AUTOTUNE = tf.data.AUTOTUNE
 
