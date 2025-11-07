@@ -158,6 +158,13 @@ def augment_and_normalize_2d(scale_min: float, scale_max: float, p: float = 0.5)
     return map_picture
 
 
+# PSNR als Mettrik
+def psnr_metric(y_true, y_pred):
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    return tf.reduce_mean(tf.image.psnr(y_true, y_pred, max_val=1.0))
+
+
 # Daten einlesen
 print("Lade Daten...")
 
