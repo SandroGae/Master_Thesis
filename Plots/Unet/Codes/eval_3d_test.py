@@ -11,8 +11,8 @@ H5_NAME        = "test_data.hdf5"            # enthält (H,W,N) low/high
 CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\Keras")
 
 SELECT_LIST = [
-    "unet_3d_simple_loss0.0131_val0.0144_epochs100.keras", # loss: 0.014804 mae: 0.014804 mse: 0.000452 psnr_metric: 33.691741 ssim_metric: 0.806831
-    "unet_3d_simple_SSIM_loss0.0608_val0.0794_epochs100.keras"
+    "unet_3d_simple_loss0.0131_val0.0144_epochs100.keras",      # loss: 0.014804 mae: 0.014804 mse: 0.000452 psnr_metric: 33.691741 ssim_metric: 0.806831
+    "unet_3d_simple_SSIM_loss0.0608_val0.0794_epochs100.keras"  # loss: 0.012999 mae: 0.012999 mse: 0.000352 psnr_metric: 35.024599 ssim_metric: 0.867231
 ]
 
 # 3D Daten-Layout
@@ -26,7 +26,7 @@ FIX_SCALE  = 10000.0      # gleiche Skalierung wie Validation
 MAX_VOLS   = 1000         # z.B. nur erste 1000 Volumes; None = alle
 
 # ==========================
-# 2) Normalisierung & Metriken (2D, weil mittlerer Slice)
+# 2) Normalisierung & Metriken (2D, weil nur mittlerer Slice)
 # ==========================
 def normalize_3d_per_slice_no_aug(scale: float = 10000.0):
     """
