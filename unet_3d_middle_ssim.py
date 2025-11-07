@@ -58,8 +58,7 @@ def unet_3d_center_output(input_shape=(5,192,240,1), base_filters=16, output_act
     u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_3d(u1, base_filters)
 
     # Output Sigmoid
-    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation,
-                          kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
+    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
     out_center = layers.Lambda(lambda t: t[:, 2:3, ...], name="output_center")(out_5)
     return models.Model(inputs, out_center, name="unet_3d_center_only")
 

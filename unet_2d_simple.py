@@ -18,7 +18,8 @@ SEED = 42
 tf.random.set_seed(SEED)
 np.random.seed(SEED)
 
-from unet_2d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
+from unet_2d_simple_checkpoints import (make_epoch_ckpt_callback, finalize_run, make_meta_dict, make_run_dir, make_tb_callbacks, log_hparams_tb)
+
 
 # %%
 # Simples unet in 2d
@@ -177,19 +178,14 @@ BATCH_SIZE = 8
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4,amsgrad=True)
 LOG_DIR = Path.home()/ "data" / "checkpoints_unet_2d_simple"
-callbacks = [
-    make_epoch_ckpt_callback(RUN_NAME),     # speichert nur das beste Modell in ~/data/checkpoints_unet_2d_simple
-    tf.keras.callbacks.CSVLogger(str(LOG_DIR / f"{RUN_NAME}.csv"), append=True),
-    tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}"),
-]
 
-# Compilieren
-model = unet_2d(input_shape=(192, 240, 1))
-model.compile(
-    optimizer=optimizer,
-    loss='mae',       # MAE only
-    metrics=['mae', 'mse', psnr_metric]
-)
+
+# TensorBoard: eindeutiges Run-Verzeichnis + HParams
+TB_RUN_DIR = make_run_dir(RUN_NAME)
+
+hparams = dict(script=RUN_NAME, base_filters=16, input_shape=str((192,240,1)), loss="mae", optimizer="adam(amsgrad=True)", batch_size=BATCH_SIZE, 
+               lr=5e-4, aug_train_scale_min=5000.0, aug_train_scale_max=15000.0, aug_val_scale=10000.0, seed=SEED,)
+log_hparams_tb(TB_RUN_DIR, hparams)
 
 print("Erstelle Trainingsaten...")
 
@@ -210,13 +206,40 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .batch(BATCH_SIZE)
           .prefetch(AUTOTUNE))
 
+# Kleines, fixes Val-Sample für Bild-Logging (in [0,1], bereits normalisiert)
+# Nimm 3 Bilder, damit TB übersichtlich bleibt
+try_out = val_ds.unbatch().batch(3).take(1)
+x_vis, y_vis = next(iter(try_out))
+image_sample = (x_vis, y_vis)
+
+# Compilieren
+model = unet_2d(input_shape=(192, 240, 1))
+model.compile(
+    optimizer=optimizer,
+    loss='mae',       # MAE only
+    metrics=['mae', 'mse', psnr_metric]
+)
+
+callbacks = [
+    make_epoch_ckpt_callback(RUN_NAME),  # best.keras im Checkpoint-Ordner
+    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=True),
+]
+# TensorBoard + Bilder + LR
+callbacks += make_tb_callbacks(
+    TB_RUN_DIR,
+    histograms=False,        # True nur bei Bedarf (langsamer + grosser Speicherbedarf)
+    profile=False,           # bei Bedarf kurzzeitig (50..60) aktivieren
+    image_sample=image_sample,
+    image_every=1            # z.B. alle 5 Epochen: 5
+)
+
 
 print("Training beginnt...")
 
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=200,
+    epochs=50,
     callbacks=callbacks,
     verbose=2
 )
@@ -225,7 +248,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=200,
+    epochs=50,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(192,240,1),

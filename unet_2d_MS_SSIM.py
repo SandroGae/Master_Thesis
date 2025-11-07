@@ -1,14 +1,7 @@
 # unet_2d_SSIM.py
-# ==============================
-# 0) Imports & global setup
-# ==============================
-#!/usr/bin/env python3
 
 # import os
-# XLA vor dem Import von TensorFlow abschalten
-# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
 from tensorflow.keras import layers, models
 from pathlib import Path
 import h5py
@@ -26,11 +19,9 @@ POOL_HW = (2, 2)  # (H, W)
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
-    x = layers.Conv2D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True)(x)
+    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
     x = layers.ReLU()(x)
-    x = layers.Conv2D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True)(x)
+    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
     x = layers.ReLU()(x)
     return x
 
@@ -86,12 +77,7 @@ def combined_mae_msssim(y_true, y_pred, alpha=0.7):
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
 
     pf = (0.0448, 0.2856, 0.3001, 0.2363)  # 4 Skalen
-    msssim = tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03, power_factors=pf)
-    # Numerik absichern
-    # msssim = tf.clip_by_value(msssim, 0.0, 1.0)
-    # msssim = tf.debugging.check_numerics(msssim, "msssim_nan")
-    # msssim = tf.reduce_mean(msssim)
-
+    msssim = tf.image.ssim_multiscale(y_true, y_pred, max_val=1.0, filter_size=11, filter_sigma=1.5, k1=0.01, k2=0.03, power_factors=pf) # Standardwerte TF 2.14
     loss = (1.0 - alpha) * mae + alpha * (1.0 - msssim)
     return tf.debugging.check_numerics(loss, "loss_nan")
 

@@ -60,8 +60,7 @@ def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmo
     u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_2d(u1, base_filters)
 
     # Output Sigmoid
-    out = layers.Conv2D(1, (1, 1), activation=output_activation,
-                        kernel_initializer="he_normal", use_bias=True, name="output")(c8)
+    out = layers.Conv2D(1, (1, 1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output")(c8)
 
     return models.Model(inputs, out, name="unet_2d_simple_relu_sigmoid")
 
@@ -182,12 +181,6 @@ RUN_NAME = "unet_2d_SSIM"
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
-
-# Check Formatierung
-# print("TRAIN  X:", X_train.shape, X_train.dtype)  # (3280, 192, 240, 1) float32
-# print("TRAIN  y:", y_train.shape, y_train.dtype)  # (3280, 192, 240, 1) float32
-# print("VAL    X:", X_val.shape,   X_val.dtype)    # (820, 192, 240, 1) float32
-# print("VAL    y:", y_val.shape,   y_val.dtype)    # (820, 192, 240, 1) float32
 
 # %%
 # Einmaliges initiales Shuffle (separat für Training und Validation):
