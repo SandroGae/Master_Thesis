@@ -66,56 +66,22 @@ def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmo
     return models.Model(inputs, out, name="unet_2d_simple_relu_sigmoid")
 
 
-
-# Metriken
-def psnr_metric(y_true, y_pred):
-    # y_true, y_pred in [0, 1]
-    return tf.reduce_mean(tf.image.psnr(y_true, y_pred, max_val=1.0))
-
-
 # Loss function
-# def combined_mae_ssim(y_true, y_pred, alpha=0.7):
-#     """
-#     Loss = (1-alpha)*MAE + alpha*(1-SSIM)
-#     alpha=0.7  → 70% SSIM, 30% MAE
-#     Erwartet Werte in [0,1]
-#     Eingabe: (B,H,W,1)
-#     """
-#     # Clip zur Sicherheit
-#     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
-#     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
-
-#     mae  = tf.reduce_mean(tf.abs(y_true - y_pred)) # Über den ganzen Batch
-#     # SSIM über Batch mitteln; Standardfenster (11x11)
-#     ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-
-#     return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
-
-
-import tensorflow as tf
-
-def combined_mae_msssim(y_true, y_pred, alpha=0.7, data_range=1.0, power_factors=None):
+def combined_mae_ssim(y_true, y_pred, alpha=0.7):
     """
-    Loss = (1-alpha)*MAE + alpha*(1 - MS-SSIM)
-    Erwartet (B,H,W,1), Werte in [0, data_range].
+    Loss = (1-alpha)*MAE + alpha*(1-SSIM)
+    alpha=0.7  → 70% SSIM, 30% MAE
+    Erwartet Werte in [0,1]
+    Eingabe: (B,H,W,1)
     """
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, float(data_range))
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, float(data_range))
+    # Clip zur Sicherheit
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
 
-    mae = tf.reduce_mean(tf.abs(y_true - y_pred)) / float(data_range)
+    mae  = tf.reduce_mean(tf.abs(y_true - y_pred)) # Über den ganzen Batch
+    ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0)) # SSIM über den ganzen Batch (Standardfenster 11x11)
 
-    # MS-SSIM: in TF 2.10 power_factors NICHT als None übergeben!
-    if power_factors is None:
-        msssim = tf.image.ssim_multiscale(y_true, y_pred, max_val=float(data_range))
-    else:
-        msssim = tf.image.ssim_multiscale(
-            y_true, y_pred, max_val=float(data_range), power_factors=power_factors
-        )
-    msssim = tf.reduce_mean(msssim)
-
-    return (1.0 - alpha) * mae + alpha * (1.0 - msssim)
-
-
+    return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
 
 
 def load_split(h5_path):
@@ -188,8 +154,23 @@ def augment_and_normalize_2d(scale_min: float, scale_max: float, p: float = 0.5)
     return map_picture
 
 
+# PSNR als Mettrik
+def psnr_metric(y_true, y_pred):
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    return tf.reduce_mean(tf.image.psnr(y_true, y_pred, max_val=1.0))
 
-# %%
+# SSIM als Metrik
+def ssim_metric(y_true, y_pred):
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    # SSIM pro Bild
+    ssim_vals = tf.image.ssim(y_true, y_pred, max_val=1.0)  # 11x11 Fenster
+    return tf.reduce_mean(ssim_vals)  # Batch-Mittelwert
+
+
+
+
 # Daten einlesen
 print("Lade Daten...")
 
@@ -231,8 +212,8 @@ callbacks = [
 model = unet_2d(input_shape=(192, 240, 1))
 model.compile(
     optimizer=optimizer,
-    loss=lambda y_true, y_pred: combined_mae_msssim(y_true, y_pred, alpha=0.7, data_range=1.0, power_factors=None),
-    metrics=['mae', 'mse', psnr_metric]
+    loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.7),  # 70% SSIM, 30% MAE
+    metrics=['mae', 'mse', psnr_metric, ssim_metric]
 )
 
 print("Erstelle Trainingsaten...")
@@ -275,7 +256,8 @@ meta = make_meta_dict(
     input_shape=(192,240,1),
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "combined_mae_ssim(alpha=0.7)", "metrics": ["mae", "mse", "psnr"]}
+    extra={"loss": "combined_mae_ssim(alpha=0.7)", "metrics": ["mae", "mse", "psnr", "ssim"]}
+
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)

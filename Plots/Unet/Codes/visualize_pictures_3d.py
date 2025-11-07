@@ -11,7 +11,8 @@ from matplotlib.colors import Normalize
 # Pfade
 DATA_DIR       = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
 H5_NAME        = "test_data.hdf5"
-CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\MAE_only")
+CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\Unet")
+PIC_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\Unet\Figures")
 OUT_DIR        = CHECKPOINT_DIR
 SAVE_DPI       = 200
 
@@ -91,9 +92,8 @@ def simple_normalize(image: np.ndarray) -> Normalize:
     vmin, vmax = np.percentile(image, [0.5, 99.5])
     return Normalize(vmin=vmin, vmax=vmax)
 
-save_dir = CHECKPOINT_DIR
 selected = Path(SELECT_LIST[run_number - 1]).stem
-out_png = save_dir / f"{selected}.png"
+out_png = PIC_DIR / f"{selected}.png"
 
 fig, axes = plt.subplots(nrows=1, ncols=3, figsize=(12, 5), constrained_layout=True, dpi=200)
 
