@@ -157,9 +157,9 @@ val_ds   = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
             .prefetch(AUTOTUNE))
 
 # --- Alpha-Sweep: 0.00 bis 1.00 in 0.05-Schritten, jeweils 20 Epochen ---
-ALPHAS = [i/100 for i in range(60, 81, 5)]  # 0.00, 0.05, ..., 1.00
+ALPHAS = [i/100 for i in range(0, 101, 5)]  # 0.00, 0.05, ..., 1.00
 BASE_NAME = "unet_2d_SSIM"
-EPOCHS = 50
+EPOCHS = 20
 
 for alpha in ALPHAS:
     tf.keras.backend.clear_session()
