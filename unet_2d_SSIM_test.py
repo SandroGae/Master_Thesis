@@ -30,7 +30,7 @@ POOL_HW = (2, 2)  # (H, W)
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     for _ in range(3):
         x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer="he_normal", use_bias=False)(x)
-        x = layers.LayerNormalization(axis=[1,2,3])(x)
+        x = layers.LayerNormalization(axis=-1)(x)
         x = layers.ReLU()(x)
     return x
 
