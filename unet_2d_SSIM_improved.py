@@ -169,7 +169,7 @@ print("Lade Daten...")
 
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
-            "test":       "/home/sgaell/data/original_data/test.hdf5",}
+            "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
 
 BASE_NAME = "unet_2d_SSIM_improved"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
