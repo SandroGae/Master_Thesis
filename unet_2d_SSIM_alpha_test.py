@@ -87,7 +87,7 @@ def combined_mae_ssim(y_true, y_pred, alpha=0.7):
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     mae  = tf.reduce_mean(tf.abs(y_true - y_pred))
     ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-    return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
+    return (1.0 - alpha) * (10*mae) + alpha * (1.0 - ssim)
 
 def psnr_metric(y_true, y_pred):
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
