@@ -1,24 +1,21 @@
 # unet_2d_SSIM.py
-# ==============================
-# 0) Imports & global setup
-# ==============================
-#!/usr/bin/env python3
+
 
 # import os
-# XLA vor dem Import von TensorFlow abschalten
-# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
 from tensorflow.keras import layers, models
 from pathlib import Path
 import h5py
 import numpy as np
+from datetime import datetime
 
 SEED = 42
 tf.random.set_seed(SEED)
 np.random.seed(SEED)
 
 from unet_2d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
+from tb_utils import make_run_dir, tb_callbacks, ImageLogger
+
 
 # %%
 # Simples unet in 2d
@@ -178,6 +175,10 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
 
 RUN_NAME = "unet_2d_SSIM"
 
+# Tensorboard root
+TB_ROOT = Path.home() / "data" / "tblogs_unet_2d_simple"
+TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
+
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
@@ -191,23 +192,6 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 
 # Batches hinzufügen
 BATCH_SIZE = 8
-
-# Optimizer + callbacks
-optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4,amsgrad=True)
-LOG_DIR = Path.home()/ "data" / "checkpoints_unet_2d_simple"
-callbacks = [
-    make_epoch_ckpt_callback(RUN_NAME),     # speichert nur das beste Modell in ~/data/checkpoints_unet_2d_simple
-    tf.keras.callbacks.CSVLogger(str(LOG_DIR / f"{RUN_NAME}.csv"), append=True),
-    tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}"),
-]
-
-# Compilieren
-model = unet_2d(input_shape=(192, 240, 1))
-model.compile(
-    optimizer=optimizer,
-    loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.7),  # 70% SSIM, 30% MAE
-    metrics=['mae', 'mse', psnr_metric, ssim_metric]
-)
 
 print("Erstelle Trainingsaten...")
 
@@ -227,6 +211,27 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .map(augment_and_normalize_2d(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
           .batch(BATCH_SIZE)
           .prefetch(AUTOTUNE))
+
+# Tensorboard Bilder --> Fixes Minibatch aus dem Val-Set herausziehen (3 Bilder)
+x_vis, y_vis = next(iter(val_ds.unbatch().batch(3).take(1)))
+
+
+optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
+
+callbacks = [
+    make_epoch_ckpt_callback(RUN_NAME),
+    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
+    *tb_callbacks(TB_RUN_DIR, histograms=False, profile=False),
+    ImageLogger(TB_RUN_DIR, (x_vis, y_vis), every_n_epochs=1, max_outputs=3),
+]
+
+# Compilieren
+model = unet_2d(input_shape=(192, 240, 1))
+model.compile(
+    optimizer=optimizer,
+    loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.7),  # 70% SSIM, 30% MAE
+    metrics=['mae', 'mse', psnr_metric, ssim_metric]
+)
 
 
 print("Training beginnt...")

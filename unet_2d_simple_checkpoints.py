@@ -4,82 +4,7 @@ import os, io, json, tempfile
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
-from datetime import datetime
-from tensorboard.plugins.hparams import api as hp
 
-
-def _tb_root() -> Path:
-    root = Path.home() / "data" / "tblogs_unet_2d_simple"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-def make_run_dir(run_name: str) -> Path:
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    rd = _tb_root() / f"{run_name}__{ts}"
-    rd.mkdir(parents=True, exist_ok=False)
-    return rd
-
-def log_hparams_tb(log_dir: Path, hparams: dict):
-    # file + TB HParams
-    (log_dir / "hparams.json").write_text(json.dumps(hparams, indent=2))
-    with tf.summary.create_file_writer(str(log_dir)).as_default():
-        hp.hparams({hp.HParam(k): v for k, v in hparams.items()})
-
-class LRLogger(tf.keras.callbacks.Callback):
-    def __init__(self, log_dir: Path):
-        super().__init__()
-        self.fw = tf.summary.create_file_writer(str(log_dir / "scalars"))
-    def on_epoch_end(self, epoch, logs=None):
-        lr = float(tf.keras.backend.get_value(self.model.optimizer.learning_rate))
-        with self.fw.as_default():
-            tf.summary.scalar("learning_rate", lr, step=epoch)
-
-class ImageLogger(tf.keras.callbacks.Callback):
-    """
-    Loggt Eingabe/Ziel/Prediction als Bilder.
-    Erwartet (x_vis, y_vis) mit gleicher Preprocessing-Pipeline wie Training/Val.
-    Für 2D: (N,H,W,1) oder (N,H,W,3).
-    Für 3D würde man Slices loggen – hier 2D-Version.
-    """
-    def __init__(self, log_dir: Path, sample_batch, tag_prefix="val", every_n_epochs=1, max_outputs=3):
-        super().__init__()
-        self.x, self.y = sample_batch
-        self.every = max(1, int(every_n_epochs))
-        self.max_outputs = max_outputs
-        self.fw = tf.summary.create_file_writer(str(log_dir / "images"))
-        # in [0,1] clampen, damit tf.summary.image nicht meckert
-        self.x = tf.clip_by_value(tf.cast(self.x, tf.float32), 0.0, 1.0)
-        self.y = tf.clip_by_value(tf.cast(self.y, tf.float32), 0.0, 1.0)
-        self.tag_prefix = tag_prefix
-
-    def on_epoch_end(self, epoch, logs=None):
-        if (epoch + 1) % self.every != 0: 
-            return
-        p = self.model.predict(self.x, verbose=0)
-        p = tf.clip_by_value(tf.cast(p, tf.float32), 0.0, 1.0)
-        with self.fw.as_default():
-            tf.summary.image(f"{self.tag_prefix}/x",  self.x, step=epoch, max_outputs=self.max_outputs)
-            tf.summary.image(f"{self.tag_prefix}/y",  self.y, step=epoch, max_outputs=self.max_outputs)
-            tf.summary.image(f"{self.tag_prefix}/p",  p,      step=epoch, max_outputs=self.max_outputs)
-
-def make_tb_callbacks(run_dir: Path, *, histograms=False, profile=False,
-                      image_sample=None, image_every=1) -> list[tf.keras.callbacks.Callback]:
-    histogram_freq = 1 if histograms else 0
-    profile_batch = (50, 60) if profile else 0
-    cbs = [
-        tf.keras.callbacks.TensorBoard(
-            log_dir=str(run_dir),
-            histogram_freq=histogram_freq,
-            write_graph=True,
-            write_images=False,   # Bilder loggen wir gezielt via ImageLogger
-            update_freq="epoch",
-            profile_batch=profile_batch,
-        ),
-        LRLogger(run_dir),
-    ]
-    if image_sample is not None:
-        cbs.append(ImageLogger(run_dir, image_sample, tag_prefix="val", every_n_epochs=image_every, max_outputs=3))
-    return cbs
 
 
 # Zielverzeichnis für Modelle/JSONs
@@ -208,12 +133,6 @@ def finalize_run(
         json.dump(_sanitize(payload), tmpf, indent=2)
         tmp_json = tmpf.name
     os.replace(tmp_json, final_json)
-
-    # --- CSV (falls vorhanden) gleich wie Keras/JSON umbenennen
-    csv_tmp = root / f"{run_name}.csv"
-    final_csv = root / f"{base_name}.csv"
-    if csv_tmp.exists():
-        os.replace(csv_tmp, final_csv)
 
     return str(final_keras)
 
