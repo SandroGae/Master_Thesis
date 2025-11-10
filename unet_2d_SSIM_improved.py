@@ -1,13 +1,15 @@
 # unet_2d_SSIM_improved.py
 
 # Changes made:
-# Using layers.LayerNormalization instead of bias
 # Using learning rate scheduler
+
+# Changes from SSIM_improved
+# increase depth from 2 layers to 3
+# base filters erhöht von 16 --> 32
 
 # import os
 import tensorflow as tf
 from tensorflow.keras import layers, models
-from tensorflow.keras.layers import LayerNormalization
 from pathlib import Path
 import h5py
 import numpy as np
@@ -25,16 +27,12 @@ from tb_utils import make_run_dir, tb_callbacks, ImageLogger
 POOL_HW = (2, 2)  # (H, W)
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
-    ki = "he_normal"
-    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=False)(x)
-    x = layers.LayerNormalization(axis=-1)(x)
-    x = layers.ReLU()(x)
-    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=False)(x)
-    x = layers.LayerNormalization(axis=-1)(x)
-    x = layers.ReLU()(x)
+    for _ in range(3):
+        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer="he_normal", use_bias=True)(x)
+        x = layers.ReLU()(x)
     return x
 
-def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmoid"):
+def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
@@ -79,7 +77,7 @@ def combined_mae_ssim(y_true, y_pred, alpha=0.6):
     mae  = tf.reduce_mean(tf.abs(y_true - y_pred)) # Über den ganzen Batch
     ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0)) # SSIM über den ganzen Batch (Standardfenster 11x11)
 
-    return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
+    return (1.0 - alpha) * (10*mae) + alpha * (1.0 - ssim)
 
 
 def load_split(h5_path):
@@ -177,7 +175,7 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
             "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
 
-BASE_NAME = "unet_2d_SSIM_improved"
+BASE_NAME = "unet_2d_SSIM_test"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{16}__lossMAE__{RUN_ID}"
 
@@ -189,7 +187,6 @@ TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
 X_test, y_test = load_split(FILES["test"])
-
 
 # %%
 # Einmaliges initiales Shuffle (separat für Training und Validation):
@@ -247,6 +244,7 @@ model.compile(
     loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.6),  # 60% SSIM, 40% MAE
     metrics=['mae', 'mse', psnr_metric, ssim_metric]
 )
+
 
 print("Training beginnt...")
 
