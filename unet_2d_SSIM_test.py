@@ -1,7 +1,6 @@
 # unet_2d_SSIM_test.py
 
 # Changes made:
-# Using layers.LayerNormalization instead of bias
 # Using learning rate scheduler
 
 # Changes from SSIM_improved
@@ -11,7 +10,6 @@
 # import os
 import tensorflow as tf
 from tensorflow.keras import layers, models
-from tensorflow.keras.layers import LayerNormalization
 from pathlib import Path
 import h5py
 import numpy as np
@@ -30,8 +28,7 @@ POOL_HW = (2, 2)  # (H, W)
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     for _ in range(3):
-        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer="he_normal", use_bias=False)(x)
-        x = layers.LayerNormalization(axis=-1)(x)
+        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer="he_normal", use_bias=True)(x)
         x = layers.ReLU()(x)
     return x
 
