@@ -173,10 +173,12 @@ print("Lade Daten...")
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
 
-RUN_NAME = "unet_2d_SSIM"
+BASE_NAME = "unet_2d_SSIM"
+RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
+RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{16}__lossMAE__{RUN_ID}"
 
 # Tensorboard root
-TB_ROOT = Path.home() / "data" / "tblogs_unet_2d_simple"
+TB_ROOT    = Path.home() / "data" / "tblogs_unet_2d_simple"
 TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
 
 # Lade die Daten
@@ -239,7 +241,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=100,
+    epochs=50,
     callbacks=callbacks,
     verbose=2
 )
@@ -248,7 +250,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=100,
+    epochs=50,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(192,240,1),
