@@ -1,14 +1,15 @@
-# unet_2d_SSIM.py
-# ==============================
-# 0) Imports & global setup
-# ==============================
-#!/usr/bin/env python3
+# unet_2d_SSIM_test.py
+
+# Changes made:
+# Using layers.LayerNormalization instead of bias
+# Using learning rate scheduler
+
+# Changes from SSIM_improved
+# increase depth from 2 layers to 3
+# base filters erhöht von 16 --> 32
 
 # import os
-# XLA vor dem Import von TensorFlow abschalten
-# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
 from tensorflow.keras import layers, models
 from tensorflow.keras.layers import LayerNormalization
 from pathlib import Path
@@ -65,10 +66,10 @@ def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmo
 
 
 # Loss function
-def combined_mae_ssim(y_true, y_pred, alpha=0.7):
+def combined_mae_ssim(y_true, y_pred, alpha=0.6):
     """
     Loss = (1-alpha)*MAE + alpha*(1-SSIM)
-    alpha=0.7  → 70% SSIM, 30% MAE
+    alpha=0.6  → 60% SSIM, 40% MAE
     Erwartet Werte in [0,1]
     Eingabe: (B,H,W,1)
     """
@@ -243,7 +244,7 @@ callbacks = [
 model = unet_2d(input_shape=(192, 240, 1))
 model.compile(
     optimizer=optimizer,
-    loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.7),  # 70% SSIM, 30% MAE
+    loss=lambda y_true, y_pred: combined_mae_ssim(y_true, y_pred, alpha=0.6),  # 60% SSIM, 40% MAE
     metrics=['mae', 'mse', psnr_metric, ssim_metric]
 )
 
@@ -268,7 +269,7 @@ meta = make_meta_dict(
     input_shape=(192,240,1),
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "combined_mae_ssim(alpha=0.7)", "metrics": ["mae", "mse", "psnr", "ssim"]}
+    extra={"loss": "combined_mae_ssim(alpha=0.6)", "metrics": ["mae", "mse", "psnr", "ssim"]}
 
 )
 
