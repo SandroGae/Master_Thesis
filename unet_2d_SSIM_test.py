@@ -32,7 +32,7 @@ def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
         x = layers.ReLU()(x)
     return x
 
-def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmoid"):
+def unet_2d(input_shape=(192, 240, 1), base_filters=64, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
