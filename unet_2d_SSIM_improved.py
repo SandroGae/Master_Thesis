@@ -168,7 +168,8 @@ def ssim_metric(y_true, y_pred):
 print("Lade Daten...")
 
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
-            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
+            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
+            "test":       "/home/sgaell/data/original_data/test.hdf5",}
 
 BASE_NAME = "unet_2d_SSIM_improved"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -181,6 +182,8 @@ TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
+X_test, y_test = load_split(FILES["test"])
+
 
 # %%
 # Einmaliges initiales Shuffle (separat für Training und Validation):
@@ -199,6 +202,7 @@ AUTOTUNE = tf.data.AUTOTUNE
 # Sicherstellen alles ist float 32
 X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
 X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
+X_test = X_test.astype(np.float32); y_test = y_test.astype(np.float32)
 
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
@@ -212,8 +216,12 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .prefetch(AUTOTUNE))
 
 # Tensorboard --> fester Mini-Batch für Bild-Logging
-x_vis, y_vis = next(iter(val_ds.unbatch().batch(3).take(1)))
-
+idx = 468
+x_vis_test, y_vis_test = next(iter(
+    tf.data.Dataset.from_tensor_slices((X_test[idx:idx+1], y_test[idx:idx+1]))
+    .map(augment_and_normalize_2d(10000.0, 10001.0, p=0.0))
+    .batch(1)
+))
 
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
@@ -223,7 +231,7 @@ callbacks = [
     make_epoch_ckpt_callback(RUN_NAME),  # bestes .keras in ~/data/checkpoints_unet_2d_simple
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR, histograms=False, profile=False),  # Scalars etc. in TB_RUN_DIR
-    ImageLogger(TB_RUN_DIR, (x_vis, y_vis), every_n_epochs=1, max_outputs=3),  # Bilder-Reiter
+    ImageLogger(TB_RUN_DIR, (x_vis_test, y_vis_test), every_n_epochs=1, max_outputs=1),  # Bilder-Reiter
 ]
 
 # Compilieren
