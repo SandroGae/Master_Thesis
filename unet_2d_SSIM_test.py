@@ -4,8 +4,8 @@
 # Using learning rate scheduler
 
 # Changes from SSIM_improved
-# increase depth from 2 layers to 3
-# base filters erhöht von 16 --> 32
+# increase depth from 2 layers to 4
+# base filters erhöht von 16 --> 64
 
 # import os
 import tensorflow as tf
@@ -77,7 +77,7 @@ def combined_mae_ssim(y_true, y_pred, alpha=0.6):
     mae  = tf.reduce_mean(tf.abs(y_true - y_pred)) # Über den ganzen Batch
     ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0)) # SSIM über den ganzen Batch (Standardfenster 11x11)
 
-    return (1.0 - alpha) * (10*mae) + alpha * (1.0 - ssim)
+    return (1.0 - alpha) * (mae) + alpha * (1.0 - ssim)
 
 
 def load_split(h5_path):
