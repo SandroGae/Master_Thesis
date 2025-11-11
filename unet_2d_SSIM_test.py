@@ -47,32 +47,37 @@ POOL_HW = (2, 2)
 def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape)
 
+    # Encoder (etwas tiefer)
     c1 = res_stack_2d(inputs, base_filters, n=2); p1 = layers.MaxPooling2D((2,2))(c1)
     c2 = res_stack_2d(p1, base_filters*2, n=2);  p2 = layers.MaxPooling2D((2,2))(c2)
     c3 = res_stack_2d(p2, base_filters*4, n=2);  p3 = layers.MaxPooling2D((2,2))(c3)
     c4 = res_stack_2d(p3, base_filters*8, n=2);  p4 = layers.MaxPooling2D((2,2))(c4)
 
-    bn = res_stack_2d(p4, base_filters*16, n=2)
+    # tiefer Bottleneck
+    bn = res_stack_2d(p4, base_filters*16, n=3)
 
+    # Decoder (wieder schlank)
     u4 = layers.Conv2DTranspose(base_filters*8, (2,2), strides=(2,2), padding="same")(bn)
     u4 = layers.Concatenate()([u4, c4])
-    c5 = res_stack_2d(u4, base_filters*8, n=2)
+    c5 = res_block_2d(u4, base_filters*8)
 
     u3 = layers.Conv2DTranspose(base_filters*4, (2,2), strides=(2,2), padding="same")(c5)
     u3 = layers.Concatenate()([u3, c3])
-    c6 = res_stack_2d(u3, base_filters*4, n=2)
+    c6 = res_block_2d(u3, base_filters*4)
 
     u2 = layers.Conv2DTranspose(base_filters*2, (2,2), strides=(2,2), padding="same")(c6)
     u2 = layers.Concatenate()([u2, c2])
-    c7 = res_stack_2d(u2, base_filters*2, n=2)
+    c7 = res_block_2d(u2, base_filters*2)
 
     u1 = layers.Conv2DTranspose(base_filters, (2,2), strides=(2,2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])
-    c8 = res_stack_2d(u1, base_filters, n=2)
+    c8 = res_block_2d(u1, base_filters)
 
-    out = layers.Conv2D(1, (1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True)(c8)
+    out = layers.Conv2D(1, (1,1), activation=output_activation,
+                        kernel_initializer="he_normal", use_bias=True)(c8)
 
-    return models.Model(inputs, out, name="unet_2d_residual_deep")
+    return tf.keras.Model(inputs, out)
+
 
 
 
