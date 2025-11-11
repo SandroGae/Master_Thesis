@@ -26,59 +26,53 @@ from tb_utils import make_run_dir, tb_callbacks, ImageLogger
 
 def res_block_2d(x, filters, kernel_size=(3,3), padding="same"):
     ki = "he_normal"
-    shortcut = x  # merken
-    # Hauptzweig
+    shortcut = x
     y = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
     y = layers.ReLU()(y)
     y = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(y)
 
-    # wenn Kanalzahl nicht passt: 1x1 Projektion
     if shortcut.shape[-1] != filters:
         shortcut = layers.Conv2D(filters, (1,1), padding="same", kernel_initializer=ki, use_bias=True)(shortcut)
-
     out = layers.Add()([y, shortcut])
     out = layers.ReLU()(out)
     return out
 
+def res_stack_2d(x, filters, n=2):
+    for _ in range(n):
+        x = res_block_2d(x, filters)
+    return x
+
 POOL_HW = (2, 2)
 
 def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmoid"):
-    inputs = layers.Input(shape=input_shape, name="input")
+    inputs = layers.Input(shape=input_shape)
 
-    # Encoder
-    c1 = res_block_2d(inputs, base_filters)        ; p1 = layers.MaxPooling2D(POOL_HW)(c1)
-    c2 = res_block_2d(p1, base_filters * 2)        ; p2 = layers.MaxPooling2D(POOL_HW)(c2)
-    c3 = res_block_2d(p2, base_filters * 4)        ; p3 = layers.MaxPooling2D(POOL_HW)(c3)
-    c4 = res_block_2d(p3, base_filters * 8)        ; p4 = layers.MaxPooling2D(POOL_HW)(c4)
+    c1 = res_stack_2d(inputs, base_filters, n=2); p1 = layers.MaxPooling2D((2,2))(c1)
+    c2 = res_stack_2d(p1, base_filters*2, n=2);  p2 = layers.MaxPooling2D((2,2))(c2)
+    c3 = res_stack_2d(p2, base_filters*4, n=2);  p3 = layers.MaxPooling2D((2,2))(c3)
+    c4 = res_stack_2d(p3, base_filters*8, n=2);  p4 = layers.MaxPooling2D((2,2))(c4)
 
-    # Bottleneck
-    bn = res_block_2d(p4, base_filters * 16)
+    bn = res_stack_2d(p4, base_filters*16, n=2)
 
-    # Decoder
-    u4 = layers.Conv2DTranspose(base_filters * 8, kernel_size=POOL_HW,
-                                strides=POOL_HW, padding="same")(bn)
+    u4 = layers.Conv2DTranspose(base_filters*8, (2,2), strides=(2,2), padding="same")(bn)
     u4 = layers.Concatenate()([u4, c4])
-    c5 = res_block_2d(u4, base_filters * 8)
+    c5 = res_stack_2d(u4, base_filters*8, n=2)
 
-    u3 = layers.Conv2DTranspose(base_filters * 4, kernel_size=POOL_HW,
-                                strides=POOL_HW, padding="same")(c5)
+    u3 = layers.Conv2DTranspose(base_filters*4, (2,2), strides=(2,2), padding="same")(c5)
     u3 = layers.Concatenate()([u3, c3])
-    c6 = res_block_2d(u3, base_filters * 4)
+    c6 = res_stack_2d(u3, base_filters*4, n=2)
 
-    u2 = layers.Conv2DTranspose(base_filters * 2, kernel_size=POOL_HW,
-                                strides=POOL_HW, padding="same")(c6)
+    u2 = layers.Conv2DTranspose(base_filters*2, (2,2), strides=(2,2), padding="same")(c6)
     u2 = layers.Concatenate()([u2, c2])
-    c7 = res_block_2d(u2, base_filters * 2)
+    c7 = res_stack_2d(u2, base_filters*2, n=2)
 
-    u1 = layers.Conv2DTranspose(base_filters, kernel_size=POOL_HW,
-                                strides=POOL_HW, padding="same")(c7)
+    u1 = layers.Conv2DTranspose(base_filters, (2,2), strides=(2,2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])
-    c8 = res_block_2d(u1, base_filters)
+    c8 = res_stack_2d(u1, base_filters, n=2)
 
-    out = layers.Conv2D(1, (1, 1), activation=output_activation,
-                        kernel_initializer="he_normal", use_bias=True, name="output")(c8)
+    out = layers.Conv2D(1, (1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True)(c8)
 
-    return models.Model(inputs, out, name="unet_2d_residual")
+    return models.Model(inputs, out, name="unet_2d_residual_deep")
 
 
 
