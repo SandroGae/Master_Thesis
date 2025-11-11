@@ -1,9 +1,11 @@
 # unet_3d_SSIM.py
 #!/usr/bin/env python3
 
+# added: dropout
+# basefilter: 48
+
+
 # import os
-# XLA vor dem Import von TensorFlow abschalten
-# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 import tensorflow as tf
 # tf.config.optimizer.set_jit(False)  # XLA JIT aus
 from tensorflow.keras import layers, models
@@ -21,9 +23,13 @@ from tb_utils import make_run_dir, tb_callbacks
 
 
 # Parameters
-DEPTH = 7
+DEPTH = 5
 SERIES_LEN = 41
-BASEFILTERS = 64
+BASEFILTERS = 48
+
+DROPOUT_ENC = (0.05, 0.05, 0.05, 0.05)  # für c1..c4
+DROPOUT_BOT = 0.05
+DROPOUT_DEC = (0.05, 0.05, 0.05, 0.05)   # für c5..c8
 
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
@@ -40,26 +46,24 @@ def unet_3d_center_output(input_shape=(DEPTH,192,240,1), base_filters=BASEFILTER
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
-    c1 = conv_block_3d(inputs, base_filters)              ; p1 = layers.MaxPooling3D(POOL_HW)(c1)
-    c2 = conv_block_3d(p1, base_filters * 2)              ; p2 = layers.MaxPooling3D(POOL_HW)(c2)
-    c3 = conv_block_3d(p2, base_filters * 4)              ; p3 = layers.MaxPooling3D(POOL_HW)(c3)
-    c4 = conv_block_3d(p3, base_filters * 8)              ; p4 = layers.MaxPooling3D(POOL_HW)(c4)
+    c1 = conv_block_3d(inputs, base_filters)              ; c1 = layers.SpatialDropout3D(DROPOUT_ENC[0])(c1); p1 = layers.MaxPooling3D(POOL_HW)(c1)
+    c2 = conv_block_3d(p1, base_filters * 2)              ; c2 = layers.SpatialDropout3D(DROPOUT_ENC[1])(c2); p2 = layers.MaxPooling3D(POOL_HW)(c2)
+    c3 = conv_block_3d(p2, base_filters * 4)              ; c3 = layers.SpatialDropout3D(DROPOUT_ENC[2])(c3); p3 = layers.MaxPooling3D(POOL_HW)(c3)
+    c4 = conv_block_3d(p3, base_filters * 8)              ; c4 = layers.SpatialDropout3D(DROPOUT_ENC[3])(c4); p4 = layers.MaxPooling3D(POOL_HW)(c4)
 
     # Bottleneck
     bn = conv_block_3d(p4, base_filters * 16)
+    bn = layers.SpatialDropout3D(DROPOUT_BOT)(bn)
 
     # Decoder
     u4 = layers.Conv3DTranspose(base_filters * 8, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(bn)
-    u4 = layers.Concatenate()([u4, c4])                   ; c5 = conv_block_3d(u4, base_filters * 8)
-
+    u4 = layers.Concatenate()([u4, c4])                   ; c5 = conv_block_3d(u4, base_filters * 8); c5 = layers.SpatialDropout3D(DROPOUT_DEC[0])(c5)
     u3 = layers.Conv3DTranspose(base_filters * 4, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c5)
-    u3 = layers.Concatenate()([u3, c3])                   ; c6 = conv_block_3d(u3, base_filters * 4)
-
+    u3 = layers.Concatenate()([u3, c3])                   ; c6 = conv_block_3d(u3, base_filters * 4); c6 = layers.SpatialDropout3D(DROPOUT_DEC[1])(c6)
     u2 = layers.Conv3DTranspose(base_filters * 2, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c6)
-    u2 = layers.Concatenate()([u2, c2])                   ; c7 = conv_block_3d(u2, base_filters * 2)
-
+    u2 = layers.Concatenate()([u2, c2])                   ; c7 = conv_block_3d(u2, base_filters * 2); c7 = layers.SpatialDropout3D(DROPOUT_DEC[2])(c7)
     u1 = layers.Conv3DTranspose(base_filters, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c7)
-    u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_3d(u1, base_filters)
+    u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_3d(u1, base_filters)    ; c8 = layers.SpatialDropout3D(DROPOUT_DEC[3])(c8)
 
     # Output Sigmoid
     out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
