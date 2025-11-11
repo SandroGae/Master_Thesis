@@ -22,44 +22,64 @@ np.random.seed(SEED)
 from unet_2d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks, ImageLogger
 
-# %%
-# Simples unet in 2d
-POOL_HW = (2, 2)  # (H, W)
 
-def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
-    for _ in range(4):
-        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer="he_normal", use_bias=True)(x)
-        x = layers.ReLU()(x)
-    return x
 
-def unet_2d(input_shape=(192, 240, 1), base_filters=64, output_activation="sigmoid"):
+def res_block_2d(x, filters, kernel_size=(3,3), padding="same"):
+    ki = "he_normal"
+    shortcut = x  # merken
+    # Hauptzweig
+    y = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
+    y = layers.ReLU()(y)
+    y = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(y)
+
+    # wenn Kanalzahl nicht passt: 1x1 Projektion
+    if shortcut.shape[-1] != filters:
+        shortcut = layers.Conv2D(filters, (1,1), padding="same", kernel_initializer=ki, use_bias=True)(shortcut)
+
+    out = layers.Add()([y, shortcut])
+    out = layers.ReLU()(out)
+    return out
+
+POOL_HW = (2, 2)
+
+def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
-    c1 = conv_block_2d(inputs, base_filters)              ; p1 = layers.MaxPooling2D(POOL_HW)(c1)
-    c2 = conv_block_2d(p1, base_filters * 2)              ; p2 = layers.MaxPooling2D(POOL_HW)(c2)
-    c3 = conv_block_2d(p2, base_filters * 4)              ; p3 = layers.MaxPooling2D(POOL_HW)(c3)
-    c4 = conv_block_2d(p3, base_filters * 8)              ; p4 = layers.MaxPooling2D(POOL_HW)(c4)
+    c1 = res_block_2d(inputs, base_filters)        ; p1 = layers.MaxPooling2D(POOL_HW)(c1)
+    c2 = res_block_2d(p1, base_filters * 2)        ; p2 = layers.MaxPooling2D(POOL_HW)(c2)
+    c3 = res_block_2d(p2, base_filters * 4)        ; p3 = layers.MaxPooling2D(POOL_HW)(c3)
+    c4 = res_block_2d(p3, base_filters * 8)        ; p4 = layers.MaxPooling2D(POOL_HW)(c4)
 
     # Bottleneck
-    bn = conv_block_2d(p4, base_filters * 16)
+    bn = res_block_2d(p4, base_filters * 16)
 
     # Decoder
-    u4 = layers.Conv2DTranspose(base_filters * 8, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(bn)
-    u4 = layers.Concatenate()([u4, c4])                   ; c5 = conv_block_2d(u4, base_filters * 8)
+    u4 = layers.Conv2DTranspose(base_filters * 8, kernel_size=POOL_HW,
+                                strides=POOL_HW, padding="same")(bn)
+    u4 = layers.Concatenate()([u4, c4])
+    c5 = res_block_2d(u4, base_filters * 8)
 
-    u3 = layers.Conv2DTranspose(base_filters * 4, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c5)
-    u3 = layers.Concatenate()([u3, c3])                   ; c6 = conv_block_2d(u3, base_filters * 4)
+    u3 = layers.Conv2DTranspose(base_filters * 4, kernel_size=POOL_HW,
+                                strides=POOL_HW, padding="same")(c5)
+    u3 = layers.Concatenate()([u3, c3])
+    c6 = res_block_2d(u3, base_filters * 4)
 
-    u2 = layers.Conv2DTranspose(base_filters * 2, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c6)
-    u2 = layers.Concatenate()([u2, c2])                   ; c7 = conv_block_2d(u2, base_filters * 2)
+    u2 = layers.Conv2DTranspose(base_filters * 2, kernel_size=POOL_HW,
+                                strides=POOL_HW, padding="same")(c6)
+    u2 = layers.Concatenate()([u2, c2])
+    c7 = res_block_2d(u2, base_filters * 2)
 
-    u1 = layers.Conv2DTranspose(base_filters, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c7)
-    u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_2d(u1, base_filters)
+    u1 = layers.Conv2DTranspose(base_filters, kernel_size=POOL_HW,
+                                strides=POOL_HW, padding="same")(c7)
+    u1 = layers.Concatenate()([u1, c1])
+    c8 = res_block_2d(u1, base_filters)
 
-    # Output Sigmoid
-    out = layers.Conv2D(1, (1, 1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output")(c8)
-    return models.Model(inputs, out, name="unet_2d_simple_relu_sigmoid")
+    out = layers.Conv2D(1, (1, 1), activation=output_activation,
+                        kernel_initializer="he_normal", use_bias=True, name="output")(c8)
+
+    return models.Model(inputs, out, name="unet_2d_residual")
+
 
 
 # Loss function
