@@ -10,12 +10,14 @@ from tensorflow.keras import layers, models
 from pathlib import Path
 import h5py
 import numpy as np
+from datetime import datetime
 
 SEED = 42
 tf.random.set_seed(SEED)
 np.random.seed(SEED)
 
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
+from tb_utils import make_run_dir, tb_callbacks
 
 
 
@@ -24,15 +26,13 @@ POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_3d(x, filters, kernel_size=(1, 3, 3), padding="same"):
     ki = "he_normal"
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True)(x)
-    x = layers.ReLU()(x)
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True)(x)
-    x = layers.ReLU()(x)
+    for _ in range(4):
+        x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
+        x = layers.ReLU()(x)
     return x
 
-def unet_3d_center_output(input_shape=(5,192,240,1), base_filters=16, output_activation="sigmoid"):
+
+def unet_3d_center_output(input_shape=(5,192,240,1), base_filters=64, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
@@ -59,20 +59,16 @@ def unet_3d_center_output(input_shape=(5,192,240,1), base_filters=16, output_act
 
     # Output Sigmoid
     out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
-    out_center = layers.Lambda(lambda t: t[:, 2:3, ...], name="output_center")(out_5)
+    def take_center_slice(t):
+        depth = tf.shape(t)[1]
+        idx = depth // 2
+        return t[:, idx:idx+1, ...]  # (B,1,H,W,1)
+    out_center = layers.Lambda(take_center_slice, name="output_center")(out_5)
     return models.Model(inputs, out_center, name="unet_3d_center_only")
 
 
 
-
 # ==== (SSIM 2D für mittleren Slice) ============================================
-def to_center_target(x, y):
-    # y: (D,H,W,C) -> Nur mittleren Slice von D behalten
-    depth = tf.shape(y)[0]
-    center_index = depth // 2
-    center_slice = y[center_index:center_index + 1, :, :, :]
-    return x, center_slice
-
 def mae_ssim_2d(y_true, y_pred, alpha=0.7):
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)  # (B,D=1,H,W,1)
     y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
@@ -181,16 +177,33 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 # Metriken
-def psnr_2d(y_true, y_pred):
-    # y_true/y_pred: (B,D,H,W,C)
-    mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3,4))
+def mae_ssim_2d(y_true, y_pred, alpha=0.7):
+    # erwartet (B,1,H,W,1)
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    yt = tf.squeeze(y_true, axis=1)  # (B,H,W,1)
+    yp = tf.squeeze(y_pred, axis=1)
+    mae = tf.reduce_mean(tf.abs(yt - yp))
+    ssim_mean = tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
+    return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
+
+def mae_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    return tf.reduce_mean(tf.abs(yt - yp))
+
+def mse_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    return tf.reduce_mean(tf.math.squared_difference(yt, yp))
+
+def psnr_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
-def ssim_2d(y_true, y_pred):
-    # y_true/y_pred: (B,D,H,W,C)
-    y_true_4d = tf.squeeze(y_true, axis=1) # Behalte nur Depth
-    y_pred_4d = tf.squeeze(y_pred, axis=1)
-    return tf.reduce_mean(tf.image.ssim(y_true_4d, y_pred_4d, max_val=1.0))
+def ssim_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    return tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
+
 
 
 
@@ -198,12 +211,20 @@ def ssim_2d(y_true, y_pred):
 print("Lade Daten...")
 
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
-            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
-RUN_NAME = "unet_3d_middle_ssim"
+            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
+            "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
+
+BASE_NAME = "unet_3d_SSIM_middle"
+RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
+RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{64}__lossMAE_SSIM__{RUN_ID}"
+
+TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
+TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
 
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
+# X_test, y_test = load_split(FILES["test"])
 
 # Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
 DEPTH = 5
@@ -219,23 +240,24 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 # Batches hinzufügen
 BATCH_SIZE = 8
 
+print("Erstelle Trainingsdaten...")
+
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-LOG_DIR = Path.home()/ "data" / "checkpoints_unet_3d_simple"
-LOG_DIR.mkdir(parents=True, exist_ok=True) 
 
 callbacks = [
-    make_epoch_ckpt_callback(RUN_NAME),     # speichert nur das beste Modell in ~/data/checkpoints_unet_3d_simple_SSIM
-    tf.keras.callbacks.CSVLogger(str(LOG_DIR / f"{RUN_NAME}.csv"), append=True),
-    tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}"),
+    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
+    make_epoch_ckpt_callback(RUN_NAME),
+    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
+    *tb_callbacks(TB_RUN_DIR, histograms=False, profile=False),
 ]
 
 # Compilieren
-model = unet_3d_center_output(input_shape=(5, 192, 240, 1))
+model = unet_3d_center_output(input_shape=(5,192,240,1))
 model.compile(
     optimizer=optimizer,
     loss=mae_ssim_2d,
-    metrics=['mae', 'mse', psnr_2d, ssim_2d]
+    metrics=[mae_center, mse_center, psnr_center, ssim_center]
 )
 
 print("Erstelle Trainingsdaten…")
@@ -245,19 +267,26 @@ AUTOTUNE = tf.data.AUTOTUNE
 # Sicherstellen alles ist float 32
 X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
 X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
+# X_test = X_test.astype(np.float32); y_test = y_test.astype(np.float32)
+
+def center_target_only(x, y):
+    depth = tf.shape(y)[0]
+    idx = depth // 2
+    return x, y[idx:idx+1, ...]  # (1,H,W,1)
 
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
-            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=AUTOTUNE)
-            .map(to_center_target, num_parallel_calls=AUTOTUNE)   # neu
+            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=tf.data.AUTOTUNE)
+            .map(center_target_only, num_parallel_calls=tf.data.AUTOTUNE)
             .batch(BATCH_SIZE)
-            .prefetch(AUTOTUNE))
+            .prefetch(tf.data.AUTOTUNE))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
-          .map(to_center_target, num_parallel_calls=AUTOTUNE)     # neu
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
+          .map(center_target_only, num_parallel_calls=tf.data.AUTOTUNE)
+          .cache()
           .batch(BATCH_SIZE)
-          .prefetch(AUTOTUNE))
+          .prefetch(tf.data.AUTOTUNE))
 
 
 print("Training beginnt...")
@@ -265,7 +294,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=100,
+    epochs=50,
     callbacks=callbacks,
     verbose=2
 )
@@ -274,13 +303,13 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=100,
+    epochs=50,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(5, 192, 240, 1),  # 3D-Input
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "mae_ssim(alpha=0.7)", "metrics": ["mae", "mse", "psnr_metric_3d_per_sample"]}
+    extra={"loss": "mae_ssim(alpha=0.7)", "metrics": ["mae_center","mse_center","psnr_center","ssim_center"]}
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
