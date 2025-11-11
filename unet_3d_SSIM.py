@@ -199,6 +199,35 @@ def ssim_3d_metric(y_true, y_pred):
     yp4 = tf.reshape(y_pred, (B*D, H, W, C))
     return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
 
+# ===== Center-Slice Metrics (nur mittleres Bild) =====
+def _center_hw(y_true, y_pred):
+    # Erwartet: (B, D, H, W, C) in [0,1]
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    D = tf.shape(y_true)[1]
+    idx = D // 2  # robust, auch wenn DEPTH mal != 5 ist
+    yt = y_true[:, idx, :, :, :]  # (B, H, W, C)
+    yp = y_pred[:, idx, :, :, :]  # (B, H, W, C)
+    return yt, yp
+
+def mae_center_slice(y_true, y_pred):
+    yt, yp = _center_hw(y_true, y_pred)
+    return tf.reduce_mean(tf.abs(yt - yp))
+
+def mse_center_slice(y_true, y_pred):
+    yt, yp = _center_hw(y_true, y_pred)
+    return tf.reduce_mean(tf.math.squared_difference(yt, yp))
+
+def psnr_center_slice(y_true, y_pred):
+    yt, yp = _center_hw(y_true, y_pred)
+    # PSNR über Batch mitteln
+    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
+    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
+
+def ssim_center_slice(y_true, y_pred):
+    yt, yp = _center_hw(y_true, y_pred)
+    return tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
+
 
 
 # Daten einlesen
@@ -249,7 +278,7 @@ model = unet_3d(input_shape=(5, 192, 240, 1))
 model.compile(
     optimizer=optimizer,
     loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.7), # kombinierter Loss (70% SSIM, 30% MAE)
-    metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric]
+    metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric, mae_center_slice, mse_center_slice, psnr_center_slice, ssim_center_slice]
 )
 
 print("Erstelle Trainingsdaten…")
