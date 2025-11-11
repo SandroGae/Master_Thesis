@@ -20,6 +20,10 @@ from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, m
 from tb_utils import make_run_dir, tb_callbacks
 
 
+# Parameters
+DEPTH = 7
+SERIES_LEN = 41
+BASEFILTERS = 64
 
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
@@ -32,7 +36,7 @@ def conv_block_3d(x, filters, kernel_size=(1, 3, 3), padding="same"):
     return x
 
 
-def unet_3d_center_output(input_shape=(5,192,240,1), base_filters=64, output_activation="sigmoid"):
+def unet_3d_center_output(input_shape=(DEPTH,192,240,1), base_filters=BASEFILTERS, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
@@ -216,7 +220,7 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
 
 BASE_NAME = "unet_3d_SSIM_middle"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
-RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{64}__lossMAE_SSIM__{RUN_ID}"
+RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
 TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
 TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
@@ -227,8 +231,6 @@ X_val,   y_val   = load_split(FILES["validation"])
 # X_test, y_test = load_split(FILES["test"])
 
 # Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
-DEPTH = 5
-SERIES_LEN = 41
 X_train, y_train = make_sliding_windows(X_train, y_train, SERIES_LEN, DEPTH)
 X_val,   y_val   = make_sliding_windows(X_val,   y_val,   SERIES_LEN, DEPTH)
 
@@ -253,7 +255,7 @@ callbacks = [
 ]
 
 # Compilieren
-model = unet_3d_center_output(input_shape=(5,192,240,1))
+model = unet_3d_center_output(input_shape=(DEPTH,192,240,1))
 model.compile(
     optimizer=optimizer,
     loss=mae_ssim_2d,
@@ -306,7 +308,7 @@ meta = make_meta_dict(
     epochs=50,
     optimizer=optimizer,
     learning_rate=5e-4,
-    input_shape=(5, 192, 240, 1),  # 3D-Input
+    input_shape=(DEPTH, 192, 240, 1),  # 3D-Input
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
     extra={"loss": "mae_ssim(alpha=0.6)", "metrics": ["mae_center","mse_center","psnr_center","ssim_center"]}
