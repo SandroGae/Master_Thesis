@@ -2,20 +2,19 @@
 #!/usr/bin/env python3
 
 # import os
-# XLA vor dem Import von TensorFlow abschalten
-# os.environ["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=0 --tf_xla_enable_xla_devices=false"
 import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
 from tensorflow.keras import layers, models
 from pathlib import Path
 import h5py
 import numpy as np
+from datetime import datetime
 
 SEED = 42
 tf.random.set_seed(SEED)
 np.random.seed(SEED)
 
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
+from tb_utils import make_run_dir, tb_callbacks
 
 
 
@@ -24,15 +23,12 @@ POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_3d(x, filters, kernel_size=(1, 3, 3), padding="same"):
     ki = "he_normal"
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True)(x)
-    x = layers.ReLU()(x)
-    x = layers.Conv3D(filters, kernel_size, padding=padding,
-                      kernel_initializer=ki, use_bias=True)(x)
-    x = layers.ReLU()(x)
+    for _ in range(4):
+        x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
+        x = layers.ReLU()(x)
     return x
 
-def unet_3d(input_shape=(5, 192, 240, 1), base_filters=16, output_activation="sigmoid"):
+def unet_3d(input_shape=(5, 192, 240, 1), base_filters=64, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
@@ -209,8 +205,16 @@ def ssim_3d_metric(y_true, y_pred):
 print("Lade Daten...")
 
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
-            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
-RUN_NAME = "unet_3d_simple_SSIM"
+            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
+            "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
+
+
+BASE_NAME = "unet_3d_simple_SSIM"
+RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
+RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{64}__lossMAE_SSIM__{RUN_ID}"
+
+TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
+TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
 
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
@@ -232,13 +236,12 @@ BATCH_SIZE = 8
 
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-LOG_DIR = Path.home()/ "data" / "checkpoints_unet_3d_simple"
-LOG_DIR.mkdir(parents=True, exist_ok=True) 
 
 callbacks = [
-    make_epoch_ckpt_callback(RUN_NAME),     # speichert nur das beste Modell in ~/data/checkpoints_unet_3d_simple_SSIM
-    tf.keras.callbacks.CSVLogger(str(LOG_DIR / f"{RUN_NAME}.csv"), append=True),
-    tf.keras.callbacks.TensorBoard(log_dir=f"tb_logs/{RUN_NAME}"),
+    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
+    make_epoch_ckpt_callback(RUN_NAME),
+    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
+    *tb_callbacks(TB_RUN_DIR, histograms=False, profile=False),
 ]
 
 # Compilieren
