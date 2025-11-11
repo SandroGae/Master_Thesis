@@ -1,11 +1,11 @@
-# unet_2d_SSIM_improved.py
+# unet_2d_SSIM_test.py
 
 # Changes made:
 # Using learning rate scheduler
 
 # Changes from SSIM_improved
-# increase depth from 2 layers to 3
-# base filters erhöht von 16 --> 32
+# increase depth from 2 layers to 4
+# base filters erhöht von 16 --> 64
 
 # import os
 import tensorflow as tf
@@ -27,12 +27,12 @@ from tb_utils import make_run_dir, tb_callbacks, ImageLogger
 POOL_HW = (2, 2)  # (H, W)
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
-    for _ in range(3):
+    for _ in range(4):
         x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer="he_normal", use_bias=True)(x)
         x = layers.ReLU()(x)
     return x
 
-def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmoid"):
+def unet_2d(input_shape=(192, 240, 1), base_filters=64, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
@@ -77,7 +77,7 @@ def combined_mae_ssim(y_true, y_pred, alpha=0.6):
     mae  = tf.reduce_mean(tf.abs(y_true - y_pred)) # Über den ganzen Batch
     ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0)) # SSIM über den ganzen Batch (Standardfenster 11x11)
 
-    return (1.0 - alpha) * (10*mae) + alpha * (1.0 - ssim)
+    return (1.0 - alpha) * (mae) + alpha * (1.0 - ssim)
 
 
 def load_split(h5_path):
