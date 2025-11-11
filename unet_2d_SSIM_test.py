@@ -44,7 +44,7 @@ def res_stack_2d(x, filters, n=2):
 
 POOL_HW = (2, 2)
 
-def unet_2d(input_shape=(192, 240, 1), base_filters=16, output_activation="sigmoid"):
+def unet_2d(input_shape=(192, 240, 1), base_filters=32, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape)
 
     # Encoder (etwas tiefer)

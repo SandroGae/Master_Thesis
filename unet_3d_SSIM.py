@@ -63,7 +63,7 @@ def unet_3d(input_shape=(5, 192, 240, 1), base_filters=64, output_activation="si
 
 
 # ==== (SSIM für 3D via Slices) ============================================
-def combined_mae_ssim_3d(y_true, y_pred, alpha=0.7):
+def combined_mae_ssim_3d(y_true, y_pred, alpha=0.6):
     """
     Kombi-Loss für 3D-Volumes über 2D-SSIM pro Slice:
       Loss = (1-alpha)*MAE + alpha*(1-SSIM_mean)
@@ -248,6 +248,7 @@ TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
+# X_test, y_test = load_split(FILES["test"])
 
 # Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
 DEPTH = 5
@@ -263,6 +264,8 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 # Batches hinzufügen
 BATCH_SIZE = 8
 
+print("Erstelle Trainingsaten...")
+
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
 
@@ -277,7 +280,7 @@ callbacks = [
 model = unet_3d(input_shape=(5, 192, 240, 1))
 model.compile(
     optimizer=optimizer,
-    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.7), # kombinierter Loss (70% SSIM, 30% MAE)
+    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6), # kombinierter Loss (60% SSIM, 40% MAE)
     metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric, mae_center_slice, mse_center_slice, psnr_center_slice, ssim_center_slice]
 )
 
@@ -288,6 +291,7 @@ AUTOTUNE = tf.data.AUTOTUNE
 # Sicherstellen alles ist float 32
 X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
 X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
+# X_test = X_test.astype(np.float32); y_test = y_test.astype(np.float32)
 
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
@@ -297,15 +301,17 @@ train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
+          .cache() 
           .batch(BATCH_SIZE)
           .prefetch(AUTOTUNE))
+
 
 print("Training beginnt...")
 
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=100,
+    epochs=50,
     callbacks=callbacks,
     verbose=2
 )
@@ -314,13 +320,13 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=100,
+    epochs=50,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(5, 192, 240, 1),  # 3D-Input
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "mae_ssim(alpha=0.7)", "metrics": ["mae", "mse", "psnr_metric_3d_per_sample"]}
+    extra={"loss": "mae_ssim(alpha=0.6)", "metrics": ["mae", "mse", "psnr_metric_3d_per_sample"]}
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
