@@ -69,7 +69,7 @@ def unet_3d_center_output(input_shape=(5,192,240,1), base_filters=64, output_act
 
 
 # ==== (SSIM 2D für mittleren Slice) ============================================
-def mae_ssim_2d(y_true, y_pred, alpha=0.7):
+def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)  # (B,D=1,H,W,1)
     y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
 
@@ -177,7 +177,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 # Metriken
-def mae_ssim_2d(y_true, y_pred, alpha=0.7):
+def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     # erwartet (B,1,H,W,1)
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
     y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
@@ -309,7 +309,7 @@ meta = make_meta_dict(
     input_shape=(5, 192, 240, 1),  # 3D-Input
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "mae_ssim(alpha=0.7)", "metrics": ["mae_center","mse_center","psnr_center","ssim_center"]}
+    extra={"loss": "mae_ssim(alpha=0.6)", "metrics": ["mae_center","mse_center","psnr_center","ssim_center"]}
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
