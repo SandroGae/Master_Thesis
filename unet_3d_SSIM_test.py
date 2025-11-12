@@ -151,39 +151,32 @@ def shuffle_initial(X, y, seed):
 
 def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: float = 0.5):
     """
-    x,y: (D, H, W, C)
-    1) optional flip
-    2) relu
-    3) pro Slice durch Summe normalisieren
-    4) eine gemeinsame (!) Skalierung fuer das ganze Volume
+    x: wird pro Slice normalisiert + leicht gescaled
+    y: bleibt im Originalbereich (nur relu + evtl. flip)
     """
     def map_volume(x, y):
-        # optional flip
+        # gleicher Flip für x und y
         flip = tf.random.uniform([], 0.0, 1.0) < p
         x = tf.cond(flip, lambda: tf.reverse(x, axis=[2]), lambda: x)
         y = tf.cond(flip, lambda: tf.reverse(y, axis=[2]), lambda: y)
 
-        # negativ raus
+        # negative weg
         x = tf.nn.relu(x)
         y = tf.nn.relu(y)
 
-        # pro Slice normieren
+        # NUR x normalisieren --> pro Slice Summe über (H,W,C)
         sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
-        sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
         x = x / sum_x
-        y = y / sum_y
 
-        # gemeinsame Skalierung
+        # leichte Helligkeitsjitter nur für x
         scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
         x = x * scale
-        y = y * scale
-
-        # optional leicht clampen
         x = tf.clip_by_value(x, 0.0, 1.0)
-        y = tf.clip_by_value(y, 0.0, 1.0)
 
+        # y NICHT durch Slice-Summe teilen --> y bleibt so, wie es aus der HDF5 kommt (abgesehen von relu + flip)
         return x, y
     return map_volume
+
 
 
 
@@ -303,7 +296,7 @@ train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .map(augment_and_normalize_3d_per_slice(1.0, 1.0, p=0.0), num_parallel_calls=AUTOTUNE)
-          .cache() 
+          .cache()
           .batch(BATCH_SIZE)
           .prefetch(AUTOTUNE))
 
