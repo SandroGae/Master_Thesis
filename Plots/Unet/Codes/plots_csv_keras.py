@@ -13,7 +13,8 @@ FILE_2d_200 = "unet_2d_simple_loss0.0118_val0.0135_epochs200.csv"
 FILE_VDSR = "VDSR_reconstruction_V2_loss0.0132_val0.0133.csv"
 FILE_3d_ssim_old = "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-084215.csv"
 FILE_3d_ssim = "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006.csv"
-csv_path = CSV_DIR / FILE_3d_ssim_old
+FILE_3d_ssim_5_to_1 = "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-180318.csv"
+csv_path = CSV_DIR / FILE_3d_ssim_5_to_1
 
 num_epochs = 50
 

@@ -1,8 +1,10 @@
-# unet_3d_SSIM.py
+# unet_3d_SSIM_middle.py
 #!/usr/bin/env python3
+
 
 # import os
 import tensorflow as tf
+# tf.config.optimizer.set_jit(False)  # XLA JIT aus
 from tensorflow.keras import layers, models
 from pathlib import Path
 import h5py
@@ -32,7 +34,8 @@ def conv_block_3d(x, filters, kernel_size=(3, 3, 3), padding="same"):
         x = layers.ReLU()(x)
     return x
 
-def unet_3d(input_shape=(DEPTH, 192, 240, 1), base_filters=BASEFILTERS, output_activation="sigmoid"):
+
+def unet_3d_center_output(input_shape=(DEPTH,192,240,1), base_filters=BASEFILTERS, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     # Encoder
@@ -47,50 +50,24 @@ def unet_3d(input_shape=(DEPTH, 192, 240, 1), base_filters=BASEFILTERS, output_a
     # Decoder
     u4 = layers.Conv3DTranspose(base_filters * 8, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(bn)
     u4 = layers.Concatenate()([u4, c4])                   ; c5 = conv_block_3d(u4, base_filters * 8)
-
     u3 = layers.Conv3DTranspose(base_filters * 4, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c5)
     u3 = layers.Concatenate()([u3, c3])                   ; c6 = conv_block_3d(u3, base_filters * 4)
-
     u2 = layers.Conv3DTranspose(base_filters * 2, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c6)
     u2 = layers.Concatenate()([u2, c2])                   ; c7 = conv_block_3d(u2, base_filters * 2)
-
     u1 = layers.Conv3DTranspose(base_filters, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_3d(u1, base_filters)
 
     # Output Sigmoid
-    out = layers.Conv3D(1, (1, 1, 1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output")(c8)
+    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
+    def take_center_slice(t):
+        depth = tf.shape(t)[1]
+        idx = depth // 2
+        return t[:, idx:idx+1, ...]  # (B,1,H,W,1)
+    out_center = layers.Lambda(take_center_slice, name="output_center")(out_5)
+    return models.Model(inputs, out_center, name="unet_3d_center_only")
 
-    return models.Model(inputs, out, name="unet_3d_simple_relu_sigmoid")
 
 
-
-
-# ==== (SSIM für 3D via Slices) ============================================
-def combined_mae_ssim_3d(y_true, y_pred, alpha=0.6):
-    """
-    Kombi-Loss für 3D-Volumes über 2D-SSIM pro Slice:
-      Loss = (1-alpha)*MAE + alpha*(1-SSIM_mean)
-    Erwartet: Inputs in Form (B, D, H, W, C)
-    Gibt: Skalar (Batch-Loss)
-    """
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-
-    # Reshape 5d --> 4d: (B,D,H,W,C) -> (B*D, H, W, C)
-    shape = tf.shape(y_true)
-    B, D, H, W, C = shape[0], shape[1], shape[2], shape[3], shape[4]
-    y_true_4d = tf.reshape(y_true, (B*D, H, W, C))
-    y_pred_4d = tf.reshape(y_pred, (B*D, H, W, C))
-
-    # SSIM pro Slice, dann Mittelwert über alle Slices im Batch
-    ssim_vals = tf.image.ssim(y_true_4d, y_pred_4d, max_val=1.0)
-    ssim_mean = tf.reduce_mean(ssim_vals)
-
-    # MAE über alle Voxels im Batch
-    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-
-    return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
-# ==============================================================================
 
 def load_split(h5_path):
     """
@@ -156,8 +133,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
       1) Horizontal-Flip (W-Achse) mit probability p, für alle Slices identisch
       2) Clip >= 0
       3) Norm pro Slice: Division durch Summe über (H,W,C) -> Form (D,1,1,1)
-      4) Zufalls-Skalierung je Sample: eigene Skala pro Slice (Form (D,1,1,1))
-      5) Clip auf [0,1]
+      4) Zufalls-Skalierung je Sample: gleiche Skala alle Slices (Form (D,1,1,1))
     """
     def map_volume(x, y):
         # Flip, hier ist W Achse 2 (0:D, 1:H, 2:W, 3:C) und die flippen wir
@@ -185,51 +161,36 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 
+# Loss
+def mae_ssim_2d(y_true, y_pred, alpha=0.6):
+    # erwartet (B,1,H,W,1)
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    yt = tf.squeeze(y_true, axis=1)  # (B,H,W,1)
+    yp = tf.squeeze(y_pred, axis=1)
+    mae = tf.reduce_mean(tf.abs(yt - yp))
+    ssim_mean = tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
+    return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
+
 
 # Metriken
-def psnr_metric_3d_per_sample(y_true, y_pred):
-    # y_true/y_pred: (N, D, H, W, C) in [0,1]
-    mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3,4))  # MSE gemittelt über (D, H, W, C)
-    psnr = 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)               # PSNR
-    return psnr  # Mittelwert über N
-
-def ssim_3d_metric(y_true, y_pred):
-    # gleiche Logik wie oben, nur der Mittelwert von SSIM als Metrik
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-    B, D, H, W, C = tf.unstack(tf.shape(y_true))
-    yt4 = tf.reshape(y_true, (B*D, H, W, C))
-    yp4 = tf.reshape(y_pred, (B*D, H, W, C))
-    return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
-
-# ===== Center-Slice Metrics (nur mittleres Bild) =====
-def _center_hw(y_true, y_pred):
-    # Erwartet: (B, D, H, W, C) in [0,1]
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-    D = tf.shape(y_true)[1]
-    idx = D // 2  # robust, auch wenn DEPTH mal != 5 ist
-    yt = y_true[:, idx, :, :, :]  # (B, H, W, C)
-    yp = y_pred[:, idx, :, :, :]  # (B, H, W, C)
-    return yt, yp
-
-def mae_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
+def mae_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
     return tf.reduce_mean(tf.abs(yt - yp))
 
-def mse_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
+def mse_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
     return tf.reduce_mean(tf.math.squared_difference(yt, yp))
 
-def psnr_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
-    # PSNR über Batch mitteln
+def psnr_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
     mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
-def ssim_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
+def ssim_center(y_true, y_pred):
+    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
     return tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
+
 
 
 
@@ -240,8 +201,7 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
             "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
 
-
-BASE_NAME = "unet_3d_SSIM"
+BASE_NAME = "unet_3d_SSIM_middle"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
@@ -253,7 +213,7 @@ X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
 # X_test, y_test = load_split(FILES["test"])
 
-# Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
+# Mache daraus Volumen im Format (N_vols = 2960, DEPTH, H=192, W=240, C=1)
 X_train, y_train = make_sliding_windows(X_train, y_train, SERIES_LEN, DEPTH)
 X_val,   y_val   = make_sliding_windows(X_val,   y_val,   SERIES_LEN, DEPTH)
 
@@ -276,14 +236,14 @@ callbacks = [
 ]
 
 # Compilieren
-model = unet_3d(input_shape=(DEPTH, 192, 240, 1))
+model = unet_3d_center_output(input_shape=(DEPTH,192,240,1))
 model.compile(
     optimizer=optimizer,
-    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6), # kombinierter Loss (60% SSIM, 40% MAE)
-    metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric, mae_center_slice, mse_center_slice, psnr_center_slice, ssim_center_slice]
+    loss=mae_ssim_2d,
+    metrics=[mae_center, mse_center, psnr_center, ssim_center]
 )
 
-print("Erstelle Trainingsdate...")
+print("Erstelle Trainingsdaten...")
 
 AUTOTUNE = tf.data.AUTOTUNE
 
@@ -292,17 +252,24 @@ X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
 X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
 # X_test = X_test.astype(np.float32); y_test = y_test.astype(np.float32)
 
+def center_target_only(x, y):
+    depth = tf.shape(y)[0]
+    idx = depth // 2
+    return x, y[idx:idx+1, ...]  # (1,H,W,1)
+
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
-            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=AUTOTUNE)
+            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=tf.data.AUTOTUNE)
+            .map(center_target_only, num_parallel_calls=tf.data.AUTOTUNE)
             .batch(BATCH_SIZE)
-            .prefetch(AUTOTUNE))
+            .prefetch(tf.data.AUTOTUNE))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
+          .map(center_target_only, num_parallel_calls=tf.data.AUTOTUNE)
           .cache()
           .batch(BATCH_SIZE)
-          .prefetch(AUTOTUNE))
+          .prefetch(tf.data.AUTOTUNE))
 
 
 print("Training beginnt...")
@@ -325,7 +292,7 @@ meta = make_meta_dict(
     input_shape=(DEPTH, 192, 240, 1),  # 3D-Input
     scale_range_train=(5000,15000),
     scale_range_val=(10000,10001),
-    extra={"loss": "mae_ssim(alpha=0.6)", "metrics": ["mae", "mse", "psnr_metric_3d_per_sample"]}
+    extra={"loss": "mae_ssim(alpha=0.6)", "metrics": ["mae_center","mse_center","psnr_center","ssim_center"]}
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
