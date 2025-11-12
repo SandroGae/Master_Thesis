@@ -177,6 +177,43 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 # Metriken
+def _center_slice_normalized(y_true, y_pred):
+    # y_true, y_pred: (B, D, H, W, C)
+    D = tf.shape(y_true)[1]
+    idx = D // 2
+
+    # zentralen Slice rausholen -> (B, 1, H, W, C)
+    yt = y_true[:, idx:idx+1, ...]
+    yp = y_pred[:, idx:idx+1, ...]
+
+    # auf GT-Summe normalisieren (wie im Loss!)
+    sum_true = tf.reduce_sum(yt, axis=[2, 3, 4], keepdims=True) + 1e-12
+    yt_n = yt / sum_true
+    yp_n = yp / sum_true
+
+    # für SSIM/PSNR brauchen wir 4D (B, H, W, C)
+    yt4 = tf.squeeze(yt_n, axis=1)
+    yp4 = tf.squeeze(yp_n, axis=1)
+    return yt_n, yp_n, yt4, yp4
+
+def mae_center_slice_normalized(y_true, y_pred):
+    yt_n, yp_n, _, _ = _center_slice_normalized(y_true, y_pred)
+    return tf.reduce_mean(tf.abs(yt_n - yp_n))
+
+
+def ssim_center_slice_normalized(y_true, y_pred):
+    _, _, yt4, yp4 = _center_slice_normalized(y_true, y_pred)
+    return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
+
+
+def psnr_center_slice_normalized(y_true, y_pred):
+    yt_n, yp_n, _, _ = _center_slice_normalized(y_true, y_pred)
+    # MSE über (H,W,C)
+    mse = tf.reduce_mean(tf.math.squared_difference(yt_n, yp_n), axis=[2,3,4])
+    psnr = 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
+    return tf.reduce_mean(psnr)
+
+
 def mae_slice_normalized(y_true, y_pred):
     # y_true, y_pred: (B, D, H, W, C)
 
@@ -201,51 +238,6 @@ def ssim_slice_normalized(y_true, y_pred):
     yp4 = tf.reshape(y_pred_n, (B*D, H, W, C))
 
     return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
-
-def psnr_metric_3d_per_sample(y_true, y_pred):
-    # y_true/y_pred: (N, D, H, W, C) in [0,1]
-    mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3,4))  # MSE gemittelt über (D, H, W, C)
-    psnr = 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)               # PSNR
-    return psnr  # Mittelwert über N
-
-def ssim_3d_metric(y_true, y_pred):
-    # gleiche Logik wie oben, nur der Mittelwert von SSIM als Metrik
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-    B, D, H, W, C = tf.unstack(tf.shape(y_true))
-    yt4 = tf.reshape(y_true, (B*D, H, W, C))
-    yp4 = tf.reshape(y_pred, (B*D, H, W, C))
-    return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
-
-# ===== Center-Slice Metrics (nur mittleres Bild) =====
-def _center_hw(y_true, y_pred):
-    # Erwartet: (B, D, H, W, C) in [0,1]
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
-    D = tf.shape(y_true)[1]
-    idx = D // 2  # robust, auch wenn DEPTH mal != 5 ist
-    yt = y_true[:, idx, :, :, :]  # (B, H, W, C)
-    yp = y_pred[:, idx, :, :, :]  # (B, H, W, C)
-    return yt, yp
-
-def mae_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
-    return tf.reduce_mean(tf.abs(yt - yp))
-
-def mse_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
-    return tf.reduce_mean(tf.math.squared_difference(yt, yp))
-
-def psnr_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
-    # PSNR über Batch mitteln
-    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
-    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
-
-def ssim_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
-    return tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
-
 
 
 # Daten einlesen
@@ -294,8 +286,14 @@ callbacks = [
 model = unet_3d(input_shape=(DEPTH, 192, 240, 1))
 model.compile(
     optimizer=optimizer,
-    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6), # kombinierter Loss (60% SSIM, 40% MAE)
-    metrics=[mae_slice_normalized, ssim_slice_normalized]
+    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6),
+    metrics=[
+        mae_slice_normalized,          # alle Slices
+        ssim_slice_normalized,         # alle Slices
+        mae_center_slice_normalized,   # nur Zentrum
+        ssim_center_slice_normalized,  # nur Zentrum
+        psnr_center_slice_normalized   # nur Zentrum
+    ]
 )
 
 print("Erstelle Trainingsdate...")
