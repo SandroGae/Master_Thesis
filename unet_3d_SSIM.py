@@ -18,14 +18,14 @@ from tb_utils import make_run_dir, tb_callbacks
 
 
 # Parameters
-DEPTH = 3
+DEPTH = 5
 SERIES_LEN = 41
 BASEFILTERS = 64
 
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
-def conv_block_3d(x, filters, kernel_size=(3, 3, 3), padding="same"):
+def conv_block_3d(x, filters, kernel_size=(1, 3, 3), padding="same"):
     ki = "he_normal"
     for _ in range(4):
         x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
@@ -169,17 +169,17 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         x = tf.nn.relu(x)
         y = tf.nn.relu(y)
 
-        # Pro Slice normalisieren  -> jede Tiefe separat
-        # x,y: (D,H,W,C)
+        # Normierung pro Slice
         sum_x = tf.reduce_sum(x, axis=[1,2,3], keepdims=True) + 1e-12
         sum_y = tf.reduce_sum(y, axis=[1,2,3], keepdims=True) + 1e-12
         x = x / sum_x
         y = y / sum_y
 
-        # Eine gemeinsame Skalierung für das ganze Volume
-        scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
-        x = x * scale
-        y = y * scale
+        # Zufalls-Skalierung + Clip auf [0,1]
+        D = tf.shape(x)[0]
+        scale = tf.random.uniform([D,1,1,1], minval=tf.cast(scale_min, tf.float32), maxval=tf.cast(scale_max, tf.float32), dtype=tf.float32)
+        x = tf.clip_by_value(x * scale, 0.0, 1.0)
+        y = tf.clip_by_value(y * scale, 0.0, 1.0)
 
         return x, y
     return map_volume

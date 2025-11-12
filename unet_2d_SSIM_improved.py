@@ -22,7 +22,7 @@ np.random.seed(SEED)
 from unet_2d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks, ImageLogger
 
-# %%
+
 # Simples unet in 2d
 POOL_HW = (2, 2)  # (H, W)
 
@@ -177,7 +177,7 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
 
 BASE_NAME = "unet_2d_SSIM_test"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
-RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{16}__lossMAE__{RUN_ID}"
+RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{64}__lossMAE__{RUN_ID}"
 
 # Tensorboard root
 TB_ROOT    = Path.home() / "data" / "tblogs_unet_2d_simple"

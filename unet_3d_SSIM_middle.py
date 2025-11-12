@@ -246,8 +246,6 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 # Batches hinzufügen
 BATCH_SIZE = 8
 
-print("Erstelle Trainingsdaten...")
-
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
 
@@ -266,7 +264,7 @@ model.compile(
     metrics=[mae_center, mse_center, psnr_center, ssim_center]
 )
 
-print("Erstelle Trainingsdaten…")
+print("Erstelle Trainingsdaten...")
 
 AUTOTUNE = tf.data.AUTOTUNE
 
