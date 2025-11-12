@@ -65,8 +65,8 @@ def unet_3d(input_shape=(DEPTH, 192, 240, 1), base_filters=BASEFILTERS, output_a
 
 
 
-SCALE_FOR_LOSS = 15000.0  # gleiche Größenordnung wie früher
-SCALE_FOR_METRICS = 15000.0
+SCALE_FOR_LOSS = 10000.0  # gleiche Grössenordnung wie früher
+SCALE_FOR_METRICS = 10000.0
 
 def combined_mae_ssim_3d_fixed(y_true, y_pred, alpha=0.6, scale=SCALE_FOR_LOSS):
     # alles auf feste Skala bringen
@@ -308,10 +308,11 @@ train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .prefetch(AUTOTUNE))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-          .map(augment_and_normalize_3d_per_slice(1.0, 1.0, p=0.0), num_parallel_calls=AUTOTUNE)
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
           .cache()
           .batch(BATCH_SIZE)
-          .prefetch(AUTOTUNE))
+          .prefetch(tf.data.AUTOTUNE))
+
 
 
 print("Training beginnt...")
