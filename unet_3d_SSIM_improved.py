@@ -92,6 +92,7 @@ def combined_mae_ssim_3d(y_true, y_pred, alpha=0.6):
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
 # ==============================================================================
 
+
 def load_split(h5_path):
     """
     Lädt Daten aus HDF5-Datei und formatiert sie passend für 2d unet
@@ -156,8 +157,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
       1) Horizontal-Flip (W-Achse) mit probability p, für alle Slices identisch
       2) Clip >= 0
       3) Norm pro Slice: Division durch Summe über (H,W,C) -> Form (D,1,1,1)
-      4) Zufalls-Skalierung je Sample: eigene Skala pro Slice (Form (D,1,1,1))
-      5) Clip auf [0,1]
+      4) Zufalls-Skalierung je Sample: gleiche Skala alle Slices (Form (D,1,1,1))
     """
     def map_volume(x, y):
         # Flip, hier ist W Achse 2 (0:D, 1:H, 2:W, 3:C) und die flippen wir
@@ -175,7 +175,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         x = x / sum_x
         y = y / sum_y
 
-        # eine gemeinsame Skalierung für das ganze Volumen!
+        # eine gemeinsame Skalierung für alle Slices im Volumen!
         scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
         x = x * scale
         y = y * scale
@@ -253,7 +253,7 @@ X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
 # X_test, y_test = load_split(FILES["test"])
 
-# Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
+# Mache daraus Volumen im Format (N_vols = 2960, DEPTH, H=192, W=240, C=1)
 X_train, y_train = make_sliding_windows(X_train, y_train, SERIES_LEN, DEPTH)
 X_val,   y_val   = make_sliding_windows(X_val,   y_val,   SERIES_LEN, DEPTH)
 
