@@ -156,6 +156,10 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         x = x * scale
         y = y * scale
 
+        # Clipping auf [0, 1]
+        x = tf.clip_by_value(x, 0.0, 1.0)
+        y = tf.clip_by_value(y, 0.0, 1.0)
+
         return x, y
     return map_volume
 
