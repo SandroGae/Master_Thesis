@@ -176,9 +176,9 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         y = y / sum_y
 
         # eine gemeinsame Skalierung für alle Slices im Volumen!
-        scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
-        x = x * scale
-        y = y * scale
+        scale = tf.random.uniform([], minval=tf.cast(scale_min, tf.float32), maxval=tf.cast(scale_max, tf.float32))
+        x = tf.clip_by_value(x * scale, 0.0, 1.0)
+        y = tf.clip_by_value(y * scale, 0.0, 1.0)
 
         return x, y
     return map_volume
