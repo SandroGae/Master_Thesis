@@ -65,26 +65,26 @@ def unet_3d(input_shape=(DEPTH, 192, 240, 1), base_filters=BASEFILTERS, output_a
 
 
 
-# ==== (SSIM für 3D via Slices) ============================================
-def combined_mae_ssim_3d(y_true, y_pred, alpha=0.6):
-    # y_true/pred: (B, D, H, W, C)
+SCALE_FOR_LOSS = 15000.0  # gleiche Größenordnung wie früher
+SCALE_FOR_METRICS = 15000.0
 
-    # pro Slice auf GT-Summe normalisieren
-    sum_true = tf.reduce_sum(y_true, axis=[2, 3, 4], keepdims=True) + 1e-12
-    y_true_n = y_true / sum_true
-    y_pred_n = y_pred / sum_true
+def combined_mae_ssim_3d_fixed(y_true, y_pred, alpha=0.6, scale=SCALE_FOR_LOSS):
+    # alles auf feste Skala bringen
+    yt = tf.clip_by_value(y_true / scale, 0.0, 1.0)
+    yp = tf.clip_by_value(y_pred / scale, 0.0, 1.0)
 
-    # 4D für SSIM
-    shape = tf.shape(y_true_n)
+    # für SSIM auf 4D flatten
+    shape = tf.shape(yt)
     B, D, H, W, C = shape[0], shape[1], shape[2], shape[3], shape[4]
-    yt4 = tf.reshape(y_true_n, (B*D, H, W, C))
-    yp4 = tf.reshape(y_pred_n, (B*D, H, W, C))
+    yt4 = tf.reshape(yt, (B*D, H, W, C))
+    yp4 = tf.reshape(yp, (B*D, H, W, C))
 
     ssim_mean = tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
-    mae = tf.reduce_mean(tf.abs(y_true_n - y_pred_n))
+    mae = tf.reduce_mean(tf.abs(yt - yp))
 
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
-# ==============================================================================
+
+
 
 def load_split(h5_path):
     """
@@ -177,41 +177,36 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 # Metriken
-def _center_slice_normalized(y_true, y_pred):
-    # y_true, y_pred: (B, D, H, W, C)
+# ===== center-slice-metriken auf "rohen" Werten, aber mit fixer Skalierung =====
+def _center_hw_raw_scaled(y_true, y_pred, scale=SCALE_FOR_METRICS):
+    # y_true/y_pred: (B, D, H, W, C)
     D = tf.shape(y_true)[1]
     idx = D // 2
+    yt = y_true[:, idx, :, :, :]  # (B,H,W,C)
+    yp = y_pred[:, idx, :, :, :]
 
-    # zentralen Slice rausholen -> (B, 1, H, W, C)
-    yt = y_true[:, idx:idx+1, ...]
-    yp = y_pred[:, idx:idx+1, ...]
-
-    # auf GT-Summe normalisieren (wie im Loss!)
-    sum_true = tf.reduce_sum(yt, axis=[2, 3, 4], keepdims=True) + 1e-12
-    yt_n = yt / sum_true
-    yp_n = yp / sum_true
-
-    # für SSIM/PSNR brauchen wir 4D (B, H, W, C)
-    yt4 = tf.squeeze(yt_n, axis=1)
-    yp4 = tf.squeeze(yp_n, axis=1)
-    return yt_n, yp_n, yt4, yp4
-
-def mae_center_slice_normalized(y_true, y_pred):
-    yt_n, yp_n, _, _ = _center_slice_normalized(y_true, y_pred)
-    return tf.reduce_mean(tf.abs(yt_n - yp_n))
+    # auf gemeinsame, feste Skala bringen
+    yt = tf.clip_by_value(yt / scale, 0.0, 1.0)
+    yp = tf.clip_by_value(yp / scale, 0.0, 1.0)
+    return yt, yp
 
 
-def ssim_center_slice_normalized(y_true, y_pred):
-    _, _, yt4, yp4 = _center_slice_normalized(y_true, y_pred)
-    return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
+def mae_center_slice_fixed(y_true, y_pred):
+    yt, yp = _center_hw_raw_scaled(y_true, y_pred)
+    return tf.reduce_mean(tf.abs(yt - yp))
 
 
-def psnr_center_slice_normalized(y_true, y_pred):
-    yt_n, yp_n, _, _ = _center_slice_normalized(y_true, y_pred)
-    # MSE über (H,W,C)
-    mse = tf.reduce_mean(tf.math.squared_difference(yt_n, yp_n), axis=[2,3,4])
+def ssim_center_slice_fixed(y_true, y_pred):
+    yt, yp = _center_hw_raw_scaled(y_true, y_pred)
+    return tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
+
+
+def psnr_center_slice_fixed(y_true, y_pred):
+    yt, yp = _center_hw_raw_scaled(y_true, y_pred)
+    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
     psnr = 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
     return tf.reduce_mean(psnr)
+
 
 
 def mae_slice_normalized(y_true, y_pred):
@@ -286,15 +281,16 @@ callbacks = [
 model = unet_3d(input_shape=(DEPTH, 192, 240, 1))
 model.compile(
     optimizer=optimizer,
-    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6),
+    loss=combined_mae_ssim_3d_fixed,
     metrics=[
-        mae_slice_normalized,          # alle Slices
-        ssim_slice_normalized,         # alle Slices
-        mae_center_slice_normalized,   # nur Zentrum
-        ssim_center_slice_normalized,  # nur Zentrum
-        psnr_center_slice_normalized   # nur Zentrum
+        mae_slice_normalized,      # scale-invariant view (wie alte runs)
+        ssim_slice_normalized,
+        mae_center_slice_fixed,    # echte, fest skalierte Sicht
+        ssim_center_slice_fixed,
+        psnr_center_slice_fixed,
     ]
 )
+
 
 print("Erstelle Trainingsdate...")
 
