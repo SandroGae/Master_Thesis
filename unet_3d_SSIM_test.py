@@ -18,7 +18,7 @@ from tb_utils import make_run_dir, tb_callbacks
 
 
 # Parameters
-DEPTH = 5
+DEPTH = 3
 SERIES_LEN = 41
 BASEFILTERS = 64
 
@@ -151,37 +151,40 @@ def shuffle_initial(X, y, seed):
 
 def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: float = 0.5):
     """
-    Erwartet x,y je Sample als (D, H, W, C) float32.
-    Schritte je Sample:
-      1) Horizontal-Flip (W-Achse) mit probability p, für alle Slices identisch
-      2) Clip >= 0
-      3) Norm pro Slice: Division durch Summe über (H,W,C) -> Form (D,1,1,1)
-      4) Zufalls-Skalierung je Sample: eigene Skala pro Slice (Form (D,1,1,1))
-      5) Clip auf [0,1]
+    x,y: (D, H, W, C)
+    1) optional flip
+    2) relu
+    3) pro Slice durch Summe normalisieren
+    4) eine gemeinsame (!) Skalierung fuer das ganze Volume
     """
     def map_volume(x, y):
-        # Flip, hier ist W Achse 2 (0:D, 1:H, 2:W, 3:C) und die flippen wir
-        flip = tf.random.uniform(shape=[], minval=0.0, maxval=1.0, dtype=tf.float32) < tf.constant(p, tf.float32)
+        # optional flip
+        flip = tf.random.uniform([], 0.0, 1.0) < p
         x = tf.cond(flip, lambda: tf.reverse(x, axis=[2]), lambda: x)
         y = tf.cond(flip, lambda: tf.reverse(y, axis=[2]), lambda: y)
 
-        # Clip >= 0
+        # negativ raus
         x = tf.nn.relu(x)
         y = tf.nn.relu(y)
 
-        # pro Slice normieren: (D,1,1,1)
+        # pro Slice normieren
         sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
         sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
         x = x / sum_x
         y = y / sum_y
 
-        # eine gemeinsame Skalierung für das ganze Volumen!
+        # gemeinsame Skalierung
         scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
         x = x * scale
         y = y * scale
 
+        # optional leicht clampen
+        x = tf.clip_by_value(x, 0.0, 1.0)
+        y = tf.clip_by_value(y, 0.0, 1.0)
+
         return x, y
     return map_volume
+
 
 
 
@@ -241,7 +244,7 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
 
 
-BASE_NAME = "unet_3d_SSIM"
+BASE_NAME = "unet_3d_SSIM_test"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
@@ -253,7 +256,7 @@ X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
 # X_test, y_test = load_split(FILES["test"])
 
-# Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
+# Mache daraus Volumen im Format (N_vols = 2960, DEPTH, H=192, W=240, C=1)
 X_train, y_train = make_sliding_windows(X_train, y_train, SERIES_LEN, DEPTH)
 X_val,   y_val   = make_sliding_windows(X_val,   y_val,   SERIES_LEN, DEPTH)
 
@@ -294,12 +297,12 @@ X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
 
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
-            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=AUTOTUNE)
+            .map(augment_and_normalize_3d_per_slice(0.5, 1.5, p=0.5), num_parallel_calls=AUTOTUNE)
             .batch(BATCH_SIZE)
             .prefetch(AUTOTUNE))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
+          .map(augment_and_normalize_3d_per_slice(1.0, 1.0, p=0.0), num_parallel_calls=AUTOTUNE)
           .cache() 
           .batch(BATCH_SIZE)
           .prefetch(AUTOTUNE))
@@ -323,8 +326,8 @@ meta = make_meta_dict(
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(DEPTH, 192, 240, 1),  # 3D-Input
-    scale_range_train=(5000,15000),
-    scale_range_val=(10000,10001),
+    scale_range_train=(0.5, 1.5),
+    scale_range_val=(1.0, 1.0),
     extra={"loss": "mae_ssim(alpha=0.6)", "metrics": ["mae", "mse", "psnr_metric_3d_per_sample"]}
 )
 

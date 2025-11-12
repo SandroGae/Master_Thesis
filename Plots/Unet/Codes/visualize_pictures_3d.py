@@ -24,6 +24,7 @@ SELECT_LIST = [
     "unet_3d_simple_loss0.0131_val0.0144_epochs100.keras",
     "unet_3d_simple_SSIM_loss0.0608_val0.0794_epochs100.keras",
     "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-084215_loss0.0496_val0.0531.keras",
+    "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006_loss0.0489_val0.0524.keras",
 ]
 
 def choose_model(list_):
