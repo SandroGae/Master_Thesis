@@ -67,27 +67,21 @@ def unet_3d(input_shape=(DEPTH, 192, 240, 1), base_filters=BASEFILTERS, output_a
 
 # ==== (SSIM für 3D via Slices) ============================================
 def combined_mae_ssim_3d(y_true, y_pred, alpha=0.6):
-    """
-    Kombi-Loss für 3D-Volumes über 2D-SSIM pro Slice:
-      Loss = (1-alpha)*MAE + alpha*(1-SSIM_mean)
-    Erwartet: Inputs in Form (B, D, H, W, C)
-    Gibt: Skalar (Batch-Loss)
-    """
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    # y_true/pred: (B, D, H, W, C)
 
-    # Reshape 5d --> 4d: (B,D,H,W,C) -> (B*D, H, W, C)
-    shape = tf.shape(y_true)
+    # pro Slice auf GT-Summe normalisieren
+    sum_true = tf.reduce_sum(y_true, axis=[2, 3, 4], keepdims=True) + 1e-12
+    y_true_n = y_true / sum_true
+    y_pred_n = y_pred / sum_true
+
+    # 4D für SSIM
+    shape = tf.shape(y_true_n)
     B, D, H, W, C = shape[0], shape[1], shape[2], shape[3], shape[4]
-    y_true_4d = tf.reshape(y_true, (B*D, H, W, C))
-    y_pred_4d = tf.reshape(y_pred, (B*D, H, W, C))
+    yt4 = tf.reshape(y_true_n, (B*D, H, W, C))
+    yp4 = tf.reshape(y_pred_n, (B*D, H, W, C))
 
-    # SSIM pro Slice, dann Mittelwert über alle Slices im Batch
-    ssim_vals = tf.image.ssim(y_true_4d, y_pred_4d, max_val=1.0)
-    ssim_mean = tf.reduce_mean(ssim_vals)
-
-    # MAE über alle Voxels im Batch
-    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
+    ssim_mean = tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
+    mae = tf.reduce_mean(tf.abs(y_true_n - y_pred_n))
 
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
 # ==============================================================================
