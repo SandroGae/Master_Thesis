@@ -11,87 +11,130 @@ from matplotlib.colors import Normalize
 # Pfade
 DATA_DIR       = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
 H5_NAME        = "test_data.hdf5"
-CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\Unet")
-PIC_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Keras_Models\Unet\Figures")
+CHECKPOINT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\Keras")
+PIC_DIR        = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\Figures")
 OUT_DIR        = CHECKPOINT_DIR
 SAVE_DPI       = 200
 
-PICTURE_INDEX = 469   # Mittelpunkt der 5er-Scheibe
-STACK_RADIUS  = 2     # ergibt Tiefe D=5
-CENTER_SLICE  = 2     # mittlere Slice in [0..4]
+# Index der mittleren Slice im Original-Stream (wird zur Mitte des 3D-Stacks)
+PICTURE_INDEX = 469
 
 # Modelle
 SELECT_LIST = [
     "unet_3d_simple_loss0.0131_val0.0144_epochs100.keras",
-    "unet_3d_simple_SSIM_loss0.0608_val0.0794_epochs100.keras"
+    "unet_3d_simple_SSIM_loss0.0608_val0.0794_epochs100.keras",
+    "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-084215_loss0.0496_val0.0531.keras",
 ]
 
 def choose_model(list_):
-    number = int(input("Choose your run (1–N): "))
+    number = int(input(f"Choose your run (1–{len(list_)}): "))
     index = number - 1
     path = CHECKPOINT_DIR / list_[index]
     print(f"Loading model: {path.name}")
     model = keras.models.load_model(str(path), compile=False)
     return model, number
 
-model, run_number = choose_model(SELECT_LIST)
+def infer_depth_from_model(model):
+    """
+    Erwartetes Input-Shape: (None, D, H, W, C) mit channels_last.
+    Liest D aus dem Model-Input.
+    """
+    # Keras kann Liste von Inputs haben; hier nur einer
+    in_shape = model.input_shape
+    # Falls mehrere Inputs, nimm den ersten
+    if isinstance(in_shape, list):
+        in_shape = in_shape[0]
+    # in_shape z.B. (None, D, H, W, 1)
+    if len(in_shape) != 5:
+        raise ValueError(f"Unerwartetes Input-Shape {in_shape}. Dieses Script erwartet 5D (B,D,H,W,C).")
+    D = in_shape[1]
+    if D is None:
+        raise ValueError(f"Modell-Depth (D) ist None im Input-Shape {in_shape}.")
+    return int(D)
 
-# --- Daten laden & 5er-Stack bauen ---
-h5_path = DATA_DIR / H5_NAME
-with h5py.File(h5_path, "r") as f:
-    low_data  = f["/low_count/data"]   # (H, W, N)
-    high_data = f["/high_count/data"]
+def build_stack_for_depth(h5_path: Path, picture_index: int, depth: int):
+    """
+    Baut einen 3D-Stack der Tiefe 'depth' um picture_index herum.
+    Bei Kanten wird per Clip gearbeitet.
+    Rueckgabe: low_stack, high_stack, center_slice_index
+    """
+    with h5py.File(h5_path, "r") as f:
+        low_data  = f["/low_count/data"]   # (H, W, N)
+        high_data = f["/high_count/data"]
+        H, W, Ntot = low_data.shape
 
-    H, W, Ntot = low_data.shape
-    offsets = np.arange(-STACK_RADIUS, STACK_RADIUS + 1)  # [-2,-1,0,1,2]
-    idxs = np.clip(PICTURE_INDEX + offsets, 0, Ntot - 1)
+        # Radius aus Tiefe: fuer ungerade depth ist r=(depth-1)//2
+        r = (depth - 1) // 2
+        # Bei geraden Depths nehmen wir ebenfalls r=floor(depth/2) und definieren center=D//2
+        offsets = np.arange(-r, depth - r)  # ergibt z.B. D=5 -> [-2,-1,0,1,2], D=3 -> [-1,0,1], D=7 -> [-3..+3]
+        idxs = np.clip(picture_index + offsets, 0, Ntot - 1)
 
-    low_stack  = np.stack([np.asarray(low_data[:,  :, i], dtype=np.float32)  for i in idxs], axis=0)   # (D,H,W)
-    high_stack = np.stack([np.asarray(high_data[:, :, i], dtype=np.float32)  for i in idxs], axis=0)   # (D,H,W)
+        low_stack  = np.stack([np.asarray(low_data[:,  :, i], dtype=np.float32)  for i in idxs], axis=0)   # (D,H,W)
+        high_stack = np.stack([np.asarray(high_data[:, :, i], dtype=np.float32)  for i in idxs], axis=0)   # (D,H,W)
 
-# --- Val-Normalisierung (slice-weise) ---
-# 1) Clipping auf [0, ∞)
-low_stack  = np.clip(low_stack,  0, None)
-high_stack = np.clip(high_stack, 0, None)
+    center_slice = depth // 2  # fuer ungerade der echte Mittelpunkt; fuer gerade der untere der beiden
+    return low_stack, high_stack, center_slice
 
-# 2) Normierung pro Slice durch Summe über (H,W)
-sum_x = np.sum(low_stack,  axis=(1, 2), keepdims=True)  + 1e-12  # (D,1,1)
-sum_y = np.sum(high_stack, axis=(1, 2), keepdims=True) + 1e-12
-x = low_stack  / sum_x
-y = high_stack / sum_y
+def val_normalize_per_slice(low_stack, high_stack, scale_val=10000.0):
+    """
+    Val-Normierung exakt wie im Training-Validation-Pfad:
+      1) Clip >= 0
+      2) slice-weise Division durch Summe ueber (H,W)
+      3) feste Skalierung (10000)
+      4) Clip auf [0,1]
+    """
+    low_stack  = np.clip(low_stack,  0, None)
+    high_stack = np.clip(high_stack, 0, None)
 
-# 3) Feste Skalierung (Val-Modus)
-scale = 10000.0
-x *= scale
-y *= scale
+    sum_x = np.sum(low_stack,  axis=(1, 2), keepdims=True)  + 1e-12
+    sum_y = np.sum(high_stack, axis=(1, 2), keepdims=True) + 1e-12
+    x = low_stack  / sum_x
+    y = high_stack / sum_y
 
-# 4) Clipping auf [0, 1]
-x = np.clip(x, 0, 1)
-y = np.clip(y, 0, 1)
+    x *= scale_val
+    y *= scale_val
 
-# 5) In Tensorform für 3D-UNet: (1, D, H, W, 1)
-x_norm = tf.convert_to_tensor(x[:, :, :, None][None, ...],  dtype=tf.float32)  # (1,5,H,W,1)
-y_norm = tf.convert_to_tensor(y[:, :, :, None][None, ...], dtype=tf.float32)  # (1,5,H,W,1)
+    x = np.clip(x, 0, 1)
+    y = np.clip(y, 0, 1)
+    return x, y
 
-# --- Prediction (ohne Fallback, das Modell ist 3D und erwartet 5D) ---
-y_pred_full = model.predict(x_norm, verbose=0)               # (1,5,H,W,1)
-y_pred_center = y_pred_full[0, CENTER_SLICE, :, :, 0]        # (H,W)
-
-# --- Denormalisierung für die mittlere Slice ---
-sum_label_center  = float(np.sum(high_stack[CENTER_SLICE]))  # Summe im originalen High (Slice)
-sum_y_norm_center = float(np.sum(y[CENTER_SLICE]))           # Summe im normalisierten High (Slice)
-denorm_factor = max(sum_label_center, 1e-12) / max(sum_y_norm_center, 1e-12)
-y_pred_denorm = y_pred_center * denorm_factor
-
-# Für die Darstellung auch die Center-Slices der Inputs
-low_img_center  = low_stack[CENTER_SLICE]
-high_img_center = high_stack[CENTER_SLICE]
-
-# --- Visualisierung ---
 def simple_normalize(image: np.ndarray) -> Normalize:
     vmin, vmax = np.percentile(image, [0.5, 99.5])
     return Normalize(vmin=vmin, vmax=vmax)
 
+# ==== Ablauf ====
+model, run_number = choose_model(SELECT_LIST)
+
+# Depth aus Modell lesen
+D = infer_depth_from_model(model)
+print(f"Inferierte Depth (D) aus dem Modell: {D}")
+
+# Stack aus HDF5 passend zu D bauen
+h5_path = DATA_DIR / H5_NAME
+low_stack, high_stack, CENTER_SLICE = build_stack_for_depth(h5_path, PICTURE_INDEX, D)
+
+# Val-Normierung wie im Training
+x, y = val_normalize_per_slice(low_stack, high_stack, scale_val=10000.0)
+
+# In Tensorform fuer 3D-UNet: (1, D, H, W, 1)
+x_norm = tf.convert_to_tensor(x[:, :, :, None][None, ...],  dtype=tf.float32)  # (1,D,H,W,1)
+y_norm = tf.convert_to_tensor(y[:, :, :, None][None, ...], dtype=tf.float32)  # (1,D,H,W,1)
+
+# Prediction
+y_pred_full = model.predict(x_norm, verbose=0)               # (1,D,H,W,1)
+y_pred_center = y_pred_full[0, CENTER_SLICE, :, :, 0]        # (H,W)
+
+# Denorm fuer die mittlere Slice
+sum_label_center  = float(np.sum(high_stack[CENTER_SLICE]))
+sum_y_norm_center = float(np.sum(y[CENTER_SLICE]))
+denorm_factor = max(sum_label_center, 1e-12) / max(sum_y_norm_center, 1e-12)
+y_pred_denorm = y_pred_center * denorm_factor
+
+# Fuer die Darstellung auch die Center-Slices der Inputs
+low_img_center  = low_stack[CENTER_SLICE]
+high_img_center = high_stack[CENTER_SLICE]
+
+# ==== Visualisierung ====
 selected = Path(SELECT_LIST[run_number - 1]).stem
 out_png = PIC_DIR / f"{selected}.png"
 
@@ -109,6 +152,7 @@ for ax, title in zip(axes, ["Low (center slice)", "High (center slice)", "Predic
     ax.set_title(title, fontsize=12)
     ax.axis("off")
 
+PIC_DIR.mkdir(parents=True, exist_ok=True)
 fig.savefig(str(out_png), dpi=300, bbox_inches="tight")
 plt.close(fig)
 
