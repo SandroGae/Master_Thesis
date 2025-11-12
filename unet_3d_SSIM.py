@@ -18,14 +18,14 @@ from tb_utils import make_run_dir, tb_callbacks
 
 
 # Parameters
-DEPTH = 7
+DEPTH = 3
 SERIES_LEN = 41
 BASEFILTERS = 64
 
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
-def conv_block_3d(x, filters, kernel_size=(1, 3, 3), padding="same"):
+def conv_block_3d(x, filters, kernel_size=(3, 3, 3), padding="same"):
     ki = "he_normal"
     for _ in range(4):
         x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
@@ -285,7 +285,7 @@ model.compile(
     metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric, mae_center_slice, mse_center_slice, psnr_center_slice, ssim_center_slice]
 )
 
-print("Erstelle Trainingsdaten…")
+print("Erstelle Trainingsdate...")
 
 AUTOTUNE = tf.data.AUTOTUNE
 
