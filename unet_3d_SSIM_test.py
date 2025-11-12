@@ -183,6 +183,31 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 # Metriken
+def mae_slice_normalized(y_true, y_pred):
+    # y_true, y_pred: (B, D, H, W, C)
+
+    # pro Slice Summe vom GT nehmen
+    sum_true = tf.reduce_sum(y_true, axis=[2, 3, 4], keepdims=True) + 1e-12  # (B,D,1,1,1)
+
+    # beide auf diese Summe normalisieren
+    y_true_n = y_true / sum_true
+    y_pred_n = y_pred / sum_true
+
+    return tf.reduce_mean(tf.abs(y_true_n - y_pred_n))
+
+def ssim_slice_normalized(y_true, y_pred):
+    sum_true = tf.reduce_sum(y_true, axis=[2, 3, 4], keepdims=True) + 1e-12
+    y_true_n = y_true / sum_true
+    y_pred_n = y_pred / sum_true
+
+    # (B*D, H, W, C)
+    shape = tf.shape(y_true_n)
+    B, D, H, W, C = shape[0], shape[1], shape[2], shape[3], shape[4]
+    yt4 = tf.reshape(y_true_n, (B*D, H, W, C))
+    yp4 = tf.reshape(y_pred_n, (B*D, H, W, C))
+
+    return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
+
 def psnr_metric_3d_per_sample(y_true, y_pred):
     # y_true/y_pred: (N, D, H, W, C) in [0,1]
     mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3,4))  # MSE gemittelt über (D, H, W, C)
@@ -276,7 +301,7 @@ model = unet_3d(input_shape=(DEPTH, 192, 240, 1))
 model.compile(
     optimizer=optimizer,
     loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6), # kombinierter Loss (60% SSIM, 40% MAE)
-    metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric, mae_center_slice, mse_center_slice, psnr_center_slice, ssim_center_slice]
+    metrics=[mae_slice_normalized, ssim_slice_normalized]
 )
 
 print("Erstelle Trainingsdate...")
