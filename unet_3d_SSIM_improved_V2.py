@@ -18,7 +18,7 @@ from tb_utils import make_run_dir, tb_callbacks, ImageLogger
 
 
 # Parameters
-DEPTH = 5
+DEPTH = 5 # gewechselt von 3
 SERIES_LEN = 41
 BASEFILTERS = 64
 
@@ -27,9 +27,9 @@ BASE_NAME = "unet_3d_SSIM_middle_improved_V2_5to5"
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
-def conv_block_3d(x, filters, kernel_size=(5, 3, 3), padding="same"):
+def conv_block_3d(x, filters, kernel_size=(5, 5, 5), padding="same"): # gewechselt von (3, 3, 3)
     ki = "he_normal"
-    for _ in range(4):
+    for _ in range(3): # gewechselt von 4
         x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
         x = layers.ReLU()(x)
     return x
@@ -67,7 +67,7 @@ def unet_3d(input_shape=(DEPTH, 192, 240, 1), base_filters=BASEFILTERS, output_a
 
 
 
-# ==== (SSIM für 3D via Slices) ============================================
+
 def combined_mae_ssim_3d(y_true, y_pred, alpha=0.6):
     """
     Kombi-Loss für 3D-Volumes über 2D-SSIM pro Slice:
@@ -92,7 +92,8 @@ def combined_mae_ssim_3d(y_true, y_pred, alpha=0.6):
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
 
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
-# ==============================================================================
+
+
 
 def load_split(h5_path):
     """
@@ -111,6 +112,7 @@ def load_split(h5_path):
     high_count = high_count[:, :, :, np.newaxis]
 
     return low_count, high_count
+
 
 
 def make_sliding_windows(X, y, series_len=None, depth=None):
@@ -138,6 +140,7 @@ def make_sliding_windows(X, y, series_len=None, depth=None):
     X_volumes = np.stack(X_volumes, axis=0)
     y_volumes = np.stack(y_volumes, axis=0)
     return X_volumes, y_volumes
+
 
 
 def shuffle_initial(X, y, seed):
@@ -204,8 +207,8 @@ def ssim_3d_metric(y_true, y_pred):
     yp4 = tf.reshape(y_pred, (B*D, H, W, C))
     return tf.reduce_mean(tf.image.ssim(yt4, yp4, max_val=1.0))
 
-# ===== Center-Slice Metrics (nur mittleres Bild) =====
-def _center_hw(y_true, y_pred):
+
+def create_center_hw(y_true, y_pred):
     # Erwartet: (B, D, H, W, C) in [0,1]
     y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
     y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
@@ -216,21 +219,21 @@ def _center_hw(y_true, y_pred):
     return yt, yp
 
 def mae_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
+    yt, yp = create_center_hw(y_true, y_pred)
     return tf.reduce_mean(tf.abs(yt - yp))
 
 def mse_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
+    yt, yp = create_center_hw(y_true, y_pred)
     return tf.reduce_mean(tf.math.squared_difference(yt, yp))
 
 def psnr_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
+    yt, yp = create_center_hw(y_true, y_pred)
     # PSNR über Batch mitteln
     mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
 def ssim_center_slice(y_true, y_pred):
-    yt, yp = _center_hw(y_true, y_pred)
+    yt, yp = create_center_hw(y_true, y_pred)
     return tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
 
 
@@ -268,7 +271,7 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 # Batches hinzufügen
 BATCH_SIZE = 8
 
-print("Erstelle Trainingsdate...")
+print("Erstelle Trainingsdaten...")
 
 AUTOTUNE = tf.data.AUTOTUNE
 
