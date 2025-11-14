@@ -14,7 +14,7 @@ tf.random.set_seed(SEED)
 np.random.seed(SEED)
 
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
-from tb_utils import make_run_dir, tb_callbacks
+from tb_utils import make_run_dir, tb_callbacks, ImageLogger
 
 
 # Parameters
@@ -247,17 +247,18 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
-TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
-TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
+TB_RUN_DIR = make_run_dir(BASE_NAME)
 
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
-# X_test, y_test = load_split(FILES["test"])
+X_test, y_test = load_split(FILES["test"])
 
 # Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
 X_train, y_train = make_sliding_windows(X_train, y_train, SERIES_LEN, DEPTH)
 X_val,   y_val   = make_sliding_windows(X_val,   y_val,   SERIES_LEN, DEPTH)
+X_test, y_test   = make_sliding_windows(X_test,  y_test,  SERIES_LEN, DEPTH)
+
 
 # %%
 # Einmaliges initiales Shuffle (separat für Training und Validation):
@@ -267,24 +268,6 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 # Batches hinzufügen
 BATCH_SIZE = 8
 
-# Optimizer + callbacks
-optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-
-callbacks = [
-    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
-    make_epoch_ckpt_callback(RUN_NAME),
-    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
-    *tb_callbacks(TB_RUN_DIR, histograms=False, profile=False),
-]
-
-# Compilieren
-model = unet_3d(input_shape=(DEPTH, 192, 240, 1))
-model.compile(
-    optimizer=optimizer,
-    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6), # kombinierter Loss (60% SSIM, 40% MAE)
-    metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric, mae_center_slice, mse_center_slice, psnr_center_slice, ssim_center_slice]
-)
-
 print("Erstelle Trainingsdate...")
 
 AUTOTUNE = tf.data.AUTOTUNE
@@ -292,7 +275,14 @@ AUTOTUNE = tf.data.AUTOTUNE
 # Sicherstellen alles ist float 32
 X_train = X_train.astype(np.float32); y_train = y_train.astype(np.float32)
 X_val   = X_val.astype(np.float32);   y_val   = y_val.astype(np.float32)
-# X_test = X_test.astype(np.float32); y_test = y_test.astype(np.float32)
+X_test  = X_test.astype(np.float32);  y_test  = y_test.astype(np.float32)
+
+
+# Spezifisches Test-Volume für TensorBoard-Visualisierung auswählen
+TEST_VOL_IDX = (11 * 37 -1) + (18 - DEPTH//2 - 1) # Das genaue Frame (Nummer 469 = 423)
+x_vis = X_test[TEST_VOL_IDX:TEST_VOL_IDX+1]  # Shape (1, D, H, W, 1)
+y_vis = y_test[TEST_VOL_IDX:TEST_VOL_IDX+1]  # Shape (1, D, H, W, 1)
+
 
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
@@ -305,6 +295,27 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .cache()
           .batch(BATCH_SIZE)
           .prefetch(AUTOTUNE))
+
+# Optimizer + callbacks
+optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
+
+image_callback = ImageLogger(run_dir=TB_RUN_DIR, sample_batch=(x_vis, y_vis), tag_prefix="test", every_n_epochs=1, max_outputs=1, scale=10000.0,)
+
+callbacks = [
+    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
+    make_epoch_ckpt_callback(RUN_NAME),
+    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
+    *tb_callbacks(TB_RUN_DIR),
+    image_callback,
+]
+
+# Compilieren
+model = unet_3d(input_shape=(DEPTH, 192, 240, 1))
+model.compile(
+    optimizer=optimizer,
+    loss=lambda yt, yp: combined_mae_ssim_3d(yt, yp, alpha=0.6), # kombinierter Loss (60% SSIM, 40% MAE)
+    metrics=['mae', 'mse', psnr_metric_3d_per_sample, ssim_3d_metric, mae_center_slice, mse_center_slice, psnr_center_slice, ssim_center_slice]
+)
 
 
 print("Training beginnt...")
