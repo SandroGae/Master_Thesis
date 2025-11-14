@@ -1,5 +1,5 @@
-# unet_3d_SSIM.py
-#!/usr/bin/env python3
+# unet_3d_SSIM_improved.py
+# #!/usr/bin/env python3
 
 # import os
 import tensorflow as tf
@@ -169,16 +169,17 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         x = tf.nn.relu(x)
         y = tf.nn.relu(y)
 
-        # pro Slice normieren: (D,1,1,1)
-        sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
-        sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
+        # Normierung pro Slice
+        sum_x = tf.reduce_sum(x, axis=[1,2,3], keepdims=True) + 1e-12
+        sum_y = tf.reduce_sum(y, axis=[1,2,3], keepdims=True) + 1e-12
         x = x / sum_x
         y = y / sum_y
 
-        # eine gemeinsame Skalierung für alle Slices im Volumen!
-        scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
-        x = x * scale
-        y = y * scale
+        # Zufalls-Skalierung + Clip auf [0,1]
+        D = tf.shape(x)[0]
+        scale = tf.random.uniform([D,1,1,1], minval=tf.cast(scale_min, tf.float32), maxval=tf.cast(scale_max, tf.float32), dtype=tf.float32)
+        x = tf.clip_by_value(x * scale, 0.0, 1.0)
+        y = tf.clip_by_value(y * scale, 0.0, 1.0)
 
         return x, y
     return map_volume
@@ -300,7 +301,7 @@ train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
-          .cache()
+          .cache() 
           .batch(BATCH_SIZE)
           .prefetch(AUTOTUNE))
 

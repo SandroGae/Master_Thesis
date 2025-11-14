@@ -1,4 +1,4 @@
-# unet_3d_SSIM_middle_improved.py
+# unet_3d_SSIM_middle_improved_V2.py
 #!/usr/bin/env python3
 
 
@@ -151,14 +151,10 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         x = x / sum_x
         y = y / sum_y
 
-        # eine gemeinsame Skalierung für das ganze Volumen!
+        # eine gemeinsame Skalierung für alle Slices im Volumen!
         scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
         x = x * scale
         y = y * scale
-
-        # Clipping auf [0, 1]
-        x = tf.clip_by_value(x, 0.0, 1.0)
-        y = tf.clip_by_value(y, 0.0, 1.0)
 
         return x, y
     return map_volume
@@ -205,7 +201,7 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
             "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
 
-BASE_NAME = "unet_3d_SSIM_middle_improved"
+BASE_NAME = "unet_3d_SSIM_middle_improved_V2"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
