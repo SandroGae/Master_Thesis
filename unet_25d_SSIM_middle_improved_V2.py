@@ -221,7 +221,7 @@ callbacks = [
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
     make_epoch_ckpt_callback(RUN_NAME),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
-    *tb_callbacks(TB_RUN_DIR, histograms=False, profile=False),
+    *tb_callbacks(TB_RUN_DIR),
 ]
 
 # Compilieren
