@@ -20,7 +20,7 @@ from tb_utils import make_run_dir, tb_callbacks
 
 
 # Parameters
-DEPTH = 3
+DEPTH = 5
 SERIES_LEN = 41
 BASEFILTERS = 64
 
@@ -29,7 +29,7 @@ POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
-    for _ in range(4):  # Bleibt wie im Original
+    for _ in range(4):
         x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
         x = layers.ReLU()(x)
     return x
