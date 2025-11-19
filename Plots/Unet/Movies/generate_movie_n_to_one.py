@@ -165,7 +165,7 @@ def create_frames_from_sequence(X_seq, Y_pred, Y_true, depth):
 # Hauptfunktion
 # =====================================================
 def main():
-    series_idx = 29  # Serie wählen 1 basiert
+    series_idx = 50  # Serie wählen 1 basiert
     fps = 3          # FPS einstellen
 
     series_idx -= 1
