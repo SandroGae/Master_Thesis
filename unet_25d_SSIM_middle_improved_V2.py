@@ -165,19 +165,33 @@ def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     ssim_mean = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
 
-# Metriken (ebenfalls Squeeze entfernen)
+
+# ==============================================================================
+# Metriken (Angepasst: CLIPPED auf 1.0 für Vergleichbarkeit mit V1)
+# ==============================================================================
 def mae_center(y_true, y_pred):
+    # Alles > 1.0 wird ignoriert
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.abs(y_true - y_pred))
 
 def mse_center(y_true, y_pred):
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.math.squared_difference(y_true, y_pred))
 
 def psnr_center(y_true, y_pred):
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+    # MSE über (H, W, C)
     mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
 def ssim_center(y_true, y_pred):
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+# ==============================================================================
 
 
 
