@@ -206,7 +206,8 @@ RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
 TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
-TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
+TB_RUN_DIR = TB_ROOT / RUN_NAME
+TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
@@ -232,11 +233,12 @@ callbacks = [
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
     make_epoch_ckpt_callback(RUN_NAME),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
-    *tb_callbacks(TB_RUN_DIR, histograms=False, profile=False),
+    *tb_callbacks(TB_RUN_DIR),
 ]
 
 # Compilieren
 model = unet_3d_center_output(input_shape=(DEPTH,192,240,1))
+
 model.compile(
     optimizer=optimizer,
     loss=mae_ssim_2d,
