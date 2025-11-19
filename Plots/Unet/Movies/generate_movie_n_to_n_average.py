@@ -2,7 +2,6 @@
 #!/usr/bin/env python3
 
 import numpy as np
-import tensorflow as tf
 from tensorflow.keras import models
 from pathlib import Path
 import h5py
@@ -10,13 +9,11 @@ import imageio.v2 as imageio
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pathlib import Path
 
 # =====================================================
 # Pfade
 # =====================================================
-FILE_CLIP = "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-180318_loss0.0479_val0.0522.keras"
-FILE_NO_CLIP = "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-231304_loss0.0481_val0.0518.keras"
+FILE_NO_CLIP = "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006_loss0.0489_val0.0524.keras"
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / FILE_NO_CLIP
@@ -26,7 +23,9 @@ MOVIES_DIR = ROOT_DIR / "Plots" / "Unet" / "Movies"
 CLIP = False
 DEPTH = 3
 SERIES_LEN = 41
-N_VOLS_PER_SERIES = SERIES_LEN - DEPTH + 1  # = 37
+N_VOLS_PER_SERIES = SERIES_LEN - DEPTH + 1  # = 37 oder 39
+
+WEIGHTS = np.array([0.3333, 0.3333, 0.3333], dtype=np.float32)
 
 
 # =====================================================
@@ -80,8 +79,7 @@ def make_sliding_windows(X, y, series_len, depth):
     return X_volumes, y_volumes, n_series, n_vols_per_series
 
 
-def normalize_like_validation(volumes, scale=10000.0, do_clip=CLIP):
-
+def normalize_like_validation(volumes, scale=10000.0, do_clip = CLIP):
     """
     Normierung wie im Validation-Set:
     - clip >= 0
@@ -109,41 +107,31 @@ def normalized_image(image):
     return (image - vmin) / (vmax - vmin)
 
 
-def create_frames_from_sequence(X_seq, Y_pred, Y_true, depth):
-    # Bestimme die "zentralen" Indizes aus den tatsächlichen Shapes
-    inp_center_idx  = X_seq.shape[1]   // 2   # bei DEPTH=3 -> 1
-    true_center_idx = Y_true.shape[1]  // 2   # bei DEPTH=3 -> 1
-    pred_center_idx = Y_pred.shape[1]  // 2   # bei 1 Slice -> 0
-
+def create_frames_from_series(X_series, Y_pred_series, Y_true_series):
     frames = []
+    Length = X_series.shape[0]
 
-    for i in range(X_seq.shape[0]):
-        # Input: mittlere Slice des Eingangsvolumens
-        inp_slice  = X_seq[i, inp_center_idx,  :, :, 0]
-
-        # Prediction: "mittlere" Slice der Vorhersage
-        # - bei n->1: Y_pred.shape[1] = 1 -> Index = 0
-        pred_slice = Y_pred[i, pred_center_idx, :, :, 0]
-
-        # Ground truth: mittlere Slice aus y_vols
-        gt_slice   = Y_true[i, true_center_idx, :, :, 0]
+    for j in range(Length):
+        inp_slice  = X_series[j, :, :, 0]
+        pred_slice = Y_pred_series[j, :, :, 0]
+        gt_slice   = Y_true_series[j, :, :, 0]
 
         inp_norm  = normalized_image(inp_slice)
         pred_norm = normalized_image(pred_slice)
         gt_norm   = normalized_image(gt_slice)
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=200)
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=200)  # GRÖSSERES VIDEO
 
         axes[0].imshow(inp_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[0].set_title(f"Input, Vol {i}", fontsize=12)
+        axes[0].set_title(f"Input, Vol {j}", fontsize=12)
         axes[0].axis("off")
 
         axes[1].imshow(pred_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[1].set_title(f"Prediction, Vol {i}", fontsize=12)
+        axes[1].set_title(f"Prediction, Vol {j}", fontsize=12)
         axes[1].axis("off")
 
         axes[2].imshow(gt_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[2].set_title(f"Ground Truth, Vol {i}", fontsize=12)
+        axes[2].set_title(f"Ground Truth, Vol {j}", fontsize=12)
         axes[2].axis("off")
 
         fig.tight_layout()
@@ -160,17 +148,16 @@ def create_frames_from_sequence(X_seq, Y_pred, Y_true, depth):
 
 
 
-
 # =====================================================
 # Hauptfunktion
 # =====================================================
 def main():
-    series_idx = 29  # Serie wählen 1 basiert
-    fps = 3          # FPS einstellen
+    series_idx = 50   # Serie 1-basiert
+    fps = 3           # FPS einstellen
 
     series_idx -= 1
 
-    out_name = f"{MODEL_PATH.stem}_series{series_idx + 1}.mp4"
+    out_name = f"{MODEL_PATH.stem}_averaged_series{series_idx + 1}.mp4"
     out_path = MOVIES_DIR / out_name
 
     print(f"Modell-Datei: {MODEL_PATH}")
@@ -198,19 +185,56 @@ def main():
     print(f"Nutze Volumen [{start_idx}:{end_idx}) von Serie {series_idx + 1}")
 
     X_seq = X_vols[start_idx:end_idx]
-    Y_seq = y_vols[start_idx:end_idx]
 
 
     print("Normalisiere Volumen...")
     X_seq_norm = normalize_like_validation(X_seq, scale=10000.0)
-    Y_seq_norm = normalize_like_validation(Y_seq, scale=10000.0)
 
 
     print("Berechne Predictions...")
     Y_pred = model.predict(X_seq_norm, batch_size=1, verbose=1)
 
+
+    number_vols = Y_pred.shape[0]      # = 39
+    Depth      = Y_pred.shape[1]      # = 3
+    Height = Y_pred.shape[2]
+    Width   = Y_pred.shape[3]
+    Length      = SERIES_LEN           # = 41
+
+    accum   = np.zeros((Length, Height, Width, 1), dtype=np.float32)
+    w_accum = np.zeros((Length, 1, 1, 1), dtype=np.float32)
+    weight = WEIGHTS.reshape(Depth, 1, 1, 1)   # (3,1,1,1)
+
+    for v in range(number_vols):      # v = 0, ... ,38
+        for d in range(Depth):       # d = 0,1,2
+            j = v + d            # globaler Frame-Index 0, ... ,40
+            if 0 <= j < Length:
+                accum[j]   += weight[d] * Y_pred[v, d]   # Bild addieren
+                w_accum[j] += weight[d]                  # Gewicht addieren
+
+    eps = 1e-12
+    pred_series = accum / (w_accum + eps)
+
+
+    start = series_idx * SERIES_LEN
+    end   = start + SERIES_LEN
+    X_series = X_test[start:end]   # (41, H, W, 1)
+    Y_series = y_test[start:end]   # (41, H, W, 1)
+
+    # Nur die Slices j = 1..39 verwenden (entspricht center slice jedes Volumens)
+    frame_start = 1
+    frame_end   = SERIES_LEN - 1   # = 40, Python-Slice 1:40 -> 39 Frames
+
+    X_series = X_series[frame_start:frame_end]       # (39, H, W, 1)
+    Y_series = Y_series[frame_start:frame_end]       # (39, H, W, 1)
+    pred_sub = pred_series[frame_start:frame_end]    # (39, H, W, 1)
+
+    X_series_norm = np.maximum(X_series, 0.0).astype(np.float32)
+    Y_series_norm = np.maximum(Y_series, 0.0).astype(np.float32)
+
     print("Erzeuge Frames...")
-    frames = create_frames_from_sequence(X_seq_norm, Y_pred, Y_seq_norm, DEPTH)
+    frames = create_frames_from_series(X_series_norm, pred_sub, Y_series_norm)
+
 
     MOVIES_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Schreibe Video nach {out_path} mit FPS={fps} ...")

@@ -1,4 +1,3 @@
-# generate_movie_n_to_n.py
 #!/usr/bin/env python3
 
 import numpy as np
@@ -6,22 +5,17 @@ import tensorflow as tf
 from tensorflow.keras import models
 from pathlib import Path
 import h5py
-import imageio.v2 as imageio
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from pathlib import Path
 
 # =====================================================
 # Pfade
 # =====================================================
-FILE_CLIP = "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-180318_loss0.0479_val0.0522.keras"
-FILE_NO_CLIP = "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-231304_loss0.0481_val0.0518.keras"
-
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / FILE_NO_CLIP
+MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-231304_loss0.0481_val0.0518.keras"
 H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
-MOVIES_DIR = ROOT_DIR / "Plots" / "Unet" / "Movies"
+IMAGES_ROOT_DIR = ROOT_DIR / "Plots" / "Unet" / "Images"
 
 CLIP = False
 DEPTH = 3
@@ -81,13 +75,11 @@ def make_sliding_windows(X, y, series_len, depth):
 
 
 def normalize_like_validation(volumes, scale=10000.0, do_clip=CLIP):
-
     """
     Normierung wie im Validation-Set:
     - clip >= 0
-    - pro Slice durch Summe über (H,W,C) teilen
+    - pro Slice durch Summe ueber (H,W,C) teilen
     - mit 'scale' multiplizieren
-    - KEIN FINALE CLIP!!!
     volumes: (N, D, H, W, 1)
     """
     volume = np.maximum(volumes, 0.0).astype(np.float32)
@@ -100,84 +92,75 @@ def normalize_like_validation(volumes, scale=10000.0, do_clip=CLIP):
 
 
 # =====================================================
-# Frame-Erzeugung
+# Visualisierung
 # =====================================================
 def normalized_image(image):
-    vmin, vmax = np.percentile(image, [0.5, 99.5])  # gleiche Logik wie im Bildscript
+    vmin, vmax = np.percentile(image, [0.5, 99.5])
     if vmax - vmin < 1e-12:
-        return image  # Bild ist quasi konstant
+        return image  # quasi konstant
     return (image - vmin) / (vmax - vmin)
 
 
-def create_frames_from_sequence(X_seq, Y_pred, Y_true, depth):
-    # Bestimme die "zentralen" Indizes aus den tatsächlichen Shapes
-    inp_center_idx  = X_seq.shape[1]   // 2   # bei DEPTH=3 -> 1
-    true_center_idx = Y_true.shape[1]  // 2   # bei DEPTH=3 -> 1
-    pred_center_idx = Y_pred.shape[1]  // 2   # bei 1 Slice -> 0
+def save_single_image(img_norm, title, out_file: Path):
+    fig, ax = plt.subplots(1, 1, figsize=(6, 6), dpi=200)
+    ax.imshow(img_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
+    ax.set_title(title, fontsize=12)
+    ax.axis("off")
+    fig.tight_layout()
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_file, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Gespeichert: {out_file}")
 
-    frames = []
+
+def save_series_into_subfolders(X_seq, Y_pred, Y_true, depth, root_dir: Path, series_idx: int):
+    """
+    Speichert für alle Volumen:
+      - Input (train)  -> root_dir / seriesXX / input
+      - Prediction     -> root_dir / seriesXX / prediction
+      - Ground Truth   -> root_dir / seriesXX / ground_truth
+    jeweils als einzelne PNGs (nur Zentralslice).
+    """
+    center_idx = depth // 2   # bei DEPTH=3 -> 1
+
+    series_dir = root_dir / f"series{series_idx}"
+    inp_dir = series_dir / "input"
+    pred_dir = series_dir / "prediction"
+    gt_dir = series_dir / "ground_truth"
 
     for i in range(X_seq.shape[0]):
-        # Input: mittlere Slice des Eingangsvolumens
-        inp_slice  = X_seq[i, inp_center_idx,  :, :, 0]
+        # Input und Ground Truth: haben DEPTH in Achse 1
+        inp_slice  = X_seq[i, center_idx, :, :, 0]
+        gt_slice   = Y_true[i, center_idx, :, :, 0]
 
-        # Prediction: "mittlere" Slice der Vorhersage
-        # - bei n->1: Y_pred.shape[1] = 1 -> Index = 0
-        pred_slice = Y_pred[i, pred_center_idx, :, :, 0]
-
-        # Ground truth: mittlere Slice aus y_vols
-        gt_slice   = Y_true[i, true_center_idx, :, :, 0]
+        # Prediction: hat nur 1 in der Depth-Achse -> immer Index 0
+        pred_slice = Y_pred[i, 0, :, :, 0]
 
         inp_norm  = normalized_image(inp_slice)
         pred_norm = normalized_image(pred_slice)
         gt_norm   = normalized_image(gt_slice)
 
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=200)
+        # Dateinamen
+        inp_file  = inp_dir  / f"{MODEL_PATH.stem}_series{series_idx}_vol{i:03d}.png"
+        pred_file = pred_dir / f"{MODEL_PATH.stem}_series{series_idx}_vol{i:03d}.png"
+        gt_file   = gt_dir   / f"{MODEL_PATH.stem}_series{series_idx}_vol{i:03d}.png"
 
-        axes[0].imshow(inp_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[0].set_title(f"Input, Vol {i}", fontsize=12)
-        axes[0].axis("off")
-
-        axes[1].imshow(pred_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[1].set_title(f"Prediction, Vol {i}", fontsize=12)
-        axes[1].axis("off")
-
-        axes[2].imshow(gt_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[2].set_title(f"Ground Truth, Vol {i}", fontsize=12)
-        axes[2].axis("off")
-
-        fig.tight_layout()
-
-        fig.canvas.draw()
-        frame = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
-        frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (4,))[:, :, :3]
-
-        plt.close(fig)
-
-        frames.append(frame)
-
-    return frames
-
-
+        # speichern
+        save_single_image(inp_norm,  f"Input, Vol {i}",      inp_file)
+        save_single_image(pred_norm, f"Prediction, Vol {i}", pred_file)
+        save_single_image(gt_norm,   f"Ground Truth, Vol {i}", gt_file)
 
 
 # =====================================================
 # Hauptfunktion
 # =====================================================
 def main():
-    series_idx = 29  # Serie wählen 1 basiert
-    fps = 3          # FPS einstellen
+    series_idx = 11   # Serie wählen 0 basiert (11-->Serie 12)
 
-    series_idx -= 1
-
-    out_name = f"{MODEL_PATH.stem}_series{series_idx + 1}.mp4"
-    out_path = MOVIES_DIR / out_name
-
-    print(f"Modell-Datei: {MODEL_PATH}")
-    print(f"Test-HDF5:    {H5_TEST_PATH}")
-    print(f"Serie:        {series_idx}")
-    print(f"FPS:          {fps}")
-    print(f"Output-Video: {out_path}")
+    print(f"Modell-Datei:  {MODEL_PATH}")
+    print(f"Test-HDF5:     {H5_TEST_PATH}")
+    print(f"Serie:         {series_idx}")
+    print(f"Output-Root:   {IMAGES_ROOT_DIR}")
 
     print("Lade Modell...")
     model = models.load_model(MODEL_PATH, compile=False)
@@ -195,28 +178,22 @@ def main():
 
     start_idx = series_idx * n_vols_per_series
     end_idx = start_idx + n_vols_per_series
-    print(f"Nutze Volumen [{start_idx}:{end_idx}) von Serie {series_idx + 1}")
+    print(f"Nutze Volumen [{start_idx}:{end_idx}) von Serie {series_idx}")
 
     X_seq = X_vols[start_idx:end_idx]
     Y_seq = y_vols[start_idx:end_idx]
-
 
     print("Normalisiere Volumen...")
     X_seq_norm = normalize_like_validation(X_seq, scale=10000.0)
     Y_seq_norm = normalize_like_validation(Y_seq, scale=10000.0)
 
-
     print("Berechne Predictions...")
     Y_pred = model.predict(X_seq_norm, batch_size=1, verbose=1)
 
-    print("Erzeuge Frames...")
-    frames = create_frames_from_sequence(X_seq_norm, Y_pred, Y_seq_norm, DEPTH)
+    print("Speichere Bilder in getrennten Unterordnern (input/prediction/ground_truth)...")
+    save_series_into_subfolders(X_seq_norm, Y_pred, Y_seq_norm, DEPTH, IMAGES_ROOT_DIR, series_idx)
 
-    MOVIES_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Schreibe Video nach {out_path} mit FPS={fps} ...")
-    imageio.mimsave(str(out_path), frames, fps=fps)
     print("Fertig.")
-
 
 
 if __name__ == "__main__":
