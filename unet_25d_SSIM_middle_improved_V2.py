@@ -24,7 +24,7 @@ tf.config.experimental.enable_op_determinism()
 
 
 # Parameters
-DEPTH = 7
+DEPTH = 3
 SERIES_LEN = 41
 BASEFILTERS = 64
 
