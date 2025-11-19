@@ -158,8 +158,8 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 # Loss
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     # Input ist jetzt direkt (B, H, W, 1) -> Kein Squeeze mehr nötig
-    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
-    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
     
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
     ssim_mean = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
