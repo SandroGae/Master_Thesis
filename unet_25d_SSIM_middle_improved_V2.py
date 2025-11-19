@@ -1,4 +1,4 @@
-# unet_2.5d_SSIM_middle_improved_V2.py
+# unet_25d_SSIM_middle_improved_V2.py
 #!/usr/bin/env python3
 
 
@@ -189,12 +189,13 @@ FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
             "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
 
-BASE_NAME = "unet_3d_SSIM_middle_improved_V2"
+BASE_NAME = "unet_25d_SSIM_middle_improved_V2"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
 TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
-TB_RUN_DIR = make_run_dir(RUN_NAME, root=TB_ROOT)
+TB_RUN_DIR = TB_ROOT / RUN_NAME
+TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
