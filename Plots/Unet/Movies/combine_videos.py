@@ -3,11 +3,11 @@ import moviepy.editor as mpy
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS\Plots\Unet\Movies")
 
-SERIES = 50
+SERIES = 12
 
 top_path = ROOT_DIR / f"unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006_loss0.0489_val0.0524_series{SERIES}.mp4"
 mid_path = ROOT_DIR / f"unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006_loss0.0489_val0.0524_averaged_series{SERIES}.mp4"
-bot_path = ROOT_DIR / f"unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-231304_loss0.0481_val0.0518_series{SERIES}.mp4"
+bot_path = ROOT_DIR / f"unet_3d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-144919_loss0.0479_val0.0517_series{SERIES}.mp4"
 out_path = ROOT_DIR / f"combined_series{SERIES}_top0524_mid0524avg_bot0518.mp4"
 
 

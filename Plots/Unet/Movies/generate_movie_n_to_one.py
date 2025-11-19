@@ -16,7 +16,7 @@ from pathlib import Path
 # Pfade
 # =====================================================
 FILE_CLIP = "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-180318_loss0.0479_val0.0522.keras"
-FILE_NO_CLIP = "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-231304_loss0.0481_val0.0518.keras"
+FILE_NO_CLIP = "unet_3d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-144919_loss0.0479_val0.0517.keras"
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / FILE_NO_CLIP
@@ -165,7 +165,7 @@ def create_frames_from_sequence(X_seq, Y_pred, Y_true, depth):
 # Hauptfunktion
 # =====================================================
 def main():
-    series_idx = 50  # Serie wählen 1 basiert
+    series_idx = 29  # Serie wählen 1 basiert
     fps = 3          # FPS einstellen
 
     series_idx -= 1
