@@ -1,26 +1,30 @@
 # unet_25d_SSIM_middle_improved_V2.py
 #!/usr/bin/env python3
 
-
-# import os
-import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
-from tensorflow.keras import layers, models
+import os
+import random
+from datetime import datetime
 from pathlib import Path
+
 import h5py
 import numpy as np
-from datetime import datetime
-
-SEED = 42
-tf.random.set_seed(SEED)
-np.random.seed(SEED)
+import tensorflow as tf
+from tensorflow.keras import layers, models
 
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
+# REPRODUCIBILITY & DETERMINISM SETUP 
+SEED = 42
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+tf.config.experimental.enable_op_determinism()
+
 
 # Parameters
-DEPTH = 9
+DEPTH = 5
 SERIES_LEN = 41
 BASEFILTERS = 64
 
@@ -232,7 +236,7 @@ BATCH_SIZE = 8
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
 
 callbacks = [
-    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=2),
+    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=2),
     make_epoch_ckpt_callback(RUN_NAME),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
@@ -276,13 +280,13 @@ def prepare_25d_input(x, y):
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
             .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=tf.data.AUTOTUNE)
-            .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE) # <--- NEUE FUNKTION
+            .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
             .batch(BATCH_SIZE)
             .prefetch(tf.data.AUTOTUNE))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
-          .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE) # <--- NEUE FUNKTION
+          .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
           .cache()
           .batch(BATCH_SIZE)
           .prefetch(tf.data.AUTOTUNE))
@@ -293,7 +297,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=50,
+    epochs=200,
     callbacks=callbacks,
     verbose=2
 )
@@ -302,7 +306,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=50,
+    epochs=200,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(192, 240, DEPTH),  
