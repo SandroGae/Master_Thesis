@@ -20,7 +20,7 @@ from tb_utils import make_run_dir, tb_callbacks
 
 
 # Parameters
-DEPTH = 5
+DEPTH = 7
 SERIES_LEN = 41
 BASEFILTERS = 64
 
