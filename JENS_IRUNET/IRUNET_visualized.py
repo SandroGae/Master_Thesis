@@ -1,58 +1,63 @@
-# IRUNet_infer_rawviz.py
+# generate_movie_irunet.py
+#!/usr/bin/env python3
+
 import sys
-from pathlib import Path
-import h5py
 import numpy as np
 import tensorflow as tf
-import matplotlib.pyplot as plt
 from tensorflow import keras
 from keras import layers
+from pathlib import Path
+import h5py
+import imageio.v2 as imageio
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
-# ========= Pfade anpassen =========
-DATA_DIR   = Path(r"C:\Users\sandr\VS_Master_Thesis\data\original_data")
-WEIGHTS    = Path(r"C:\Users\sandr\VS_Master_Thesis\JENS_IRUNET\JENS_IRUNET.hdf5")
-OUT_DIR    = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\irunet_rawviz")
+# =====================================================
+# Pfade & Konfiguration
+# =====================================================
+ROOT_DIR     = Path(r"C:\Users\sandr\VS_Master_Thesis")
+DATA_DIR     = ROOT_DIR / "data" / "original_data"
+WEIGHTS_PATH = ROOT_DIR / "JENS_IRUNET" / "JENS_IRUNET.hdf5"
+H5_TEST_PATH = DATA_DIR / "test_data.hdf5"
+MOVIES_DIR   = ROOT_DIR / "Plots" / "irunet_movies"
 
-# SELECTED_SAMPLES = [1,2,3,4,5]   # beliebige Indizes zum visualisieren
-SUM_EQUALIZE_TO_LABEL = True   # Prediction auf Label-Summe skalieren (für faire Roh-Vergleiche)
-SAVE_DPI   = 200
+# Einstellungen
+SERIES_IDX_1BASED = 12  # Welche Serie visualisiert werden soll (1..N)
+FPS               = 3
+SERIES_LEN        = 41  # Länge einer Temperatur-Serie
 
-# ========= Projekt-Root in sys.path, damit jens_stuff importierbar ist =========
-ROOT = Path(__file__).resolve().parents[1]  # ...\VS_Master_Thesis
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
+# ========= Projekt-Root in sys.path für jens_stuff =========
+# Damit 'from jens_stuff import ...' funktioniert
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
 
-# ---- Normalizer wie bei Jens ----
-from jens_stuff import SumScaleNormalizer  # liegt bei dir im Projektroot
+from jens_stuff import SumScaleNormalizer
 
-# ========= IRUNet (2D) exakt wie in deiner Vorlage =========
+# =====================================================
+# 1. Modell-Architektur (IRUNet)
+# =====================================================
 def build_irunet(input_shape=(192,240,1), n_filters=64, kernel_initializer="he_normal"):
     inp = keras.Input(shape=input_shape)
 
     def inc(x, nf):
-        a = layers.Conv2D(nf,   3, padding="same", activation="relu",
-                          kernel_initializer=kernel_initializer)(x)
-        b = layers.Conv2D(nf*2, 3, padding="same", activation="relu",
-                          kernel_initializer=kernel_initializer)(x)
-        c = layers.Conv2D(nf,   3, padding="same", activation="relu",
-                          dilation_rate=2, kernel_initializer=kernel_initializer)(x)
+        a = layers.Conv2D(nf,   3, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        b = layers.Conv2D(nf*2, 3, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        c = layers.Conv2D(nf,   3, padding="same", activation="relu", dilation_rate=2, kernel_initializer=kernel_initializer)(x)
         x2 = layers.Concatenate()([a, b, c])
         x2 = layers.Conv2D(nf, 1, padding="same")(x2)
         return layers.Add()([x, x2])
 
     def inc_red(x, nf):
         sc = layers.Conv2D(nf, 2, strides=2, padding="same")(x)
-        a  = layers.Conv2D(nf,   3, strides=2, padding="same", activation="relu",
-                           kernel_initializer=kernel_initializer)(x)
-        b  = layers.Conv2D(nf*2, 3, strides=2, padding="same", activation="relu",
-                           kernel_initializer=kernel_initializer)(x)
+        a  = layers.Conv2D(nf,   3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
+        b  = layers.Conv2D(nf*2, 3, strides=2, padding="same", activation="relu", kernel_initializer=kernel_initializer)(x)
         c  = layers.AveragePooling2D(pool_size=2, strides=2, padding="same")(x)
         x2 = layers.Concatenate()([a, b, c])
         x2 = layers.Conv2D(nf, 1, padding="same")(x2)
         return layers.Add()([sc, x2])
 
-    h  = layers.Conv2D(n_filters, 3, padding="same", activation="relu",
-                       kernel_initializer=kernel_initializer)(inp)
+    h  = layers.Conv2D(n_filters, 3, padding="same", activation="relu", kernel_initializer=kernel_initializer)(inp)
     c1 = inc_red(h, n_filters);  c1 = inc(c1, n_filters)
     c2 = inc_red(c1, n_filters); c2 = inc(c2, n_filters)
     c3 = inc_red(c2, n_filters); c3 = inc(c3, n_filters)
@@ -76,107 +81,153 @@ def build_irunet(input_shape=(192,240,1), n_filters=64, kernel_initializer="he_n
     out = layers.Conv2D(1, 1, padding="same", activation="sigmoid")(t)
     return keras.Model(inp, out, name="IRUNet")
 
-# ========= Daten laden (Rohwerte, keine Vorverarbeitung) =========
-def load_hwN(fp: Path):
-    with h5py.File(fp, "r") as f:
-        high = f["/high_count/data"][:]  # (H,W,N)
-        low  = f["/low_count/data"][:]   # (H,W,N)
-    high = high.transpose(2,0,1)[..., None].astype(np.float32)  # (N,H,W,1)
-    low  = low.transpose(2,0,1)[..., None].astype(np.float32)
-    return high, low
+# =====================================================
+# 2. Daten laden & Normalisieren
+# =====================================================
+def load_series_raw(h5_path, series_idx_0based, series_len=41):
+    """
+    Lädt exakt die 41 Frames einer Serie als Rohdaten.
+    Output: (41, H, W, 1)
+    """
+    start = series_idx_0based * series_len
+    end   = start + series_len
+    
+    with h5py.File(h5_path, "r") as f:
+        # HDF5 ist (H, W, N), wir slicen N
+        low  = f["low_count/data"][:, :, start:end]
+        high = f["high_count/data"][:, :, start:end]
+        
+    # Transpose zu (N, H, W, 1)
+    low  = np.moveaxis(low, -1, 0)[..., None].astype(np.float32)
+    high = np.moveaxis(high, -1, 0)[..., None].astype(np.float32)
+    
+    return low, high
 
-# ========= Normalisieren wie bei Jens; danach inverse auf Prediction =========
-def normalize_like_jens(low_raw, high_raw):
+def normalize_for_model(low_raw, high_raw):
+    """
+    Benutzt Jens' SumScaleNormalizer für das Modell-Input.
+    """
     normalizer = SumScaleNormalizer(
-        scale_range=[5000, 5001],   # fester Bereich (wie bei Val/Test)
+        scale_range=[5000, 5001],
         pre_offset=0.0,
-        normalize_label=True,       # X und y gleich skaliert
-        axis=(1,2,3),               # über (H,W,C) je Sample
+        normalize_label=True,
+        axis=(1,2,3),
         batch_mode=True,
         clip_before=[0., float("inf")],
         clip_after=[0., 1.],
     )
     Xn, Yn = normalizer.map(tf.convert_to_tensor(low_raw),
                             tf.convert_to_tensor(high_raw))
-    # NaNs/Infs abfangen + in [0,1] clippen – reine Sicherheit
+    
+    # Sicherheits-Clip und NaN Check
     Xn = tf.clip_by_value(tf.where(tf.math.is_finite(Xn), Xn, 0.), 0., 1.)
     Yn = tf.clip_by_value(tf.where(tf.math.is_finite(Yn), Yn, 0.), 0., 1.)
-    return Xn.numpy(), Yn.numpy(), normalizer
+    
+    return Xn.numpy(), Yn.numpy()
 
-# ========= robuste Visualisierungsgrenzen je Panel =========
-def robust_minmax(img, p1=1, p99=99):
-    vals = img[...,0].ravel()
-    vmin, vmax = np.percentile(vals, (p1, p99))
-    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
-        vmin = float(np.nanmin(vals))
-        vmax = float(np.nanmax(vals) + 1e-6)
-    return float(vmin), float(vmax)
+# =====================================================
+# 3. Frame-Erzeugung (Visualisierung)
+# =====================================================
+def normalized_image(image):
+    """
+    Visuelle Normalisierung (Percentile Scaling) für den Plot.
+    Macht das Bild 'hübsch' unabhängig von absoluten Werten.
+    """
+    vmin, vmax = np.percentile(image, [0.5, 99.5]) 
+    if vmax - vmin < 1e-12:
+        return image 
+    return (image - vmin) / (vmax - vmin)
 
-def show_triplet(low_raw, high_raw, pred_raw, save_path=None, title=None, cmap="gray_r"):
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), constrained_layout=True)
-    panels = [
-        ("Low Count",  low_raw),
-        ("High Count", high_raw),
-        ("IRUNet (pred, denorm)", pred_raw),
-    ]
-    for ax, (ttl, img) in zip(axes, panels):
-        vmin, vmax = robust_minmax(img, 1, 99)
-        ax.imshow(img[...,0], cmap=cmap, origin="lower", vmin=vmin, vmax=vmax)
-        ax.set_title(ttl)
-        ax.axis("off")
-    if title:
-        fig.suptitle(title, y=1.02)
-    if save_path:
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=SAVE_DPI, bbox_inches="tight")
-    plt.close(fig)
+def create_frames_2d(X_seq, Y_pred, Y_true):
+    """
+    Erstellt Matplotlib-Figuren für jedes Bild in der Sequenz.
+    Erwartet Input: (N, H, W, 1)
+    """
+    frames = []
+    
+    # Loop über die Zeitachse (N Frames)
+    for i in range(X_seq.shape[0]):
+        # Daten holen (H, W)
+        inp_slice  = X_seq[i, :, :, 0]
+        pred_slice = Y_pred[i, :, :, 0]
+        gt_slice   = Y_true[i, :, :, 0]
 
+        # Für Visualisierung skalieren (0-1 Bereich optimieren)
+        inp_norm  = normalized_image(inp_slice)
+        pred_norm = normalized_image(pred_slice)
+        gt_norm   = normalized_image(gt_slice)
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=200)
+
+        axes[0].imshow(inp_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
+        axes[0].set_title(f"Input (Low Count), Frame {i}", fontsize=12)
+        axes[0].axis("off")
+
+        axes[1].imshow(pred_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
+        axes[1].set_title(f"IRUNet Prediction, Frame {i}", fontsize=12)
+        axes[1].axis("off")
+
+        axes[2].imshow(gt_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
+        axes[2].set_title(f"Ground Truth (High Count), Frame {i}", fontsize=12)
+        axes[2].axis("off")
+
+        fig.tight_layout()
+        
+        # Bild in RGB-Array wandeln
+        fig.canvas.draw()
+        frame = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (4,))[:, :, :3]
+        
+        plt.close(fig)
+        frames.append(frame)
+
+    return frames
+
+# =====================================================
+# Hauptfunktion
+# =====================================================
 def main():
-    # 1) Rohdaten laden
-    high_raw_all, low_raw_all = load_hwN(DATA_DIR / "test_data.hdf5")  # (N,H,W,1)
+    series_idx = SERIES_IDX_1BASED - 1  # 0-basiert
+    
+    out_name = f"IRUNet_Series_{SERIES_IDX_1BASED}.mp4"
+    out_path = MOVIES_DIR / out_name
 
-    # 2) Indizes sauber wählen (z.B. jedes 41. Sample ab Index 20)
-    idxs = list(range(20, high_raw_all.shape[0], 41))
-    if not idxs:
-        raise RuntimeError("Keine passenden Indizes gefunden (prüfe N und Start/Schritt).")
+    print(f"--- IRUNet Video Generator ---")
+    print(f"Gewichte:   {WEIGHTS_PATH}")
+    print(f"Daten:      {H5_TEST_PATH}")
+    print(f"Serie:      {SERIES_IDX_1BASED} (Index {series_idx})")
+    print(f"Output:     {out_path}")
 
-    # 3) Batch zusammenstellen
-    high_raw = high_raw_all[idxs]   # (B,H,W,1)
-    low_raw  = low_raw_all[idxs]    # (B,H,W,1)
+    # 1. Modell bauen & Laden
+    print("Baue IRUNet und lade Gewichte...")
+    model = build_irunet(input_shape=(192, 240, 1))
+    model.load_weights(str(WEIGHTS_PATH))
 
-    # 4) Normalisieren wie bei Jens (nur fürs Modell)
-    Xn, Yn, normalizer = normalize_like_jens(low_raw, high_raw)
+    # 2. Daten laden
+    print(f"Lade Rohdaten für Serie {SERIES_IDX_1BASED}...")
+    low_raw, high_raw = load_series_raw(H5_TEST_PATH, series_idx, SERIES_LEN)
+    print(f"Shape: {low_raw.shape}")
 
-    # 5) Modell bauen & Gewichte laden
-    H, W = Xn.shape[1], Xn.shape[2]
-    model = build_irunet(input_shape=(H, W, 1))
-    model.load_weights(str(WEIGHTS))
+    # 3. Normalisieren (für das Modell)
+    print("Normalisiere Daten (SumScale)...")
+    X_norm, Y_norm = normalize_for_model(low_raw, high_raw)
 
-    # 6) Vorhersage
-    pred_norm = model(Xn, training=False).numpy()
+    # 4. Prediction
+    print("Berechne Prediction...")
+    Y_pred = model.predict(X_norm, batch_size=4, verbose=1)
 
-    # 7) Inverse Normalisierung der Prediction
-    pred_tensor = tf.convert_to_tensor(pred_norm)
-    try:
-        pred_raw = normalizer.inverse_map(pred_tensor).numpy()
-    except TypeError:
-        pred_raw = normalizer.inverse_map(pred_tensor, length=3).numpy()
+    # 5. Frames erstellen
+    # Wir nutzen hier die normalisierten Daten für die Visualisierung, 
+    # da `normalized_image` eh per Percentile skaliert. 
+    # Das matcht das Verhalten deines Referenz-Codes.
+    print("Erzeuge Video-Frames...")
+    frames = create_frames_2d(X_norm, Y_pred, Y_norm)
 
-    # 8) Optional: Prediction auf Label-Summe skalieren (fairer Rohvergleich)
-    if SUM_EQUALIZE_TO_LABEL:
-        s_pred = np.sum(np.clip(pred_raw, 0, None), axis=(1,2,3), keepdims=True)
-        s_lab  = np.sum(np.clip(high_raw, 0, None), axis=(1,2,3), keepdims=True)
-        scale  = np.divide(s_lab, s_pred, out=np.ones_like(s_lab), where=(s_pred > 0))
-        pred_raw = pred_raw * scale
-
-    # 9) Visualisieren & speichern – ueber die Sample-Achse iterieren
-    for i in range(low_raw.shape[0]):
-        save_path = OUT_DIR / f"test_triplet_{i:03d}.png"
-        show_triplet(low_raw[i], high_raw[i], pred_raw[i],
-                     save_path=save_path, title=f"Sample {idxs[i]}")
-
-    print(f"Fertig. {low_raw.shape[0]} Abbildungen gespeichert in: {OUT_DIR}")
-
+    # 6. Video speichern
+    MOVIES_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Speichere Video mit {FPS} FPS...")
+    imageio.mimsave(str(out_path), frames, fps=FPS)
+    print("Fertig.")
 
 if __name__ == "__main__":
     main()

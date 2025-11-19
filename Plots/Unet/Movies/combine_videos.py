@@ -3,7 +3,7 @@ import moviepy.editor as mpy
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS\Plots\Unet\Movies")
 
-SERIES = 12
+SERIES = 50
 
 top_path = ROOT_DIR / f"unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006_loss0.0489_val0.0524_series{SERIES}.mp4"
 mid_path = ROOT_DIR / f"unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006_loss0.0489_val0.0524_averaged_series{SERIES}.mp4"
