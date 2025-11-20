@@ -20,15 +20,16 @@ ROOT_DIR     = Path(r"C:\Users\sandr\VS_Master_Thesis")
 DATA_DIR     = ROOT_DIR / "data" / "original_data"
 WEIGHTS_PATH = ROOT_DIR / "JENS_IRUNET" / "JENS_IRUNET.hdf5"
 H5_TEST_PATH = DATA_DIR / "test_data.hdf5"
-MOVIES_DIR   = ROOT_DIR / "Plots" / "irunet_movies"
+
+# NEUER PFAD: In den Ordner "Movies" unter "Unet"
+MOVIES_DIR   = ROOT_DIR / "Plots" / "Unet" / "Movies"
 
 # Einstellungen
-SERIES_IDX_1BASED = 12  # Welche Serie visualisiert werden soll (1..N)
+SERIES_IDX_1BASED = 50  # Welche Serie visualisiert werden soll (1..N)
 FPS               = 3
-SERIES_LEN        = 41  # Länge einer Temperatur-Serie
+SERIES_LEN        = 41  # Original-Länge einer Temperatur-Serie
 
 # ========= Projekt-Root in sys.path für jens_stuff =========
-# Damit 'from jens_stuff import ...' funktioniert
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
@@ -85,28 +86,19 @@ def build_irunet(input_shape=(192,240,1), n_filters=64, kernel_initializer="he_n
 # 2. Daten laden & Normalisieren
 # =====================================================
 def load_series_raw(h5_path, series_idx_0based, series_len=41):
-    """
-    Lädt exakt die 41 Frames einer Serie als Rohdaten.
-    Output: (41, H, W, 1)
-    """
     start = series_idx_0based * series_len
     end   = start + series_len
     
     with h5py.File(h5_path, "r") as f:
-        # HDF5 ist (H, W, N), wir slicen N
         low  = f["low_count/data"][:, :, start:end]
         high = f["high_count/data"][:, :, start:end]
         
-    # Transpose zu (N, H, W, 1)
     low  = np.moveaxis(low, -1, 0)[..., None].astype(np.float32)
     high = np.moveaxis(high, -1, 0)[..., None].astype(np.float32)
     
     return low, high
 
 def normalize_for_model(low_raw, high_raw):
-    """
-    Benutzt Jens' SumScaleNormalizer für das Modell-Input.
-    """
     normalizer = SumScaleNormalizer(
         scale_range=[5000, 5001],
         pre_offset=0.0,
@@ -119,7 +111,6 @@ def normalize_for_model(low_raw, high_raw):
     Xn, Yn = normalizer.map(tf.convert_to_tensor(low_raw),
                             tf.convert_to_tensor(high_raw))
     
-    # Sicherheits-Clip und NaN Check
     Xn = tf.clip_by_value(tf.where(tf.math.is_finite(Xn), Xn, 0.), 0., 1.)
     Yn = tf.clip_by_value(tf.where(tf.math.is_finite(Yn), Yn, 0.), 0., 1.)
     
@@ -129,51 +120,43 @@ def normalize_for_model(low_raw, high_raw):
 # 3. Frame-Erzeugung (Visualisierung)
 # =====================================================
 def normalized_image(image):
-    """
-    Visuelle Normalisierung (Percentile Scaling) für den Plot.
-    Macht das Bild 'hübsch' unabhängig von absoluten Werten.
-    """
     vmin, vmax = np.percentile(image, [0.5, 99.5]) 
     if vmax - vmin < 1e-12:
         return image 
     return (image - vmin) / (vmax - vmin)
 
 def create_frames_2d(X_seq, Y_pred, Y_true):
-    """
-    Erstellt Matplotlib-Figuren für jedes Bild in der Sequenz.
-    Erwartet Input: (N, H, W, 1)
-    """
     frames = []
     
-    # Loop über die Zeitachse (N Frames)
     for i in range(X_seq.shape[0]):
-        # Daten holen (H, W)
         inp_slice  = X_seq[i, :, :, 0]
         pred_slice = Y_pred[i, :, :, 0]
         gt_slice   = Y_true[i, :, :, 0]
 
-        # Für Visualisierung skalieren (0-1 Bereich optimieren)
         inp_norm  = normalized_image(inp_slice)
         pred_norm = normalized_image(pred_slice)
         gt_norm   = normalized_image(gt_slice)
 
         fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=200)
 
+        # Index i ist hier 0..38, aber wir schreiben das echte Frame (+1) in den Titel
+        # da wir das erste Bild weggeschnitten haben.
+        frame_label = i + 1 
+
         axes[0].imshow(inp_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[0].set_title(f"Input (Low Count), Frame {i}", fontsize=12)
+        axes[0].set_title(f"Input, Frame {frame_label}", fontsize=12)
         axes[0].axis("off")
 
         axes[1].imshow(pred_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[1].set_title(f"IRUNet Prediction, Frame {i}", fontsize=12)
+        axes[1].set_title(f"IRUNet Prediction, Frame {frame_label}", fontsize=12)
         axes[1].axis("off")
 
         axes[2].imshow(gt_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-        axes[2].set_title(f"Ground Truth (High Count), Frame {i}", fontsize=12)
+        axes[2].set_title(f"Ground Truth, Frame {frame_label}", fontsize=12)
         axes[2].axis("off")
 
         fig.tight_layout()
         
-        # Bild in RGB-Array wandeln
         fig.canvas.draw()
         frame = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
         frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (4,))[:, :, :3]
@@ -187,28 +170,36 @@ def create_frames_2d(X_seq, Y_pred, Y_true):
 # Hauptfunktion
 # =====================================================
 def main():
-    series_idx = SERIES_IDX_1BASED - 1  # 0-basiert
+    series_idx = SERIES_IDX_1BASED - 1 
     
-    out_name = f"IRUNet_Series_{SERIES_IDX_1BASED}.mp4"
+    out_name = f"IRUNet_Series_{SERIES_IDX_1BASED}_cut.mp4"
     out_path = MOVIES_DIR / out_name
 
     print(f"--- IRUNet Video Generator ---")
     print(f"Gewichte:   {WEIGHTS_PATH}")
     print(f"Daten:      {H5_TEST_PATH}")
-    print(f"Serie:      {SERIES_IDX_1BASED} (Index {series_idx})")
-    print(f"Output:     {out_path}")
+    print(f"Serie:      {SERIES_IDX_1BASED}")
+    print(f"Zielordner: {MOVIES_DIR}")
 
     # 1. Modell bauen & Laden
     print("Baue IRUNet und lade Gewichte...")
     model = build_irunet(input_shape=(192, 240, 1))
     model.load_weights(str(WEIGHTS_PATH))
 
-    # 2. Daten laden
+    # 2. Daten laden (Alle 41 Frames)
     print(f"Lade Rohdaten für Serie {SERIES_IDX_1BASED}...")
     low_raw, high_raw = load_series_raw(H5_TEST_PATH, series_idx, SERIES_LEN)
-    print(f"Shape: {low_raw.shape}")
+    print(f"Original Shape: {low_raw.shape}")
 
-    # 3. Normalisieren (für das Modell)
+    # ==========================================
+    # HIER WIRD GESCHNITTEN (1 bis 39)
+    # ==========================================
+    print("Entferne ersten und letzten Frame...")
+    low_raw  = low_raw[1:-1]
+    high_raw = high_raw[1:-1]
+    print(f"Neuer Shape: {low_raw.shape} (Erwartet: 39)")
+
+    # 3. Normalisieren
     print("Normalisiere Daten (SumScale)...")
     X_norm, Y_norm = normalize_for_model(low_raw, high_raw)
 
@@ -217,15 +208,12 @@ def main():
     Y_pred = model.predict(X_norm, batch_size=4, verbose=1)
 
     # 5. Frames erstellen
-    # Wir nutzen hier die normalisierten Daten für die Visualisierung, 
-    # da `normalized_image` eh per Percentile skaliert. 
-    # Das matcht das Verhalten deines Referenz-Codes.
     print("Erzeuge Video-Frames...")
     frames = create_frames_2d(X_norm, Y_pred, Y_norm)
 
     # 6. Video speichern
     MOVIES_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Speichere Video mit {FPS} FPS...")
+    print(f"Speichere Video nach: {out_path}")
     imageio.mimsave(str(out_path), frames, fps=FPS)
     print("Fertig.")
 

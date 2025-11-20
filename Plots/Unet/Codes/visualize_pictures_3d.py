@@ -26,7 +26,7 @@ SELECT_LIST = [
     "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-084215_loss0.0496_val0.0531.keras",
     "unet_3d_SSIM__seed42__bf64__D3__lossMAE_SSIM__20251112-113006_loss0.0489_val0.0524.keras",
     "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-180318_loss0.0479_val0.0522.keras", # TODO this doesnt work from the shape, fix this
-    "unet_3d_SSIM_middle__seed42__bf64__D3__lossMAE_SSIM__20251112-231304_loss0.0481_val0.0518.keras", # TODO this doesnt work from the shape, fix this
+    "unet_3d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-144919_loss0.0479_val0.0517.keras", # TODO this doesnt work from the shape, fix this
 ]
 
 def infer_output_mode(model):

@@ -35,9 +35,24 @@ def conv_block_3d(x, filters, kernel_size=(3, 3, 3), padding="same"):
     return x
 
 
-def unet_3d_center_output(input_shape=(DEPTH,192,240,1), base_filters=BASEFILTERS, output_activation="sigmoid"):
-    inputs = layers.Input(shape=input_shape, name="input")
 
+
+
+
+    # Output Sigmoid
+    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
+    def take_center_slice(t):
+        depth = tf.shape(t)[1]
+        idx = depth // 2
+        return t[:, idx:idx+1, ...]  # (B,1,H,W,1)
+    out_center = layers.Lambda(take_center_slice, name="output_center")(out_5)
+    return models.Model(inputs, out_center, name="unet_3d_center_only")
+
+
+
+def unet_3d_center_output(input_shape=(DEPTH, 192, 240, 1), base_filters=BASEFILTERS, output_activation="sigmoid"):
+    inputs = layers.Input(shape=input_shape, name="input")
+    current_depth = input_shape[0] 
     # Encoder
     c1 = conv_block_3d(inputs, base_filters)              ; p1 = layers.MaxPooling3D(POOL_HW)(c1)
     c2 = conv_block_3d(p1, base_filters * 2)              ; p2 = layers.MaxPooling3D(POOL_HW)(c2)
@@ -57,14 +72,19 @@ def unet_3d_center_output(input_shape=(DEPTH,192,240,1), base_filters=BASEFILTER
     u1 = layers.Conv3DTranspose(base_filters, kernel_size=POOL_HW, strides=POOL_HW, padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])                   ; c8 = conv_block_3d(u1, base_filters)
 
-    # Output Sigmoid
-    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
-    def take_center_slice(t):
-        depth = tf.shape(t)[1]
-        idx = depth // 2
-        return t[:, idx:idx+1, ...]  # (B,1,H,W,1)
-    out_center = layers.Lambda(take_center_slice, name="output_center")(out_5)
-    return models.Model(inputs, out_center, name="unet_3d_center_only")
+    # Output nun über kernel mit (depth,1,1)
+    out_projection = layers.Conv3D(
+        filters=1, 
+        kernel_size=(current_depth, 1, 1), 
+        activation=output_activation, 
+        kernel_initializer="he_normal", 
+        padding="valid",  # Valid padding killt die Tiefe
+        use_bias=True, 
+        name="output_projected"
+    )(c8)
+    
+    # Ergebnis Shape (Batch, 1, 192, 240, 1)
+    return models.Model(inputs, out_projection, name="unet_3d_projected")
 
 
 
@@ -164,8 +184,8 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 # Loss
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     # erwartet (B,1,H,W,1)
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
+    y_true = tf.clip_by_value(tf.cast(y_true, tf.float32), 0.0, 1.0)
+    y_pred = tf.clip_by_value(tf.cast(y_pred, tf.float32), 0.0, 1.0)
     yt = tf.squeeze(y_true, axis=1)  # (B,H,W,1)
     yp = tf.squeeze(y_pred, axis=1)
     mae = tf.reduce_mean(tf.abs(yt - yp))
@@ -173,23 +193,43 @@ def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
 
 
-# Metriken
+# ==============================================================================
+# Metriken (Angepasst: CLIPPED auf 1.0 für Vergleichbarkeit mit anderen Versionen)
+# ==============================================================================
 def mae_center(y_true, y_pred):
-    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    # Alles > 1.0 wird ignoriert
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+    
+    yt = tf.squeeze(y_true, axis=1)
+    yp = tf.squeeze(y_pred, axis=1)
     return tf.reduce_mean(tf.abs(yt - yp))
 
 def mse_center(y_true, y_pred):
-    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+    
+    yt = tf.squeeze(y_true, axis=1)
+    yp = tf.squeeze(y_pred, axis=1)
     return tf.reduce_mean(tf.math.squared_difference(yt, yp))
 
 def psnr_center(y_true, y_pred):
-    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+    
+    yt = tf.squeeze(y_true, axis=1)
+    yp = tf.squeeze(y_pred, axis=1)
     mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
 def ssim_center(y_true, y_pred):
-    yt = tf.squeeze(y_true, axis=1); yp = tf.squeeze(y_pred, axis=1)
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+    
+    yt = tf.squeeze(y_true, axis=1)
+    yp = tf.squeeze(y_pred, axis=1)
     return tf.reduce_mean(tf.image.ssim(yt, yp, max_val=1.0))
+# ==============================================================================
 
 
 
