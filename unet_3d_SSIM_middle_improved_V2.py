@@ -60,7 +60,7 @@ def unet_3d_center_output(input_shape=(DEPTH,192,240,1), base_filters=BASEFILTER
     u1 = layers.Concatenate()([u1, c1])                   ; c6 = conv_block_3d(u1, base_filters)
 
     # Output Sigmoid
-    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
+    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c6)
     def take_center_slice(t):
         depth = tf.shape(t)[1]
         idx = depth // 2
