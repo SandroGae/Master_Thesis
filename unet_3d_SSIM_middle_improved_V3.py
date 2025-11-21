@@ -1,52 +1,42 @@
 # unet_3d_SSIM_middle_improved_V3.py
 #!/usr/bin/env python3
 
-
-# import os
-import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
-from tensorflow.keras import layers, models
+import os
+import random
+from datetime import datetime
 from pathlib import Path
+
+
 import h5py
 import numpy as np
-from datetime import datetime
-
-SEED = 42
-tf.random.set_seed(SEED)
-np.random.seed(SEED)
+import tensorflow as tf
+from tensorflow.keras import layers, models
 
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
+# REPRODUCIBILITY & DETERMINISM SETUP 
+SEED = 42
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+tf.config.experimental.enable_op_determinism()
 
 # Parameters
-DEPTH = 3
+DEPTH = 5
 SERIES_LEN = 41
-BASEFILTERS = 64
+BASEFILTERS = 16
 
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_3d(x, filters, kernel_size=(3, 3, 3), padding="same"):
     ki = "he_normal"
-    for _ in range(4):
+    for _ in range(2):
         x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
         x = layers.ReLU()(x)
     return x
-
-
-
-
-
-
-    # Output Sigmoid
-    out_5 = layers.Conv3D(1, (1,1,1), activation=output_activation, kernel_initializer="he_normal", use_bias=True, name="output_full")(c8)
-    def take_center_slice(t):
-        depth = tf.shape(t)[1]
-        idx = depth // 2
-        return t[:, idx:idx+1, ...]  # (B,1,H,W,1)
-    out_center = layers.Lambda(take_center_slice, name="output_center")(out_5)
-    return models.Model(inputs, out_center, name="unet_3d_center_only")
 
 
 

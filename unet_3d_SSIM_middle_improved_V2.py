@@ -1,22 +1,27 @@
 # unet_3d_SSIM_middle_improved_V2.py
 #!/usr/bin/env python3
 
-
-# import os
-import tensorflow as tf
-# tf.config.optimizer.set_jit(False)  # XLA JIT aus
-from tensorflow.keras import layers, models
+import os
+import random
+from datetime import datetime
 from pathlib import Path
+
+
 import h5py
 import numpy as np
-from datetime import datetime
-
-SEED = 42
-tf.random.set_seed(SEED)
-np.random.seed(SEED)
+import tensorflow as tf
+from tensorflow.keras import layers, models
 
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
+
+# REPRODUCIBILITY & DETERMINISM SETUP 
+SEED = 42
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+tf.config.experimental.enable_op_determinism()
 
 
 # Parameters
