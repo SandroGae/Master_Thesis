@@ -55,7 +55,8 @@ def process_dataset(group_name, input_h5, output_h5):
     group = output_h5.create_group(group_name)
     final_data = new_data.transpose(1, 2, 0)
     group.create_dataset("data", data=final_data, compression="gzip")
-
+    print(f"    -> Gruppe '{group_name}' erfolgreich gespeichert.")
+    
 if __name__ == "__main__":
 
     # Pfade definieren
