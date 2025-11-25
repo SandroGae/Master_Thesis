@@ -1,8 +1,5 @@
 import h5py
 import numpy as np
-import os
-import argparse
-import sys
 from pathlib import Path
 
 
@@ -19,14 +16,18 @@ def process_dataset(group_name, input_h5, output_h5):
     Unterteilt Datenset in 41er-Gruppen und interpoliert ein Bild 
     zwischen zwei bestehenden Bildern durch lienare Interpolation
     """
+    N_interpolate = 5 # Anzahl Zwischenbilder
+
     dataset = input_h5[f"{group_name}/data"][:]
+
     Height, Width, N_total = dataset.shape
     series_length = 41
     N_series = N_total // series_length
     data_transposed = dataset.transpose(2, 0, 1) # (H, W, N) --> (N, H, W)
     
     # Array erstellen und befüllen
-    new_series_len = series_length + (series_length - 1) # 41+40=81
+    # ÄNDERUNG: Berechnung der neuen Länge basierend auf N_interpolate
+    new_series_len = series_length + (series_length - 1) * N_interpolate 
     N_total_new = N_series * new_series_len
     new_data = np.zeros((N_total_new,  Height, Width), dtype=np.float32)
 
@@ -43,12 +44,20 @@ def process_dataset(group_name, input_h5, output_h5):
             image_a = image_series[i]
             image_b = image_series[i+1]
             
-            image_interp_clean = 0.5 * image_a + 0.5 * image_b              # Interpolation clean
-            image_interp_noisy = apply_poisson_noise(image_interp_clean)    # Interpolation mit noise
-            
-            # Speichern
-            new_data[current_idx] = image_interp_noisy  # Interpoliertes Bild
-            current_idx += 1
+            # --- NEU: Loop über die N Zwischenbilder ---
+            for j in range(1, N_interpolate + 1):
+                # Berechne den Anteil von Bild B (linear steigend von 0 bis 1)
+                alpha = j / (N_interpolate + 1)
+
+                # Formel angepasst mit alpha statt fest 0.5
+                image_interp_clean = (1 - alpha) * image_a + alpha * image_b    # Interpolation clean
+                image_interp_noisy = apply_poisson_noise(image_interp_clean)    # Interpolation mit noise
+                
+                # Speichern
+                new_data[current_idx] = image_interp_noisy  # Interpoliertes Bild
+                current_idx += 1
+            # -------------------------------------------
+
             new_data[current_idx] = image_b             # Original Bild
             current_idx += 1
 
@@ -56,9 +65,9 @@ def process_dataset(group_name, input_h5, output_h5):
     final_data = new_data.transpose(1, 2, 0)
     group.create_dataset("data", data=final_data, compression="gzip")
     print(f"    -> Gruppe '{group_name}' erfolgreich gespeichert.")
-    
-if __name__ == "__main__":
 
+
+if __name__ == "__main__":
     # Pfade definieren
     ROOT_DIR = Path.home()
     IN_DIR  = ROOT_DIR / "data/original_data"
@@ -76,3 +85,5 @@ if __name__ == "__main__":
         with h5py.File(input_path, 'r') as f_in, h5py.File(output_path, 'w') as f_out:
             for key in ['high_count', 'low_count']:
                 process_dataset(key, f_in, f_out)
+    
+    print("\nAlle Jobs erledigt.")
