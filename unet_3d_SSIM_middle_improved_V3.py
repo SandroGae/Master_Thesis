@@ -24,16 +24,16 @@ tf.random.set_seed(SEED)
 tf.config.experimental.enable_op_determinism()
 
 # Parameters
-DEPTH = 5
+DEPTH = 3
 SERIES_LEN = 41
-BASEFILTERS = 16
+BASEFILTERS = 64
 
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_3d(x, filters, kernel_size=(3, 3, 3), padding="same"):
     ki = "he_normal"
-    for _ in range(2):
+    for _ in range(4):
         x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
         x = layers.ReLU()(x)
     return x

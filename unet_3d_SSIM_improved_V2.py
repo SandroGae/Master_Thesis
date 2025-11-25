@@ -25,7 +25,7 @@ tf.config.experimental.enable_op_determinism()
 
 
 # Parameters
-DEPTH = 5 # gewechselt von 3
+DEPTH = 3
 SERIES_LEN = 41
 BASEFILTERS = 64
 
@@ -34,7 +34,7 @@ BASE_NAME = "unet_3d_SSIM_middle_improved_V2_5to5"
 # Simples unet in 3d
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
-def conv_block_3d(x, filters, kernel_size=(5, 5, 5), padding="same"): # gewechselt von (3, 3, 3)
+def conv_block_3d(x, filters, kernel_size=(3, 3, 3), padding="same"):
     ki = "he_normal"
     for _ in range(3): # gewechselt von 4
         x = layers.Conv3D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
