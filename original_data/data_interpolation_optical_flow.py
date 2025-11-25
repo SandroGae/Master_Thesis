@@ -19,7 +19,7 @@ def generate_intermediate_frame_flow(image_a, Image_b):
     TV : Regularisierung --> Erlaubt Sprunghafte Bewegungen im Bild
     """
     # Flow berechnen --> attachment=15 wie stark intensitäten variieren dürfen, tight=0.3 hält Kanten scharf, prefilter=False weil es CDW wegglätten könnte
-    flow = optical_flow_tvl1(image_a, Image_b, attachment=10, tight=0.3, num_warp=20, num_iter=50, tol=1e-4, prefilter=False)
+    flow = optical_flow_tvl1(image_a, Image_b, attachment=10, tightness=0.3, num_warp=20, num_iter=50, tol=1e-4, prefilter=False)
     N_rows, N_columns = image_a.shape
     row_coords, col_coords = np.meshgrid(np.arange(N_rows), np.arange(N_columns), indexing='ij') # Warp Grid erstellen
     
@@ -78,7 +78,6 @@ def process_dataset(group_name, input_h5, output_h5):
 
 
 if __name__ == "__main__":
-
     # Pfade definieren
     ROOT_DIR = Path.home()
     IN_DIR  = ROOT_DIR / "data/original_data"
