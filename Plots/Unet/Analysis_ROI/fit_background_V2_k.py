@@ -15,7 +15,7 @@ SLICE_INDEX = 19 # Wähle Bild
 IMAGE_WIDTH = 240 
 ROI_X_START, ROI_X_END = 60, 81   
 ROI_Y_START, ROI_Y_END = 0, 192  
-BACKGROUND_GAP        = 55   
+BACKGROUND_GAP        = 80
 BACKGROUND_BOX_WIDTH  = 10  
 FIT_WINDOW_Y  = (90, 130) # Gauss Fit Bereich
 FIT_COLORS     = ['darkorange', 'mediumseagreen', 'darkviolet']
@@ -122,7 +122,8 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
 
     # Valid Check für SRBR (NaNs/Infs filtern)
     valid = np.isfinite(y_fit)
-    if np.sum(valid) < 4: return None, None
+    if np.sum(valid) < 4: 
+        return None, None, None
     x_fit = x_fit[valid]
     y_fit = y_fit[valid]
     if sigma_fit is not None: sigma_fit = sigma_fit[valid]
@@ -133,10 +134,11 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
     p0 = [A, x0, s]
     
     try:
-        parameters, _ = curve_fit(gaussian, x_fit, y_fit, p0, sigma=sigma_fit, absolute_sigma=True, maxfev=5000)
-        return gaussian(x, *parameters), parameters
+        parameters, pcov = curve_fit(gaussian, x_fit, y_fit, p0, sigma=sigma_fit, absolute_sigma=True, maxfev=5000)
+        perr = np.sqrt(np.diag(pcov)) # Fehler berechnen
+        return gaussian(x, *parameters), parameters, perr 
     except:
-        return None, None
+        return None, None, None
 
 
 
@@ -158,25 +160,21 @@ def main():
     for index, image in enumerate(images):
         # Prediction (Index 1) nutzt GT Rauschen
         noise_to_use = gt_noise_std if index == 1 else None
-        
-        # Aufruf der NEUEN SBR Funktion (k-Richtung)
-        x_axis, signal, background, sbr, error, boxes = calculate_sbr_k_profiles(
-            image, force_noise_std=noise_to_use
-        )
+        x_axis, signal, background, sbr, error, boxes = calculate_sbr_k_profiles(image, force_noise_std=noise_to_use)
         
         # Fit auf SRBR
-        fit_y, params = perform_gaussian_fit(x_axis, sbr, y_err=error, fit_window=FIT_WINDOW_Y)
+        fit_y, params, perr = perform_gaussian_fit(x_axis, sbr, y_err=error, fit_window=FIT_WINDOW_Y)
         
         results.append({
             'x_axis':x_axis, 'signal':signal, 'background':background, 
             'sbr':sbr, 'error': error,
-            'fit':fit_y, 'par':params, 'boxes':boxes
+            'fit':fit_y, 'par':params, 'perr':perr, 'boxes':boxes # <-- perr speichern
         })
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=150, gridspec_kw={'height_ratios': [1, 0.8, 1]})
     
     for i in range(3):
-        # --- 1. Bild ---
+        # Bild
         ax = axes[0, i]
         ax.imshow(vis_norm(images[i]), cmap="gray_r")
         ax.set_title(TITLES[i], fontsize=14, fontweight='bold')
@@ -199,16 +197,19 @@ def main():
         if bg_width > 0:
             ax.add_patch(patches.Rectangle((r_left, ROI_Y_START), bg_width, roi_h, lw=1, ec='red', fc='red', alpha=0.2))
 
-        # --- 2. Totale Intensitäten (Bleibt absolut) ---
+        # Intensitäten (Bleibt absolut)
         ax2 = axes[1, i]
         ax2.plot(results[i]['x_axis'], results[i]['signal'], color='blue', alpha=0.7, label='Raw Sum')
         ax2.plot(results[i]['x_axis'], results[i]['background'], color='red', alpha=0.7, label='Background Sum')
         ax2.axvspan(FIT_WINDOW_Y[0], FIT_WINDOW_Y[1], color='green', alpha=0.15, label='_Fit Region')
         ax2.grid(True, alpha=0.3)
-        if i==0: ax2.set_ylabel("Total Counts (Abs)")
-        if i==1: ax2.legend(loc='upper right', fontsize=8)
+        if i==0: 
+            ax2.set_ylabel("Total Counts")
+        if i==1: 
+            ax2.legend(loc='upper right', fontsize=8)
+        ax2.set_ylim(2.5, 7)
 
-        # --- 3. SRBR ---
+        # SRBR
         ax3 = axes[2, i]
         ax3.errorbar(results[i]['x_axis'], results[i]['sbr'], 
                      yerr=results[i]['error'], 
@@ -216,32 +217,28 @@ def main():
         ax3.axhline(0, color='gray', ls=':', alpha=0.5)
         
         if i == 1: 
-            if results[0]['fit'] is not None: ax3.plot(results[0]['x_axis'], results[0]['fit'], color=FIT_COLORS[0], ls=':', lw=1.5, label='LC Fit')
-            if results[2]['fit'] is not None: ax3.plot(results[2]['x_axis'], results[2]['fit'], color=FIT_COLORS[2], ls=':', lw=1.5, label='GT Fit') 
+            # Prediction fit grün
             if results[1]['fit'] is not None:
-                l = f"Pred (Max SRBR={np.max(results[1]['fit']):.2f})"
+                sigma_val = results[1]['par'][2] # Parameter index 2 ist sigma
+                sigma_err = results[1]['perr'][2] # Fehler holen
+                l = f"Pred (Max={np.max(results[1]['fit']):.2f}, $\sigma$={sigma_val:.2f}$\pm${sigma_err:.2f})"
                 ax3.plot(results[1]['x_axis'], results[1]['fit'], color=FIT_COLORS[1], ls='--', lw=2.5, label=l)
-            ax3.set_title("Comparison: SRBR Fits")
         else: 
+            # LC (i=0) und GT (i=2) Einzelplots
             if results[i]['fit'] is not None:
-                l = f"Gauss (Max SRBR={np.max(results[i]['fit']):.2f})"
+                sigma_val = results[i]['par'][2]
+                sigma_err = results[i]['perr'][2]
+                l = f"Gauss (Max={np.max(results[i]['fit']):.2f}, $\sigma$={sigma_val:.2f}$\pm${sigma_err:.2f})"
                 ax3.plot(results[i]['x_axis'], results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
-            ax3.set_title("SRBR & Fit")
             
         ax3.set_xlabel("Pixel Y")
-        if i==0: ax3.set_ylabel("SRBR (A/C)")
+        if i==0: 
+            ax3.set_ylabel("SRBR: (Signal - Background) / Background")
         ax3.grid(True, alpha=0.3)
         ax3.legend(loc='upper right', fontsize=8)
         
         ax3.set_xlim(FIT_WINDOW_Y)
-        mask = (results[i]['x_axis'] >= FIT_WINDOW_Y[0]) & (results[i]['x_axis'] <= FIT_WINDOW_Y[1])
-        if np.any(mask):
-            y_vis = results[i]['sbr'][mask]
-            y_vis = y_vis[np.isfinite(y_vis)]
-            if len(y_vis) > 0:
-                ymin, ymax = np.min(y_vis), np.max(y_vis)
-                rng = ymax - ymin if (ymax-ymin) > 0.1 else 1.0
-                ax3.set_ylim(ymin - 0.2 * rng, ymax + 0.2 * rng)
+        ax3.set_ylim(-0.1, 0.4)
 
     plt.tight_layout()
     out_name = f"Ana_{Path(NPZ_FILE).stem}_Slice{SLICE_INDEX}_SRBR_k.png"
