@@ -239,10 +239,10 @@ for stride_size in SELECTED_STRIDES:
         current_step = 6
     elif stride_size == 2:
         current_step = 4
-    elif stride_size == 4:
+    elif stride_size == 6:
+        current_step = 1
+    else: # Für 4, 12 ,24
         current_step = 2
-    else:
-        current_step = 1  # Ab Stride 6: Jeden Step machen
     print(f" -> Verarbeite Stride {stride_size} mit Step {current_step}...")
 
     X_vol, y_vol = make_strided_windows(
