@@ -1,99 +1,170 @@
 import h5py
 import numpy as np
 from pathlib import Path
-from skimage.registration import optical_flow_tvl1
-from skimage.transform import warp
+import cv2
+
+# ================= KONFIGURATION =================
+USE_POISSON_NOISE = True
+N_INTERPOLATE = 5  # 5 Zwischenbilder
+
+# Wähle Algorithmus: 
+# "farneback" = Extrem schnell, gut für flüssige Bewegung
+# "tvl1"      = Genauer bei Kanten, langsamer, braucht 'opencv-contrib-python'
+FLOW_METHOD = "farneback" 
 
 def apply_poisson_noise(image_data):
     """
-    Simuliert Zählraten-Rauschen (Poisson)
+    Simuliert Poisson Rauschen
     """
-    clean_data = np.maximum(image_data, 0) # Clip auf [0, infinity]
-    noisy_data = np.random.poisson(clean_data).astype(np.float32) # Neue Werte ziehen
+    clean_data = np.maximum(image_data, 0)
+    noisy_data = np.random.poisson(clean_data).astype(np.float32)
     return noisy_data
 
-def generate_intermediate_frame_flow(image_a, Image_b):
+def get_optical_flow(prev, next, method='farneback'):
     """
-    Berechnet das Zwischenbild mittels Optical Flow
-    L1: Absoluter Fehler pro Pixel --> E = |Intensity(x,y) - Intensity(x+v_x, y+v_y)|
-    TV : Regularisierung --> Erlaubt Sprunghafte Bewegungen im Bild
+    Berechnet den Optical Flow mit OpenCV (Viel schneller als Skimage)
     """
-    # Flow berechnen --> attachment=15 wie stark intensitäten variieren dürfen, tight=0.3 hält Kanten scharf, prefilter=False weil es CDW wegglätten könnte
-    flow = optical_flow_tvl1(image_a, Image_b, attachment=10, tightness=0.3, num_warp=20, num_iter=50, tol=1e-4, prefilter=False)
-    N_rows, N_columns = image_a.shape
-    row_coords, col_coords = np.meshgrid(np.arange(N_rows), np.arange(N_columns), indexing='ij') # Warp Grid erstellen
+    if method == 'farneback':
+        # Parameter für Farneback: pyr_scale=0.5, levels=3, winsize=20, iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+        flow = cv2.calcOpticalFlowFarneback(prev, next, None, 0.5, 3, 20, 3, 5, 1.2, 0)
+        return flow
     
-    # Warping
-    coordinates_a = np.array([row_coords - flow[0]*0.5, col_coords - flow[1]*0.5]) # Von wo kam der Pixel? -> minus halber Flow Vektor
-    coordinates_b = np.array([row_coords + flow[0]*0.5, col_coords + flow[1]*0.5]) # Wohin geht der Pixel? -> plus halber Flow Vektor
-    image_a_warped = warp(image_a, coordinates_a, mode='edge') # Bilder verziehen (warpen)
-    Image_b_warped = warp(Image_b, coordinates_b, mode='edge')
-    mixed_image = 0.5 * image_a_warped + 0.5 * Image_b_warped # Mischen
- 
-    return mixed_image
+    elif method == 'tvl1':
+        try:
+            optical_flow = cv2.optflow.DualTVL1OpticalFlow_create()
+            optical_flow.setLambda(0.15)
+            optical_flow.setNumberIterations(100) 
+            flow = optical_flow.calc(prev, next, None)
+            return flow
+        except AttributeError:
+            print("'opencv-contrib-python' fehlt für TVL1. Nutze Farneback.")
+            return cv2.calcOpticalFlowFarneback(prev, next, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+
+def warp_image(img, flow):
+    """
+    Warpt ein Bild basierend auf dem Flow Vektor mittels cv2.remap (sehr schnell).
+    """
+    h, w = img.shape
+    # Grid erstellen
+    flow_map = np.column_stack(np.meshgrid(np.arange(w), np.arange(h)))
+    flow_map = flow_map.reshape(h, w, 2).astype(np.float32)
+
+    # Den Flow addieren: Woher kommt der Pixel?
+    # Inverse Mapping: map_x = x - flow_x
+    map_x = flow_map[:,:,0] - flow[:,:,0]
+    map_y = flow_map[:,:,1] - flow[:,:,1]
+
+    # Remap
+    return cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
 def process_dataset(group_name, input_h5, output_h5):
-    """
-    Unterteilt Datenset in 41er-Gruppen und interpoliert ein Bild zwischen zwei bestehenden Bildern durch Optical Flow
-    """
     dataset = input_h5[f"{group_name}/data"][:]
-
     Height, Width, N_total = dataset.shape
     series_length = 41
     N_series = N_total // series_length
-    data_transposed = dataset.transpose(2, 0, 1) # (H, W, N) --> (N, H, W)
     
-    # Array erstellen und befüllen
-    new_series_len = series_length + (series_length - 1) # 41+40=81
+    # Transpose zu (N, H, W) für einfachere Iteration
+    data_transposed = dataset.transpose(2, 0, 1) 
+    
+    # Neue Größe berechnen
+    # Pro Lücke (40 Stück) kommen N_INTERPOLATE Bilder dazu
+    new_series_len = series_length + (series_length - 1) * N_INTERPOLATE
     N_total_new = N_series * new_series_len
+    
+    print(f" -> Verarbeite '{group_name}': {N_series} Serien. Neue Länge pro Serie: {new_series_len}")
+    
+    # Output Array
     new_data = np.zeros((N_total_new, Height, Width), dtype=np.float32)
 
     current_idx = 0
-    for idx in range(0, N_series, 1):
+    
+    for idx in range(N_series):
         start = idx * series_length
         end = start + series_length
         image_series = data_transposed[start:end]
 
-        new_data[current_idx] = image_series[0] # Startbild
+        # 1. Startbild speichern
+        new_data[current_idx] = image_series[0]
         current_idx += 1
-        print(f" -> Fortschritt: Serie {idx+1} von {N_series} fertig.", flush=True)
         
+        # Loop durch die Paare in der Serie
         for i in range(series_length - 1):
-            image_a = image_series[i]
-            image_b = image_series[i+1]
+            img_a = image_series[i]
+            img_b = image_series[i+1]
             
-            image_interp_clean = generate_intermediate_frame_flow(image_a, image_b) # Berechne das saubere, verschobene Bild
-            image_interp_noisy = apply_poisson_noise(image_interp_clean) # Noise wiederherstellen
+            # Flow berechnen (nur 1x pro Paar!)
+            # Wir berechnen Flow A -> B
+            flow = get_optical_flow(img_a, img_b, method=FLOW_METHOD)
             
-            # Speichern
-            new_data[current_idx] = image_interp_noisy # Interpoliertes Bild
+            # N Zwischenbilder generieren
+            for j in range(1, N_INTERPOLATE + 1):
+                # Zeitfaktor t von 0 bis 1
+                t = j / (N_INTERPOLATE + 1)
+                
+                # Wir schieben A in die Zukunft (+ t * flow)
+                # Wir schieben B in die Vergangenheit (- (1-t) * flow)
+                
+                # Achtung: OpenCV remap braucht "woher der Pixel kommt".
+                # Wenn wir A nach t warpen wollen, müssen wir wissen wo der Pixel in A war.
+                # Approx: Pixel bei (x) in t kommt von (x - t*flow) in A.
+                
+                flow_a = flow * t
+                flow_b = flow * (t - 1.0) # Negativer Flow für B
+                
+                # Warpen
+                warped_a = warp_image(img_a, flow_a)
+                warped_b = warp_image(img_b, flow_b)
+                
+                # Blenden
+                img_interp = (1 - t) * warped_a + t * warped_b
+                
+                # Noise
+                if USE_POISSON_NOISE:
+                    img_final = apply_poisson_noise(img_interp)
+                else:
+                    img_final = img_interp
+                
+                new_data[current_idx] = img_final
+                current_idx += 1
+            
+            # 2. Originalbild B speichern
+            new_data[current_idx] = img_b
             current_idx += 1
-            new_data[current_idx] = image_b # Original Bild
-            current_idx += 1
+            
+        print(f"    Serie {idx+1}/{N_series} fertig.", end='\r')
 
+    # Speichern
     group = output_h5.create_group(group_name)
-    final_data = new_data.transpose(1, 2, 0) # Zurück zu (H, W, N)
+    # Zurück transponieren zu (H, W, N) wie HDF5 es erwartet
+    final_data = new_data.transpose(1, 2, 0)
     group.create_dataset("data", data=final_data, compression="gzip")
-    print(f" -> Gruppe '{group_name}' erfolgreich gespeichert.")
-
+    print(f"\n -> Gruppe '{group_name}' gespeichert.")
 
 if __name__ == "__main__":
-    # Pfade definieren
     ROOT_DIR = Path.home()
     IN_DIR  = ROOT_DIR / "data/original_data"
     OUT_DIR = ROOT_DIR / "data/interpolated_data_optical_flow"
+    
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    datasets = [("test_data.hdf5",        "interpolated_test_data.hdf5"),
-                ("training_data.hdf5",    "interpolated_training_data.hdf5"),
-                ("validation_data.hdf5",  "interpolated_validation_data.hdf5")]
+    input_files = [
+        "test_data.hdf5", 
+        "training_data.hdf5", 
+        "validation_data.hdf5"]
 
-    # Loop über alle drei Dateien
-    for input_name, output_name in datasets:
+    suffix = "_flow_pois_on" if USE_POISSON_NOISE else "_flow_pois_off"
+
+    for input_name in input_files:
+        stem = input_name.replace(".hdf5", "")
+        output_name = f"interpolated_{stem}{suffix}.hdf5"
+        
         input_path  = IN_DIR / input_name
         output_path = OUT_DIR / output_name
-
+        
+        print(f"Processing: {input_name} -> {output_name}")
+        
         with h5py.File(input_path, 'r') as f_in, h5py.File(output_path, 'w') as f_out:
             for key in ['high_count', 'low_count']:
                 process_dataset(key, f_in, f_out)
-    
-    print("\nAlle Jobs erledigt.")
+
+    print("\nFertig.")

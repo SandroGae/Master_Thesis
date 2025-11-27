@@ -14,7 +14,7 @@ from tensorflow.keras import layers, models
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
-# REPRODUCIBILITY & DETERMINISM SETUP 
+# Reproduzierbatkeit
 SEED = 42
 os.environ['PYTHONHASHSEED'] = str(SEED)
 random.seed(SEED)
@@ -60,8 +60,7 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])               ; c8 = conv_block_2d(u1, base_filters)
 
-    # Direkt 1 Channel (kein Lambda Slicing mehr nötig)
-    out = layers.Conv2D(1, (1, 1), activation=output_activation, name="output")(c8)
+    out = layers.Conv2D(1, (1, 1), activation=output_activation, name="output")(c8) # Direkt 1 Channel (kein Lambda Slicing mehr nötig)
     
     return models.Model(inputs, out, name="unet_25d_stacked")
 
@@ -69,18 +68,16 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
 
 def load_split(h5_path):
     """
-    Lädt Daten aus HDF5-Datei und formatiert sie passend für 2d unet
+    Lädt Daten aus HDF5-Datei und formatiert sie passend für 2.5d unet
     """
     with h5py.File(h5_path, "r") as f:
         low_count = f["low_count/data"][:]      # (H, W, N)
         high_count = f["high_count/data"][:]    # (H, W, N)
 
-    # Achse verschieben: (H, W, N) -> (N, H, W)
-    low_count = np.moveaxis(low_count, -1, 0)
+    low_count = np.moveaxis(low_count, -1, 0) # Achse verschieben: (H, W, N) -> (N, H, W)
     high_count = np.moveaxis(high_count, -1, 0)
 
-    # Channel hinzufügen: (N, H, W) -> (N, H, W, C=1)
-    low_count = low_count[:, :, :, np.newaxis]
+    low_count = low_count[:, :, :, np.newaxis] # Channel hinzufügen: (N, H, W) -> (N, H, W, C=1)
     high_count = high_count[:, :, :, np.newaxis]
 
     return low_count, high_count
@@ -134,7 +131,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
       4) Zufalls-Skalierung je Sample: gleiche Skala alle Slices (Form (D,1,1,1))
     """
     def map_volume(x, y):
-        # Flip, hier ist W Achse 2 (0:D, 1:H, 2:W, 3:C) und die flippen wir
+        # W Achse ist 2 (0:D, 1:H, 2:W, 3:C), die flippen
         flip = tf.random.uniform(shape=[], minval=0.0, maxval=1.0, dtype=tf.float32) < tf.constant(p, tf.float32)
         x = tf.cond(flip, lambda: tf.reverse(x, axis=[2]), lambda: x)
         y = tf.cond(flip, lambda: tf.reverse(y, axis=[2]), lambda: y)
@@ -153,8 +150,8 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
         scale = tf.random.uniform([], minval=scale_min, maxval=scale_max, dtype=tf.float32)
         x = x * scale
         y = y * scale
-
         return x, y
+    
     return map_volume
 
 
@@ -164,15 +161,13 @@ def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     # Input ist jetzt direkt (B, H, W, 1) -> Kein Squeeze mehr nötig
     y_true = tf.cast(y_true, tf.float32)
     y_pred = tf.cast(y_pred, tf.float32)
-    
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
     ssim_mean = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
 
 
-# ==============================================================================
-# Metriken (Angepasst: CLIPPED auf 1.0 für Vergleichbarkeit mit V1)
-# ==============================================================================
+# Metriken (Angepasst: CLIPPED auf 1.0 für Vergleichbarkeit)
 def mae_center(y_true, y_pred):
     # Alles > 1.0 wird ignoriert
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
@@ -195,7 +190,6 @@ def ssim_center(y_true, y_pred):
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-# ==============================================================================
 
 
 
@@ -204,8 +198,7 @@ def ssim_center(y_true, y_pred):
 print("Lade Daten...")
 
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
-            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
-            "test":       "/home/sgaell/data/original_data/test_data.hdf5",}
+            "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
 
 BASE_NAME = "unet_25d_SSIM_middle_improved_V2"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -218,13 +211,11 @@ TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 # Lade die Daten
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
-# X_test, y_test = load_split(FILES["test"])
 
 # Mache daraus Volumen im Format (N_vols = 2960, DEPTH, H=192, W=240, C=1)
 X_train, y_train = make_sliding_windows(X_train, y_train, SERIES_LEN, DEPTH)
 X_val,   y_val   = make_sliding_windows(X_val,   y_val,   SERIES_LEN, DEPTH)
 
-# %%
 # Einmaliges initiales Shuffle (separat für Training und Validation):
 X_train, y_train = shuffle_initial(X_train, y_train, SEED)
 X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
@@ -266,11 +257,11 @@ def prepare_25d_input(x, y):
     Input x: (D, H, W, 1)  --> Output x: (H, W, D)
     Input y: (D, H, W, 1)  --> Output y: (H, W, 1) (Mitte)
     """
-    # 1. X reshape: Squeeze den letzten Channel (1), dann Transpose D nach hinten
+    # X reshape: Squeeze den letzten Channel (1), dann Transpose D nach hinten
     x = tf.squeeze(x, axis=-1)       # (D, H, W)
     x = tf.transpose(x, [1, 2, 0])   # (H, W, D) -> D ist jetzt Channel!
 
-    # 2. Y slice: Nur die Mitte holen
+    # Y slice: Nur die Mitte holen
     depth = tf.shape(y)[0]
     idx = depth // 2
     y_center = y[idx]                # (H, W, 1) -> Slice nimmt eine Dimension weg, wir bleiben bei 3D Tensor
@@ -316,5 +307,4 @@ meta = make_meta_dict(
 )
 
 final_path = finalize_run(model, history, RUN_NAME, meta)
-
 print("Training beendet...")

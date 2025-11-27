@@ -1,175 +1,109 @@
 import h5py
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from matplotlib.colors import Normalize
 from pathlib import Path
 
-# ================= KONFIGURATION =================
-ROOT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis")
-ORIGINAL_DIR = ROOT_DIR / "original_data"
-# Pfad wo die interpolierten Daten liegen (falls abweichend, hier anpassen)
-DATA_DIR = ORIGINAL_DIR 
 
-# Output Pfad
-VIDEO_DIR = ORIGINAL_DIR / "videos"
-VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+USE_POISSON_NOISE = False
 
-# Dateinamen
-FILE_ORIG       = "test_data.hdf5"
-FILE_INTERP_OFF = "interpolated_test_data_pois_off.hdf5"
-FILE_INTERP_ON  = "interpolated_test_data_pois_on.hdf5"
 
-# Parameter
-SERIES_TO_PLOT = 12
-LEN_ORIG       = 41
+def apply_poisson_noise(image_data):
+    """
+    Simuliert Zählraten-Rauschen (Poisson)
+    """
+    clean_data = np.maximum(image_data, 0) # Clip auf [0, infinity]
+    noisy_data = np.random.poisson(clean_data).astype(np.float32) # Neue Werte ziehen
+    return noisy_data
 
-# --- KORREKTUR HIER ---
-# Laut deinem Generator-Code ist N_interpolate = 5
-N_INTERPOLATE  = 5  
-# ----------------------
+def process_dataset(group_name, input_h5, output_h5, use_noise=True):
+    """
+    Unterteilt Datenset in 41er-Gruppen und interpoliert ein Bild 
+    zwischen zwei bestehenden Bildern durch lineare Interpolation.
+    use_noise: Wenn True, wird Poisson Noise auf die interpolierten Bilder angewendet.
+    """
+    N_interpolate = 5 # Anzahl Zwischenbilder
 
-# Berechnung der Gesamtlänge: 
-# Bei N=5 und Length=41: 41 + (40 * 5) = 241 Bilder pro Serie
-LEN_INTERP     = LEN_ORIG + (LEN_ORIG - 1) * N_INTERPOLATE 
-STEP_SIZE      = N_INTERPOLATE + 1 
+    dataset = input_h5[f"{group_name}/data"][:]
 
-FPS = 3
-OUTPUT_FORMAT = "mp4"
-
-# ================= HILFSFUNKTIONEN =================
-
-def load_series(base_path, filename, series_idx_1based, length):
-    """Lädt eine spezifische Serie sicher aus einem HDF5 File."""
-    full_path = base_path / filename
-    idx_0based = series_idx_1based - 1
-    start = idx_0based * length
-    end   = start + length
+    Height, Width, N_total = dataset.shape
+    series_length = 41
+    N_series = N_total // series_length
+    data_transposed = dataset.transpose(2, 0, 1) # (H, W, N) --> (N, H, W)
     
-    print(f"-> Lade: {filename} (Serie {series_idx_1based})...")
-    print(f"   Lese Index {start} bis {end} (Länge: {length})")
+    # Array erstellen und befüllen
+    # Berechnung der neuen Länge basierend auf N_interpolate
+    new_series_len = series_length + (series_length - 1) * N_interpolate 
+    N_total_new = N_series * new_series_len
+    new_data = np.zeros((N_total_new,  Height, Width), dtype=np.float32)
+
+    current_idx = 0
+    for idx in range(0, N_series, 1):
+        start = idx * series_length
+        end = start + series_length
+        image_series = data_transposed[start:end]
+
+        new_data[current_idx] = image_series[0] # Startbild
+        current_idx += 1
+        
+        for i in range(series_length - 1):
+            image_a = image_series[i]
+            image_b = image_series[i+1]
+            
+            # Loop über die N Zwischenbilder
+            for j in range(1, N_interpolate + 1):
+                # Berechne den Anteil von Bild B (linear steigend von 0 bis 1)
+                alpha = j / (N_interpolate + 1)
+
+                image_interp = (1 - alpha) * image_a + alpha * image_b    # Interpolation clean
+                
+                # Toggle Check: Noise nur anwenden, wenn gewünscht
+                if use_noise:
+                    image_to_save = apply_poisson_noise(image_interp)
+                else:
+                    image_to_save = image_interp
+                
+                new_data[current_idx] = image_to_save  # Interpoliertes Bild
+                current_idx += 1
+
+            new_data[current_idx] = image_b             # Original Bild
+            current_idx += 1
+
+    group = output_h5.create_group(group_name)
+    final_data = new_data.transpose(1, 2, 0)
+    group.create_dataset("data", data=final_data, compression="gzip")
+    print(f"    -> Gruppe '{group_name}' erfolgreich gespeichert (Noise={use_noise}).")
+
+
+if __name__ == "__main__":
+    # Pfade definieren
+    ROOT_DIR = Path.home()
+    IN_DIR  = ROOT_DIR / "data/original_data"
+    OUT_DIR = ROOT_DIR / "data/interpolated_data_linear"
     
-    # Pfad-Fallback Logik
-    if not full_path.exists():
-        fallback = base_path / "interpolated_data_linear" / filename
-        if fallback.exists():
-            full_path = fallback
-        else:
-            print(f"❌ DATEI NICHT GEFUNDEN: {full_path}")
-            return None, None
+    # Sicherstellen, dass Output-Ordner existiert
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    try:
-        with h5py.File(full_path, 'r') as f:
-            low  = f['low_count/data'][:, :, start:end]
-            high = f['high_count/data'][:, :, start:end]
-            return low, high
-    except Exception as e:
-        print(f"❌ Fehler: {e}")
-        return None, None
+    # Suffix basierend auf Toggle bestimmen
+    suffix = "_pois_on" if USE_POISSON_NOISE else "_pois_off"
+    print(f"Starte Verarbeitung. Modus: {suffix.strip('_').upper()}")
 
-# ================= 1. DATEN LADEN =================
+    # Liste der Eingabedateien
+    input_files = ["test_data.hdf5", 
+                   "training_data.hdf5", 
+                   "validation_data.hdf5"]
 
-print("Starte Datenimport...")
-low_orig, high_orig = load_series(ORIGINAL_DIR, FILE_ORIG, SERIES_TO_PLOT, LEN_ORIG)
-low_int_off, high_int_off = load_series(ORIGINAL_DIR, FILE_INTERP_OFF, SERIES_TO_PLOT, LEN_INTERP)
-low_int_on, high_int_on = load_series(ORIGINAL_DIR, FILE_INTERP_ON, SERIES_TO_PLOT, LEN_INTERP)
+    # Loop über alle Dateien
+    for input_name in input_files:
+        # Output Name dynamisch zusammenbauen
+        stem = input_name.replace(".hdf5", "")
+        output_name = f"interpolated_{stem}{suffix}.hdf5"
 
-if any(x is None for x in [low_orig, low_int_off, low_int_on]):
-    print("Abbruch: Dateien fehlen.")
-    exit()
+        input_path  = IN_DIR / input_name
+        output_path = OUT_DIR / output_name
+        
+        print(f"Verarbeite: {input_name} -> {output_name}")
 
-# ================= 2. NORMALISIERUNG (STRATEGIE: REFERENCE ORIGINAL) =================
-# Strategie: Damit das Original "gut" aussieht (wie im ersten Video), berechnen wir
-# die Percentile NUR auf dem Original. Wir wenden diese Grenzen dann auf ALLE an.
-# Das garantiert Vergleichbarkeit UND guten Kontrast für das Original.
-
-print("Berechne Skalierung basierend auf Originaldaten (0.5% - 99.5%)...")
-
-# Low Count Skala
-vmin_l, vmax_l = np.percentile(low_orig, [0.5, 99.5])
-# High Count Skala
-vmin_h, vmax_h = np.percentile(high_orig, [0.5, 99.5])
-
-print(f"Skala Low:  {vmin_l:.4f} bis {vmax_l:.4f}")
-print(f"Skala High: {vmin_h:.4f} bis {vmax_h:.4f}")
-
-# Erstelle die Norm-Objekte
-norm_l = Normalize(vmin=vmin_l, vmax=vmax_l)
-norm_h = Normalize(vmin=vmin_h, vmax=vmax_h)
-
-# ================= 3. PLOT SETUP =================
-fig, axes = plt.subplots(3, 2, figsize=(10, 12), constrained_layout=True)
-fig.suptitle(f'Vergleich Serie {SERIES_TO_PLOT} (Ref: Original Skala)', fontsize=16)
-
-# Setup Datenlisten
-datasets_l = [low_orig, low_int_off, low_int_on]
-datasets_h = [high_orig, high_int_off, high_int_on]
-titles     = ["Original", "Interpolated (Clean)", "Interpolated (Poisson)"]
-
-artists_l = []
-artists_h = []
-
-for i in range(3):
-    # LOW
-    ax_l = axes[i, 0]
-    ax_l.set_title(f"{titles[i]} (Low)")
-    # WICHTIG: Alle nutzen norm_l
-    img_l = ax_l.imshow(datasets_l[i][:,:,0], cmap='gray_r', norm=norm_l, origin='lower')
-    ax_l.axis('off')
-    artists_l.append(img_l)
+        with h5py.File(input_path, 'r') as f_in, h5py.File(output_path, 'w') as f_out:
+            for key in ['high_count', 'low_count']:
+                process_dataset(key, f_in, f_out, use_noise=USE_POISSON_NOISE)
     
-    # HIGH
-    ax_h = axes[i, 1]
-    ax_h.set_title(f"{titles[i]} (High)")
-    # WICHTIG: Alle nutzen norm_h
-    img_h = ax_h.imshow(datasets_h[i][:,:,0], cmap='gray_r', norm=norm_h, origin='lower')
-    ax_h.axis('off')
-    artists_h.append(img_h)
-
-status_text = fig.text(0.5, 0.02, 'Init...', ha='center', fontsize=12, fontweight='bold')
-
-# ================= 4. ANIMATION LOOP =================
-def update(frame_idx):
-    # Berechnung des Index für das Original (Step-Funktion)
-    # Wenn N=5, dann haben wir 5 Zwischenbilder. 
-    # Index-Mapping: 0->0, 1..5->0, 6->1
-    orig_idx = min(frame_idx // STEP_SIZE, LEN_ORIG - 1)
-    
-    # Update Zeile 1: Original
-    artists_l[0].set_data(low_orig[:, :, orig_idx])
-    artists_h[0].set_data(high_orig[:, :, orig_idx])
-    
-    # Update Zeile 2: Clean Interp
-    artists_l[1].set_data(low_int_off[:, :, frame_idx])
-    artists_h[1].set_data(high_int_off[:, :, frame_idx])
-    
-    # Update Zeile 3: Noise Interp
-    artists_l[2].set_data(low_int_on[:, :, frame_idx])
-    artists_h[2].set_data(high_int_on[:, :, frame_idx])
-    
-    # Status Text
-    is_orig = (frame_idx % STEP_SIZE == 0)
-    tag = "ORIGINAL" if is_orig else "INTERP"
-    status_text.set_text(f"Frame {frame_idx}/{LEN_INTERP-1} (Orig: {orig_idx}) | {tag}")
-    
-    return artists_l + artists_h + [status_text]
-
-# Start Animation
-print(f"Rendere Video ({LEN_INTERP} Frames)...")
-ani = FuncAnimation(fig, update, frames=LEN_INTERP, interval=1000/FPS, blit=False)
-
-# Speichern
-out_name = f"comparison_final_serie_{SERIES_TO_PLOT}.{OUTPUT_FORMAT}"
-out_path = VIDEO_DIR / out_name
-
-print(f"Speichere nach: {out_path}")
-try:
-    if OUTPUT_FORMAT == "mp4":
-        ani.save(str(out_path), writer='ffmpeg', fps=FPS)
-    else:
-        ani.save(str(out_path), writer='pillow', fps=FPS)
-    print("✅ Fertig.")
-except Exception as e:
-    print(f"❌ Fehler: {e}")
-
-plt.close(fig)
+    print("\nAlle Jobs erledigt.")
