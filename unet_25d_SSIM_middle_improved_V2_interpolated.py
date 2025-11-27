@@ -34,9 +34,9 @@ SERIES_LEN_ORIG   = 41   # Länge der Original-Serien (Validation)
 BASEFILTERS       = 64
 
 # Pfade (Auf Scratch anpassen!)
-SCRATCH_DIR = Path("/scratch/sgaell/data")
-INTERP_DIR  = SCRATCH_DIR / "interpolated_data_optical_flow"
-ORIG_DIR    = Path.home() / "data/original_data"  # Oder auch auf Scratch, falls dort kopiert
+DATA_ROOT = Path.home() / "data"
+INTERP_DIR = DATA_ROOT / "interpolated_data_linear"
+ORIG_DIR    = Path.home() / "data/original_data"
 
 # Dateinamen bauen
 if USE_POISSON_NOISE == True:
