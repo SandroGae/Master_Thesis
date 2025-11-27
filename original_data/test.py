@@ -7,42 +7,37 @@ import cv2
 USE_POISSON_NOISE = True
 N_INTERPOLATE = 5  # 5 Zwischenbilder
 
-# Wähle den Algorithmus: 
+# Wähle Algorithmus: 
 # "farneback" = Extrem schnell, gut für flüssige Bewegung
 # "tvl1"      = Genauer bei Kanten, langsamer, braucht 'opencv-contrib-python'
 FLOW_METHOD = "farneback" 
 
 def apply_poisson_noise(image_data):
     """
-    Simuliert Zählraten-Rauschen (Poisson)
+    Simuliert Poisson Rauschen
     """
     clean_data = np.maximum(image_data, 0)
-    # Bei sehr kleinen Werten ist Poisson instabil, daher Sicherheitshalber clip
     noisy_data = np.random.poisson(clean_data).astype(np.float32)
     return noisy_data
 
 def get_optical_flow(prev, next, method='farneback'):
     """
-    Berechnet den Optical Flow mit OpenCV (Viel schneller als Skimage).
+    Berechnet den Optical Flow mit OpenCV (Viel schneller als Skimage)
     """
-    # OpenCV erwartet uint8 oder float32. Wir nutzen float32.
     if method == 'farneback':
-        # Parameter für Farneback (für wissenschaftliche Daten oft gut)
-        # pyr_scale=0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0
-        flow = cv2.calcOpticalFlowFarneback(prev, next, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        # Parameter für Farneback: pyr_scale=0.5, levels=3, winsize=20, iterations=3, poly_n=5, poly_sigma=1.2, flags=0
+        flow = cv2.calcOpticalFlowFarneback(prev, next, None, 0.5, 3, 20, 3, 5, 1.2, 0)
         return flow
     
     elif method == 'tvl1':
-        # Dual TV-L1 (benötigt opencv-contrib-python)
         try:
             optical_flow = cv2.optflow.DualTVL1OpticalFlow_create()
-            # Parameter tunen falls nötig:
             optical_flow.setLambda(0.15)
             optical_flow.setNumberIterations(100) 
             flow = optical_flow.calc(prev, next, None)
             return flow
         except AttributeError:
-            print("ACHTUNG: 'opencv-contrib-python' fehlt für TVL1. Nutze Farneback.")
+            print("'opencv-contrib-python' fehlt für TVL1. Nutze Farneback.")
             return cv2.calcOpticalFlowFarneback(prev, next, None, 0.5, 3, 15, 3, 5, 1.2, 0)
 
 def warp_image(img, flow):
