@@ -233,16 +233,16 @@ SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
 
 print(f"Generiere Volumina für Strides: {SELECTED_STRIDES}...")
 
- # Logik für sinnvolle Step Werte
-
+ # Logik für sinnvolle Step Werte um RAM unter 128GB zu halten
 for stride_size in SELECTED_STRIDES:
     if stride_size == 1:
-        current_step = 4  # Stride 1: Nur jedes 4. um data bloat zu reduzieren
+        current_step = 6
     elif stride_size == 2:
-        current_step = 2  # Stride 2: Nur jedes 2. Bild als Startpunkt
+        current_step = 4
+    elif stride_size == 4:
+        current_step = 2
     else:
-        current_step = 1  # Ab Stride 4: Jeden Step machen
-    
+        current_step = 1  # Ab Stride 6: Jeden Step machen
     print(f" -> Verarbeite Stride {stride_size} mit Step {current_step}...")
 
     X_vol, y_vol = make_strided_windows(
