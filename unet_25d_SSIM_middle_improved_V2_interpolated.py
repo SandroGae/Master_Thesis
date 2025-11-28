@@ -305,7 +305,7 @@ def prepare_25d_input(x, y):
 AUTOTUNE = tf.data.AUTOTUNE
 
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
-            .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
+            .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
             .map(cast_to_float32, num_parallel_calls=AUTOTUNE)
             .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=AUTOTUNE)
             .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
