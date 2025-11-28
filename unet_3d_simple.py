@@ -184,12 +184,6 @@ RUN_NAME = "unet_3d_simple"
 X_train, y_train = load_split(FILES["training"])
 X_val,   y_val   = load_split(FILES["validation"])
 
-# Check Formatierung
-# print("TRAIN  X:", X_train.shape, X_train.dtype)  # (3280, 192, 240, 1) float32
-# print("TRAIN  y:", y_train.shape, y_train.dtype)  # (3280, 192, 240, 1) float32
-# print("VAL    X:", X_val.shape,   X_val.dtype)    # (820, 192, 240, 1) float32
-# print("VAL    y:", y_val.shape,   y_val.dtype)    # (820, 192, 240, 1) float32
-
 # Mache daraus Volumen im Format (N_vols = 2960, D=5, H=192, W=240, C=1)
 DEPTH = 5
 SERIES_LEN = 41

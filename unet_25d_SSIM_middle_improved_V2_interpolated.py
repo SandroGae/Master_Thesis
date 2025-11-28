@@ -229,12 +229,12 @@ X_train_raw, y_train_raw = load_split(TRAIN_FILE)
 X_train_list = []
 y_train_list = []
 
-# DEINE GEWÜNSCHTEN STRIDES
+# Strides wählen
 SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
 
 print(f"Generiere Volumina für Strides: {SELECTED_STRIDES}...")
 
- # Logik für sinnvolle Step Werte um RAM unter 128GB zu halten
+ # Logik für sinnvolle Step Werte um RAM zu reduzieren
 for stride_size in SELECTED_STRIDES:
     if stride_size == 1:
         current_step = 6
