@@ -5,10 +5,11 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.colors import Normalize
 from pathlib import Path
 
+print("start")
 # Ordnerstruktur
 ROOT_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis")
 ORIGINAL_DIR = ROOT_DIR / "original_data"
-DATA_DIR = ORIGINAL_DIR 
+DATA_DIR = ORIGINAL_DIR
 VIDEO_DIR = ORIGINAL_DIR / "videos"
 VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -24,7 +25,7 @@ N_INTERPOLATE  = 5  # Anzahl Bilder interpoliert zwischen zwei Bildern
 FPS = 3
 OUTPUT_FORMAT = "mp4"
 LEN_INTERP     = LEN_ORIG + (LEN_ORIG - 1) * N_INTERPOLATE # Länger der Serien (Aktuell 241 für N=5)
-STEP_SIZE      = N_INTERPOLATE + 1 
+STEP_SIZE      = N_INTERPOLATE + 1
 
 
 def load_series(base_path, filename, series_idx_1based, length):
@@ -41,7 +42,7 @@ def load_series(base_path, filename, series_idx_1based, length):
         high = f['high_count/data'][:, :, start:end]
 
         return low, high
-            
+           
 low_orig, high_orig = load_series(ORIGINAL_DIR, FILE_ORIG, SERIES_TO_PLOT, LEN_ORIG)
 low_int_off, high_int_off = load_series(ORIGINAL_DIR, FILE_INTERP_OFF, SERIES_TO_PLOT, LEN_INTERP)
 low_int_on, high_int_on = load_series(ORIGINAL_DIR, FILE_INTERP_ON, SERIES_TO_PLOT, LEN_INTERP)
@@ -86,17 +87,18 @@ def update(frame_idx):
     artists_h[1].set_data(high_int_off[:, :, frame_idx])
     artists_l[2].set_data(low_int_on[:, :, frame_idx])
     artists_h[2].set_data(high_int_on[:, :, frame_idx])
-    
+   
     # Status
     is_orig = (frame_idx % STEP_SIZE == 0)
     tag = "ORIGINAL" if is_orig else "INTERP"
     status_text.set_text(f"Frame {frame_idx}/{LEN_INTERP-1} (Orig: {orig_idx}) | {tag}")
-    
+   
     return artists_l + artists_h + [status_text]
 
 ani = FuncAnimation(fig, update, frames=LEN_INTERP, interval=1000/FPS, blit=False) # Start Animation
 
-out_name = f"comparison_final_serie_{SERIES_TO_PLOT}.{OUTPUT_FORMAT}" # Speichern
+out_name = f"comparison_serie_{SERIES_TO_PLOT}.{OUTPUT_FORMAT}" # Speichern
 out_path = VIDEO_DIR / out_name
 ani.save(str(out_path), writer='ffmpeg', fps=FPS)
 plt.close(fig)
+print("done")
