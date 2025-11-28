@@ -232,7 +232,7 @@ X_train_list = []
 y_train_list = []
 
 # Strides wählen
-SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
+SELECTED_STRIDES = [1, 2, 4, 6, 12] # Ohne 24
 
 print(f"Generiere Volumina für Strides: {SELECTED_STRIDES}...")
 
