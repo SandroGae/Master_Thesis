@@ -150,6 +150,7 @@ def shuffle_initial(X, y, seed):
     rng2 = np.random.default_rng(seed_seq)
     rng1.shuffle(X)
     rng2.shuffle(y)
+    return X, y
 
 def cast_to_float32(x, y):
     return tf.cast(x, tf.float32), tf.cast(y, tf.float32)
