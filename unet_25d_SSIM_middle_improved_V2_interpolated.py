@@ -96,7 +96,7 @@ def load_split(h5_path):
     low_count = low_count[:, :, :, np.newaxis] # Channel hinzufügen: (N, H, W) -> (N, H, W, C=1)
     high_count = high_count[:, :, :, np.newaxis]
 
-    return low_count, high_count
+    return low_count.astype(np.float16), high_count.astype(np.float16)
 
 
 def make_strided_windows(X, y, series_len, depth, stride, step=1):
@@ -144,14 +144,15 @@ def make_strided_windows(X, y, series_len, depth, stride, step=1):
 
 
 def shuffle_initial(X, y, seed):
-    """
-    Shuffelt X und y mit der gleichen Permutation
-    """
-    rng = np.random.default_rng(seed)
-    N = len(X)
-    indices = np.arange(N)
-    rng.shuffle(indices)
-    return X[indices], y[indices]
+    """Shuffelt X und y 'in-place' ohne Speicher-Kopie."""
+    seed_seq = np.random.SeedSequence(seed)
+    rng1 = np.random.default_rng(seed_seq)
+    rng2 = np.random.default_rng(seed_seq)
+    rng1.shuffle(X)
+    rng2.shuffle(y)
+
+def cast_to_float32(x, y):
+    return tf.cast(x, tf.float32), tf.cast(y, tf.float32)
 
 
 def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
@@ -302,14 +303,16 @@ def prepare_25d_input(x, y):
 
 AUTOTUNE = tf.data.AUTOTUNE
 
-train_ds = (tf.data.Dataset.from_tensor_slices((X_train.astype(np.float32), y_train.astype(np.float32)))
+train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
+            .map(cast_to_float32, num_parallel_calls=AUTOTUNE)
             .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=AUTOTUNE)
             .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
             .batch(BATCH_SIZE)
             .prefetch(AUTOTUNE))
 
-val_ds = (tf.data.Dataset.from_tensor_slices((X_val.astype(np.float32), y_val.astype(np.float32)))
+val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
+          .map(cast_to_float32, num_parallel_calls=AUTOTUNE)
           .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
           .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
           .batch(BATCH_SIZE)
