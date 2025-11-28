@@ -17,7 +17,7 @@ def apply_poisson_noise(image_data):
     noisy_data = np.random.poisson(clean_data).astype(np.float32)
     return noisy_data
 
-def get_optical_flow(prev, next, method='farneback'):
+def get_optical_flow(prev, next, method='tvl1'):
     return cv2.calcOpticalFlowFarneback(prev,   
                                         next, 
                                         None, 
@@ -40,9 +40,9 @@ def warp_image(img, flow):
 
 def process_single_series(group_name, input_h5, output_h5, series_idx):
     """
-    Verarbeitet NUR EINE spezifische Serie, um Zeit zu sparen.
+    Verarbeitet eine spezifische Serie
     """
-    # 1. Indizes berechnen
+    # Indizes berechnen
     start_idx = series_idx * SERIES_LENGTH
     end_idx   = start_idx + SERIES_LENGTH
     
