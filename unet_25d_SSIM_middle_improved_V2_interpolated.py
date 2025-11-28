@@ -14,6 +14,7 @@ from tensorflow.keras import layers, models
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
+
 # Reproduzierbatkeit
 SEED = 42
 os.environ['PYTHONHASHSEED'] = str(SEED)

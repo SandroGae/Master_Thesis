@@ -25,23 +25,58 @@ offsets = [
     (-40, 0)    # Apple A14
 ]
 
-# Plot Setup - explizit mit Figure und Axes Objekt arbeiten für volle Kontrolle
+# Plot Setup
 fig, ax = plt.subplots(figsize=(14, 9))
 
-# Farben explizit setzen (Sicherheitshalber, falls Dark Mode nicht greift)
+# Farben explizit setzen
 fig.patch.set_facecolor('black')
 ax.set_facecolor('black')
 
 # Scatter Plot
 ax.scatter(years, counts, color='cyan', s=150, zorder=5, label='Processors')
 
-# Moore's Law Trend Line
+# Moore's Law Trend Line Berechnung
 log_counts = np.log10(counts)
 coefficients = np.polyfit(years, log_counts, 1)
 polynomial = np.poly1d(coefficients)
-trend_y = np.power(10, polynomial(years))
 
-ax.plot(years, trend_y, color='orange', linestyle='--', linewidth=3, label="Moore's Law Trend")
+# --- ÄNDERUNG 1: Zeiträume aufteilen ---
+# Historischer Teil (Start bis 2025)
+years_historic = np.arange(1971, 2026)
+trend_historic = np.power(10, polynomial(years_historic))
+
+# Zukünftiger Teil (2025 bis 2035)
+years_future = np.arange(2025, 2036)
+trend_future = np.power(10, polynomial(years_future))
+
+# Plot Historisch (Stark)
+ax.plot(years_historic, trend_historic, color='orange', linestyle='--', linewidth=3, label="Moore's Law Trend")
+
+# --- ÄNDERUNG 2: Ausdünnende Linie ---
+# Plot Zukunft (Dünner, transparenter, gepunktet)
+ax.plot(years_future, trend_future, color='orange', linestyle=':', linewidth=1.5, alpha=0.6, label="Projection 2035 (?)")
+
+# --- ÄNDERUNG 3: Fragezeichen ---
+np.random.seed(42) # Damit es immer gleich aussieht
+for yr in years_future[1::2]: # Jedes zweite Jahr im Zukunfts-Array
+    # Berechneter Y-Wert auf der Linie
+    y_trend = np.power(10, polynomial(yr))
+    
+    # Zufälliger Versatz (Faktor, da logarithmisch)
+    factor = np.random.uniform(0.4, 2.5) 
+    # Manchmal invertieren, damit es auch unter der Linie ist
+    if np.random.random() > 0.5:
+        factor = 1.0 / factor
+        
+    y_pos = y_trend * factor
+    
+    ax.text(yr, y_pos, "?", 
+            color='orange', 
+            fontsize=np.random.randint(14, 24), 
+            alpha=0.8,
+            fontweight='bold',
+            rotation=np.random.randint(-20, 20),
+            ha='center', va='center')
 
 # Annotationen
 for i, txt in enumerate(names):
@@ -64,16 +99,19 @@ for i, txt in enumerate(names):
 ax.set_yscale('log')
 ax.grid(True, which="both", ls="--", alpha=0.3, color='gray')
 
-# Titel und Labels - explizit in Weiß
-ax.set_title("Moore's Law: Transistor Count Over Time", fontsize=26, fontweight='bold', color='white', pad=30)
+# --- ÄNDERUNG 4: X-Achse erweitert ---
+ax.set_xlim(1965, 2038)
+
+# Titel und Labels
+ax.set_title("Moore's Law: Transistor Count to 2035", fontsize=26, fontweight='bold', color='white', pad=30)
 ax.set_xlabel("Year", fontsize=18, fontweight='bold', color='white', labelpad=15)
 ax.set_ylabel("Transistor Count (Log Scale)", fontsize=18, fontweight='bold', color='white', labelpad=15)
 
-# Ticks (Zahlen an den Achsen) explizit stylen
+# Ticks Styling
 ax.tick_params(axis='both', which='major', labelsize=14, colors='white', length=6, width=2)
 ax.tick_params(axis='both', which='minor', colors='gray', length=3)
 
-# Rahmen (Spines) einfärben
+# Rahmen
 for spine in ax.spines.values():
     spine.set_edgecolor('white')
     spine.set_linewidth(1.5)
@@ -85,7 +123,5 @@ for text in legend.get_texts():
 
 # Layout und Speichern
 plt.tight_layout()
-
-# Wichtig: facecolor beim Speichern mitgeben
-plt.savefig("moores_law_final.png", dpi=300, bbox_inches='tight', facecolor=fig.get_facecolor())
+plt.savefig("moores_law_2035.png", dpi=300, bbox_inches='tight', facecolor=fig.get_facecolor())
 plt.show()
