@@ -11,27 +11,25 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# =====================================================
-# KONFIGURATION
-# =====================================================
-# Pfad zu deinem 2.5D Modell (.keras)
+
+# Konfiguration
 MODEL_FILE_3stack ="unet_25d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-181534_loss0.0535_val0.0597.keras"
 MODEL_FILE_5stack = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251119-171216_loss0.0519_val0.0585.keras"
+MODEL_FILE_5stack_kernel_3x5 = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251201-103044_loss0.0523_val0.0587.keras"
+MODEL_FILE_5stack_kernel_5x5_test = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251201-114917_loss0.0060_val0.0065.keras"
 
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / MODEL_FILE_3stack
+MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / MODEL_FILE_5stack_kernel_5x5_test
 H5_TEST_PATH = ROOT_DIR / "data" / "original_data" / "test_data.hdf5"
 MOVIES_DIR = ROOT_DIR / "Plots" / "Unet" / "Movies"
 
-DEPTH = 3
+DEPTH = 5
 SERIES_LEN = 41
-SERIES_IDX = 50  # (1-basiert)
+SERIES_IDX = 12  # (1-basiert)
 FPS = 3
 
-# =====================================================
-# Daten-Hilfsfunktionen
-# =====================================================
+
 def load_test_split(h5_path: Path):
     with h5py.File(h5_path, "r") as f:
         low_count = f["low_count/data"][:]   # (H, W, N)
@@ -68,20 +66,14 @@ def normalize_like_validation(volumes, scale=10000.0):
     Normierung: ReLU -> SumNorm pro Slice -> Scale
     """
     volume = np.maximum(volumes, 0.0).astype(np.float32)
-    # Summe über (H,W,C) -> axis (2,3,4) bei Input (N, D, H, W, C)
     sums = np.sum(volume, axis=(2, 3, 4), keepdims=True) + 1e-12
     volume = volume / sums
     volume = volume * scale
-    # WICHTIG: Falls du ohne Clip trainiert hast (V2), hier KEIN Clip.
-    # Falls du doch clippen willst für Visualisierung, kannst du np.clip(..., 0, 1) nutzen.
-    # Hier lassen wir es roh, wie im V2 Training.
     return volume
 
-# =====================================================
+
 # Visualisierung
-# =====================================================
 def normalized_image(image):
-    # Percentile Scaling für hübsche Farben
     vmin, vmax = np.percentile(image, [0.5, 99.5])
     if vmax - vmin < 1e-12: return image
     return (image - vmin) / (vmax - vmin)
@@ -96,14 +88,9 @@ def create_frames(X_seq_5d, Y_pred_25d, Y_true_5d, depth):
     frames = []
 
     for i in range(X_seq_5d.shape[0]):
-        # 1. Input: Mittlere Slice aus dem Stack
-        inp_slice = X_seq_5d[i, center_idx, :, :, 0]
-        
-        # 2. Prediction: Das 2.5D Modell gibt direkt das Bild aus
-        pred_slice = Y_pred_25d[i, :, :, 0]
-        
-        # 3. Ground Truth: Mittlere Slice aus dem Stack
-        gt_slice = Y_true_5d[i, center_idx, :, :, 0]
+        inp_slice = X_seq_5d[i, center_idx, :, :, 0] # Input: Mittlere Slice aus dem Stack
+        pred_slice = Y_pred_25d[i, :, :, 0] # Prediction: Das 2.5D Modell gibt direkt das Bild aus
+        gt_slice = Y_true_5d[i, center_idx, :, :, 0] # Ground Truth: Mittlere Slice aus dem Stack
 
         # Normalisierung für Anzeige
         inp_norm  = normalized_image(inp_slice)
@@ -136,67 +123,41 @@ def create_frames(X_seq_5d, Y_pred_25d, Y_true_5d, depth):
 
     return frames
 
-# =====================================================
+
 # Main
-# =====================================================
 def main():
     s_idx_0 = SERIES_IDX - 1
-    out_name = f"25D_Model_Series{SERIES_IDX}_Depth{DEPTH}.mp4"
+    out_name = f"25D_Model_Series{SERIES_IDX}_Depth{DEPTH}_kernel_5x5_test.mp4"
     out_path = MOVIES_DIR / out_name
 
-    print(f"--- 2.5D Video Generator ---")
-    print(f"Modell: {MODEL_PATH}")
-    print(f"Output: {out_path}")
-
-    # 1. Modell laden
-    # compile=False verhindert Fehler mit Custom Losses, wir brauchen nur predict()
-    print("Lade Modell...")
     model = models.load_model(MODEL_PATH, compile=False)
-
-    # 2. Daten laden
-    print("Lade Testdaten...")
     X_test, y_test = load_test_split(H5_TEST_PATH)
 
-    # 3. Windows erstellen (ergibt 5D: N, Depth, H, W, 1)
-    print("Erstelle Windows...")
+    # Windows erstellen (ergibt 5D: N, Depth, H, W, 1)
     X_vols, y_vols, n_series, n_vols = make_sliding_windows(X_test, y_test, SERIES_LEN, DEPTH)
     
-    # 4. Richtige Serie auswählen
+    # Serie auswählen
     start = s_idx_0 * n_vols
     end   = start + n_vols
     X_seq = X_vols[start:end] # (37, Depth, H, W, 1)
     Y_seq = y_vols[start:end]
     print(f"Nutze Serie {SERIES_IDX}, Volumen {start} bis {end}")
 
-    # 5. Normalisieren (wie im Training)
-    print("Normalisiere...")
+    # Normalisieren (wie im Training)
     X_seq_norm = normalize_like_validation(X_seq, scale=10000.0)
     # Ground Truth auch normalisieren für Anzeige
     Y_seq_norm = normalize_like_validation(Y_seq, scale=10000.0)
 
-    # =========================================================
-    # DER ADAPTER-TRICK: 5D -> 4D (Channels)
-    # =========================================================
-    # Input ist (N, Depth, H, W, 1) -> Wir brauchen (N, H, W, Depth)
-    print("Formatiere Input für 2.5D Modell um...")
-    
-    # 1. Letzte Dimension (1) weg: (N, Depth, H, W)
+    # Letzte Dimension weg: (N, Depth, H, W)
     X_input_25d = np.squeeze(X_seq_norm, axis=-1)
     
-    # 2. Achsen tauschen: Depth (1) nach hinten (3)
-    # (N, Depth, H, W) -> (N, H, W, Depth)
-    # Permutation: 0->0, 1->3, 2->1, 3->2
+    # Achsen tauschen: Depth (1) nach hinten (3)
     X_input_25d = np.transpose(X_input_25d, (0, 2, 3, 1))
-    
-    print(f"Input Shape für Modell: {X_input_25d.shape}")
-
-    # 6. Vorhersage
-    print("Berechne Prediction...")
+    # Vorhersage
     Y_pred = model.predict(X_input_25d, batch_size=4, verbose=1) 
     # Output ist (N, H, W, 1)
 
-    # 7. Video erstellen
-    print("Rendere Frames...")
+     # Video erstellen
     frames = create_frames(X_seq_norm, Y_pred, Y_seq_norm, DEPTH)
 
     MOVIES_DIR.mkdir(parents=True, exist_ok=True)

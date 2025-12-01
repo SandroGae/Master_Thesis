@@ -33,23 +33,26 @@ POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
-    # Conv: Standard, um lokale Features zu sammeln
+
     x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki)(x)
     x = layers.ReLU()(x)
-    
-    # 2. Conv: DILATED (Rate 2), sieht einen grösseren Kontext!
-    # Das ist wie ein 5x5 Kernel, aber effizienter.
+    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki)(x)
+    x = layers.ReLU()(x)
+    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki)(x)
+    x = layers.ReLU()(x)
+    # DILATED --> preceptive field des 5x5 aber Parameter des 3x3
     x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, dilation_rate=2)(x)
     x = layers.ReLU()(x)
+    
     return x
 
 def unet_2d_stacked(input_shape=(192, 240, DEPTH), output_activation="relu"):
     inputs = layers.Input(shape=input_shape, name="input")
 
-    f = [96, 128, 192, 256, 384] # Letztes ist Bottleneck
+    f = [64, 96, 128, 192, 256] # Letztes ist Bottleneck
 
     # Encoder (2D Pooling reduziert H und W)
-    c1 = conv_block_2d(inputs, f[0])          ; p1 = layers.MaxPooling2D((2, 2))(c1)
+    c1 = conv_block_2d(inputs, f[0])      ; p1 = layers.MaxPooling2D((2, 2))(c1)
     c2 = conv_block_2d(p1, f[1])          ; p2 = layers.MaxPooling2D((2, 2))(c2)
     c3 = conv_block_2d(p2, f[2])          ; p3 = layers.MaxPooling2D((2, 2))(c3)
     c4 = conv_block_2d(p3, f[3])          ; p4 = layers.MaxPooling2D((2, 2))(c4)
