@@ -228,6 +228,18 @@ def ssim_center(y_true, y_pred):
 print(f"Lade Daten: {TRAIN_FILE}")
 X_train_raw, y_train_raw = load_split(TRAIN_FILE)
 
+def check_data_integrity(path):
+    with h5py.File(path, "r") as f:
+        data = f["low_count/data"][:]
+        if np.isnan(data).any():
+            print(f"ALARM: NaNs in {path} gefunden!")
+        if np.isinf(data).any():
+            print(f"ALARM: Infs in {path} gefunden!")
+        
+        print(f"Min: {data.min()}, Max: {data.max()}")
+
+check_data_integrity(TRAIN_FILE)
+
 X_train_list = []
 y_train_list = []
 
