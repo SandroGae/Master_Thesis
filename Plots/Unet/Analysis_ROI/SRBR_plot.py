@@ -99,9 +99,6 @@ def main():
     start = max(0, FRAME_START)
     end   = min(total_frames, FRAME_END + 1) # +1 für inklusiv
     
-    print(f"Gesamt Frames: {total_frames}")
-    print(f"Nutze Bereich: {start} bis {end-1} (Total: {end-start} Bilder)")
-    
     vol_lc   = raw_lc[start:end]
     vol_pred = raw_pred[start:end]
     vol_gt   = raw_gt[start:end]

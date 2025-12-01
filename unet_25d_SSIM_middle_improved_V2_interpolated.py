@@ -232,21 +232,19 @@ X_train_list = []
 y_train_list = []
 
 # Strides wählen
-SELECTED_STRIDES = [1, 2, 4, 6, 12] # Ohne 24
+SELECTED_STRIDES = [1, 2, 4, 6, 12, 24] 
 
 print(f"Generiere Volumina für Strides: {SELECTED_STRIDES}...")
 
  # Logik für sinnvolle Step Werte um RAM zu reduzieren
+ # Für 5 Volumen aktuell [Stride, Bilder pro 41er Serie] --> [1, 40], [2, 39], [4, 38], [6, 37], [12, 39], [24, 37]
 for stride_size in SELECTED_STRIDES:
-    if stride_size == 1:
-        current_step = 6
-    elif stride_size == 2:
+    if stride_size == 12:
+        current_step = 5
+    elif stride_size == 24:
         current_step = 4
-    elif stride_size == 6:
-        current_step = 1
-    else: # Für 4, 12 ,24
-        current_step = 2
-    print(f" -> Verarbeite Stride {stride_size} mit Step {current_step}...")
+    else:
+        current_step = 6
 
     X_vol, y_vol = make_strided_windows(
         X_train_raw, 
@@ -351,7 +349,7 @@ print(f"Starte Training: {RUN_NAME}")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=200,
+    epochs=100,
     callbacks=callbacks,
     verbose=2
 )
@@ -360,7 +358,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=BATCH_SIZE,
-    epochs=200,
+    epochs=100,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(192, 240, DEPTH),
