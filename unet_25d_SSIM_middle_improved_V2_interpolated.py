@@ -96,7 +96,7 @@ def load_split(h5_path):
     low_count = low_count[:, :, :, np.newaxis] # Channel hinzufügen: (N, H, W) -> (N, H, W, C=1)
     high_count = high_count[:, :, :, np.newaxis]
 
-    return low_count.astype(np.float16), high_count.astype(np.float16)
+    return low_count.astype(np.float32), high_count.astype(np.float32)
 
 
 def make_strided_windows(X, y, series_len, depth, stride, step=1):
@@ -227,18 +227,6 @@ def ssim_center(y_true, y_pred):
 
 print(f"Lade Daten: {TRAIN_FILE}")
 X_train_raw, y_train_raw = load_split(TRAIN_FILE)
-
-def check_data_integrity(path):
-    with h5py.File(path, "r") as f:
-        data = f["low_count/data"][:]
-        if np.isnan(data).any():
-            print(f"ALARM: NaNs in {path} gefunden!")
-        if np.isinf(data).any():
-            print(f"ALARM: Infs in {path} gefunden!")
-        
-        print(f"Min: {data.min()}, Max: {data.max()}")
-
-check_data_integrity(TRAIN_FILE)
 
 X_train_list = []
 y_train_list = []
