@@ -31,7 +31,7 @@ BASEFILTERS = 64
 # Simples unet in 2.5D
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
-def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
+def conv_block_2d(x, filters, kernel_size=(3, 5), padding="same"):
     ki = "he_normal"
     for _ in range(4):
         x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
@@ -288,7 +288,7 @@ print("Training beginnt...")
 history = model.fit(
     train_ds,
     validation_data=val_ds,
-    epochs=200,
+    epochs=100,
     callbacks=callbacks,
     verbose=2
 )
@@ -297,7 +297,7 @@ history = model.fit(
 meta = make_meta_dict(
     script_name=RUN_NAME,
     batch_size=8,
-    epochs=200,
+    epochs=100,
     optimizer=optimizer,
     learning_rate=5e-4,
     input_shape=(192, 240, DEPTH),  
