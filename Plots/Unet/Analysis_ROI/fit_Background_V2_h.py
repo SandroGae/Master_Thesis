@@ -12,8 +12,8 @@ NPZ_FILE = "Pred_unet_25d_SSIM_middle_improved_V2_D5_S12_FullSeries.npz" # Datei
 
 # Settings
 SLICE_INDEX = 19 # Wähle Bild für Visualisierung oben
-ROI_X_START, ROI_X_END = 65, 86   
-ROI_Y_START, ROI_Y_END = 104, 115  
+ROI_X_START, ROI_X_END = 65, 86
+ROI_Y_START, ROI_Y_END = 104, 115
 BACKGROUND_GAP        = 5   
 BACKGROUND_BOX_HEIGHT = 10  
 FIT_WINDOW_FRAMES = (2, 38) # Bereich für Gauss Fit (Frames/Indizes)
@@ -77,16 +77,13 @@ def calculate_sbr_z_profiles(volume, force_noise_std_array=None):
 
     for i in range(n_frames):
         image = volume[i]
-        
-        # 1. Summe Signal
+        # Summe Signal
         signal_slice = image[ROI_Y_START:ROI_Y_END, ROI_X_START:ROI_X_END]
         sum_signal = np.sum(signal_slice)
+
+        bg_pixels_list = [] # Background Daten holen
         
-        # 2. Background Daten holen
-        bg_pixels_list = []
-        
-        # Top Box
-        t_y1, t_y2 = bg_top_y_top, bg_top_y_bottom
+        t_y1, t_y2 = bg_top_y_top, bg_top_y_bottom  # Top Box
         if t_y2 > t_y1: bg_pixels_list.append(image[t_y1:t_y2, ROI_X_START:ROI_X_END])
         
         # Bottom Box - Check Boundaries
