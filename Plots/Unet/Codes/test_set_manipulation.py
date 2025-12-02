@@ -9,10 +9,10 @@ IN_DIR = Path("/home/sgaell/data/original_data")
 IN_FILE = IN_DIR / "test_data.hdf5"
 
 OUT_DIR = Path("/home/sgaell/data/test_data_manipulated")
-OUT_FILE = OUT_DIR / "test_every_second_image.hdf5"
+OUT_FILE = OUT_DIR / "test_every_third_image.hdf5"
 
 SERIES_LEN_OLD = 41
-SLICE_INDEX = 2 # Kick out every second image
+SLICE_INDEX = 3 # Kick out every second image
 
 def subsample_every_second(data_chunk, series_len):
     """
