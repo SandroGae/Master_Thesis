@@ -31,11 +31,10 @@ BASEFILTERS = 64
 # Simples unet in 2.5D
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
-def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
+def conv_block_2d(x, filters, kernel_size=(3, 5), padding="same"):
     ki = "he_normal"
-    for i in range(4):
-        d_rate = 1 if i < 2 else 2
-        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, dilation_rate=d_rate, use_bias=True)(x)
+    for _ in range(4):
+        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
         x = layers.ReLU()(x)
     return x
 
