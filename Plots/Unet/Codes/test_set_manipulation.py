@@ -12,7 +12,7 @@ OUT_DIR = Path("/home/sgaell/data/test_data_manipulated")
 OUT_FILE = OUT_DIR / "test_every_second_image.hdf5"
 
 SERIES_LEN_OLD = 41
-SLICE_INDEX = 2 # Kick out every second image
+SLICE_INDEX = 3 # Kick out every second image
 
 def subsample_every_second(data_chunk, series_len):
     """
@@ -30,7 +30,7 @@ def subsample_every_second(data_chunk, series_len):
     data_reshaped = data_t.reshape(num_series, series_len, H, W) # Reshapen in (Num_Series, Series_Len, H, W)
 
     # Slicing: Nimm jedes zweite Bild entlang Achse 1 (Series_Len)
-    data_subsampled = data_reshaped[:, ::2, :, :] # Start bei 0, Schrittweite 2 (0, 2, 4, ..., 40)
+    data_subsampled = data_reshaped[:, ::SLICE_INDEX, :, :] # Wähle wie viele Bilder löschen!
     new_len = data_subsampled.shape[1]
     
     # Zurück flachen: (Num_Series * New_Len, H, W)
