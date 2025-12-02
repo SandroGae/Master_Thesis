@@ -15,7 +15,7 @@ os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 HOME = Path("/home/sgaell")
 DATA_ROOT = HOME / "data"
 CODE_ROOT = HOME / "code" / "Master_Thesis" / "Plots" / "Unet"
-H5_TEST_PATH = DATA_ROOT / "test_data_manipulated" / "test_every_second_image.hdf5"
+H5_TEST_PATH = DATA_ROOT / "test_data_manipulated" / "test_every_third_image.hdf5"
 MODEL_DIR = DATA_ROOT / "checkpoints_unet_3d_simple"
 MODEL_FILE = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251202-121350_loss0.0527_val0.0587.keras"
 
