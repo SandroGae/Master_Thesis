@@ -17,10 +17,12 @@ MODEL_FILE_3stack ="unet_25d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_
 MODEL_FILE_5stack = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251119-171216_loss0.0519_val0.0585.keras"
 MODEL_FILE_5stack_kernel_3x5 = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251201-103044_loss0.0523_val0.0587.keras"
 MODEL_FILE_5stack_kernel_5x5_test = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251201-114917_loss0.0060_val0.0065.keras"
+MODEL_FILE_5stack_kernel_5x5_test_relu = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251201-160131_loss0.0093_val0.0089.keras"
+MODEL_FILE_5stack_interpolated = "unet_25d_D5_VarStride1-24__20251201-093031_loss0.0690_val0.0594.keras"
 
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / MODEL_FILE_5stack_kernel_5x5_test
+MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / MODEL_FILE_5stack_kernel_5x5_test_relu
 H5_TEST_PATH = ROOT_DIR / "data" / "original_data" / "test_data.hdf5"
 MOVIES_DIR = ROOT_DIR / "Plots" / "Unet" / "Movies"
 
@@ -28,6 +30,8 @@ DEPTH = 5
 SERIES_LEN = 41
 SERIES_IDX = 12  # (1-basiert)
 FPS = 3
+
+out_name = f"25D_Model_Series{SERIES_IDX}_Depth{DEPTH}_kernel_5x5_test_relu.mp4"
 
 
 def load_test_split(h5_path: Path):
@@ -127,7 +131,6 @@ def create_frames(X_seq_5d, Y_pred_25d, Y_true_5d, depth):
 # Main
 def main():
     s_idx_0 = SERIES_IDX - 1
-    out_name = f"25D_Model_Series{SERIES_IDX}_Depth{DEPTH}_kernel_5x5_test.mp4"
     out_path = MOVIES_DIR / out_name
 
     model = models.load_model(MODEL_PATH, compile=False)

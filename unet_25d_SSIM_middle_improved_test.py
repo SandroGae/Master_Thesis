@@ -22,7 +22,6 @@ np.random.seed(SEED)
 tf.random.set_seed(SEED)
 tf.config.experimental.enable_op_determinism()
 
-
 # Parameters
 DEPTH = 5
 SERIES_LEN = 41
@@ -46,7 +45,7 @@ def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     
     return x
 
-def unet_2d_stacked(input_shape=(192, 240, DEPTH), output_activation="relu"):
+def unet_2d_stacked(input_shape=(192, 240, DEPTH), output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     f = [64, 96, 128, 192, 256] # Letztes ist Bottleneck
