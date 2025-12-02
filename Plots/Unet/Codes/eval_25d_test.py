@@ -42,10 +42,34 @@ def create_windows(X: np.ndarray, y: np.ndarray, depth: int):
     N = X.shape[0]
     n_series = N // SERIES_LEN
     n_per_series = SERIES_LEN - depth + 1
-    total_windows = n_series * n_per_series
+    # center_offset: Welches Bild ist das Ziel? (Meistens das mittlere)
     center_offset = depth // 2
 
     X_list, y_list = [], []
+
+    # Iteriere über jede Serie (z.B. jeden Patienten/Scan)
+    for s in range(n_series):
+        # Startindex der aktuellen Serie
+        start_index = s * SERIES_LEN
+        
+        # Iteriere innerhalb der Serie (Sliding Window)
+        for i in range(n_per_series):
+            # Indizes berechnen
+            idx_start = start_index + i
+            idx_end = idx_start + depth
+            
+            # Input-Volume ausschneiden (Dimension: Depth, H, W, C)
+            x_window = X[idx_start:idx_end]
+
+            if x_window.shape[-1] == 1:
+                x_window = np.transpose(x_window, (1, 2, 0, 3)) # -> (H, W, Depth, 1)
+                x_window = np.squeeze(x_window, axis=-1)        # -> (H, W, Depth)
+            
+            # Target Image (das mittlere Bild im Fenster)
+            y_target = y[idx_start + center_offset]
+            
+            X_list.append(x_window)
+            y_list.append(y_target)
 
     return np.array(X_list), np.array(y_list)
 
