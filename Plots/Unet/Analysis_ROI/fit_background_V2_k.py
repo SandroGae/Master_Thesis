@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 IN_DIR   = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
 OUT_DIR  = ROOT_DIR / "Plots/Unet/Analysis_ROI/Gaussian_fits"
-NPZ_FILE = "Pred_unet_25d_SSIM_middle_improved_V2_D5_S12_FullSeries.npz" # Datei mit ganzer Serie
+NPZ_FILE = "Pred_FILE_25d_middle_improved_V2_interpolated_D5_S12_FullSeries.npz" # Datei mit ganzer Serie
 
 # Settings
 SLICE_INDEX = 19 # Wähle Bild

@@ -9,12 +9,18 @@ from pathlib import Path
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 
 # Modelle laden
-FILE_25D_3STACK = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-181534_loss0.0535_val0.0597.keras"
-FILE_25D_5STACK = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251119-171216_loss0.0519_val0.0585.keras"
-FILE_3d_middle_improved = "unet_3d_SSIM_middle_improved__seed42__bf64__D3__lossMAE_SSIM__20251112-180318_loss0.0479_val0.0522.keras"
-FILE_3d_middle_improved_V2 = "unet_3d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-144919_loss0.0479_val0.0517.keras"
+MODELS = {
+    "FILE_25D_3STACK": "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-181534_loss0.0535_val0.0597.keras",
+    "FILE_25D_5STACK": "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251119-171216_loss0.0519_val0.0585.keras",
+    "FILE_3d_middle_improved": "unet_3d_SSIM_middle_improved__seed42__bf64__D3__lossMAE_SSIM__20251112-180318_loss0.0479_val0.0522.keras",
+    "FILE_3d_middle_improved_V2": "unet_3d_SSIM_middle_improved_V2__seed42__bf64__D3__lossMAE_SSIM__20251119-144919_loss0.0479_val0.0517.keras",
+    "FILE_25d_middle_improved_V2_kernel_3x5": "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251201-103044_loss0.0523_val0.0587.keras",
+    "FILE_25d_middle_improved_V2_interpolated": "unet_25d_D5_VarStride1-24__20251201-093031_loss0.0690_val0.0594.keras"
+}
 
-MODEL_FILE = FILE_3d_middle_improved
+CHOSEN_NAME = "FILE_25d_middle_improved_V2_interpolated"
+MODEL_FILE = MODELS[CHOSEN_NAME]
+MODEL_PATH = ROOT_DIR / "Plots/Unet/Keras" / MODEL_FILE
 
 # Wahl der Serie
 SERIES_IDX = 12   
@@ -119,8 +125,7 @@ def main():
 
     # Speichern
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    short_name = Path(MODEL_FILE).stem.split("seed")[0].rstrip("_")
-    outfile = OUT_DIR / f"Pred_{short_name}_D{DEPTH}_S{SERIES_IDX}_FullSeries.npz"
+    outfile = OUT_DIR / f"Pred_{CHOSEN_NAME}_D{DEPTH}_S{SERIES_IDX}_FullSeries.npz"
     np.savez_compressed(outfile, lc=full_stack_lc, pred=full_stack_pred, gt=full_stack_gt)
     print(f"Gespeichert: {outfile.name}")
 

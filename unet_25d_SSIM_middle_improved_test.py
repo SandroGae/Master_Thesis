@@ -22,6 +22,7 @@ np.random.seed(SEED)
 tf.random.set_seed(SEED)
 tf.config.experimental.enable_op_determinism()
 
+
 # Parameters
 DEPTH = 5
 SERIES_LEN = 41
@@ -32,42 +33,36 @@ POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
-
-    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki)(x)
-    x = layers.ReLU()(x)
-    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki)(x)
-    x = layers.ReLU()(x)
-    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki)(x)
-    x = layers.ReLU()(x)
-    # DILATED --> preceptive field des 5x5 aber Parameter des 3x3
-    x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, dilation_rate=2)(x)
-    x = layers.ReLU()(x)
-    
+    for i in range(4):
+        # Logik: 
+        # i=0 (erste Schicht): dilation_rate=1 (Standard 3x3) -> Stabilisiert das Bild
+        # i>0 (restliche):     dilation_rate=2 (Dilated 3x3)  -> Wirkt wie 5x5 Kernel!
+        d_rate = 1 if i == 0 else 2
+        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, dilation_rate=d_rate, use_bias=True)(x)
+        x = layers.ReLU()(x)
     return x
 
-def unet_2d_stacked(input_shape=(192, 240, DEPTH), output_activation="sigmoid"):
+def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
-    f = [64, 96, 128, 192, 256] # Letztes ist Bottleneck
-
     # Encoder (2D Pooling reduziert H und W)
-    c1 = conv_block_2d(inputs, f[0])      ; p1 = layers.MaxPooling2D((2, 2))(c1)
-    c2 = conv_block_2d(p1, f[1])          ; p2 = layers.MaxPooling2D((2, 2))(c2)
-    c3 = conv_block_2d(p2, f[2])          ; p3 = layers.MaxPooling2D((2, 2))(c3)
-    c4 = conv_block_2d(p3, f[3])          ; p4 = layers.MaxPooling2D((2, 2))(c4)
+    c1 = conv_block_2d(inputs, base_filters)          ; p1 = layers.MaxPooling2D((2, 2))(c1)
+    c2 = conv_block_2d(p1, base_filters * 2)          ; p2 = layers.MaxPooling2D((2, 2))(c2)
+    c3 = conv_block_2d(p2, base_filters * 4)          ; p3 = layers.MaxPooling2D((2, 2))(c3)
+    c4 = conv_block_2d(p3, base_filters * 8)          ; p4 = layers.MaxPooling2D((2, 2))(c4)
 
     # Bottleneck
-    bn = conv_block_2d(p4, f[4]) 
+    bn = conv_block_2d(p4, base_filters * 16)
 
     # Decoder
-    u4 = layers.Conv2DTranspose(f[3] * 8, (2, 2), strides=(2, 2), padding="same")(bn)
-    u4 = layers.Concatenate()([u4, c4])               ; c5 = conv_block_2d(u4, f[3] * 8)
-    u3 = layers.Conv2DTranspose(f[2] * 4, (2, 2), strides=(2, 2), padding="same")(c5)
-    u3 = layers.Concatenate()([u3, c3])               ; c6 = conv_block_2d(u3, f[2] * 4)
-    u2 = layers.Conv2DTranspose(f[1] * 2, (2, 2), strides=(2, 2), padding="same")(c6)
-    u2 = layers.Concatenate()([u2, c2])               ; c7 = conv_block_2d(u2, f[1] * 2)
-    u1 = layers.Conv2DTranspose(f[0], (2, 2), strides=(2, 2), padding="same")(c7)
-    u1 = layers.Concatenate()([u1, c1])               ; c8 = conv_block_2d(u1, f[0])
+    u4 = layers.Conv2DTranspose(base_filters * 8, (2, 2), strides=(2, 2), padding="same")(bn)
+    u4 = layers.Concatenate()([u4, c4])               ; c5 = conv_block_2d(u4, base_filters * 8)
+    u3 = layers.Conv2DTranspose(base_filters * 4, (2, 2), strides=(2, 2), padding="same")(c5)
+    u3 = layers.Concatenate()([u3, c3])               ; c6 = conv_block_2d(u3, base_filters * 4)
+    u2 = layers.Conv2DTranspose(base_filters * 2, (2, 2), strides=(2, 2), padding="same")(c6)
+    u2 = layers.Concatenate()([u2, c2])               ; c7 = conv_block_2d(u2, base_filters * 2)
+    u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
+    u1 = layers.Concatenate()([u1, c1])               ; c8 = conv_block_2d(u1, base_filters)
 
     out = layers.Conv2D(1, (1, 1), activation=output_activation, name="output")(c8) # Direkt 1 Channel (kein Lambda Slicing mehr nötig)
     
@@ -82,9 +77,6 @@ def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
         low_count = f["low_count/data"][:]      # (H, W, N)
         high_count = f["high_count/data"][:]    # (H, W, N)
-
-    low_count = np.maximum(low_count, 0) # Negative Werte killen
-    high_count = np.maximum(high_count, 0)
 
     low_count = np.moveaxis(low_count, -1, 0) # Achse verschieben: (H, W, N) -> (N, H, W)
     high_count = np.moveaxis(high_count, -1, 0)
@@ -178,18 +170,6 @@ def mae_ssim_2d(y_true, y_pred, alpha=0.6):
 
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
 
-def mae_ssim_2d(y_true, y_pred, alpha=0.6):
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
-    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    # Dynamischer Max-Wert für SSIM, da wir bis 15.000 skalieren --> ReLU Output
-    batch_max = tf.reduce_max(y_true)
-    # Fallback, falls batch leer/null ist (zur Sicherheit 1.0)
-    batch_max = tf.maximum(batch_max, 1.0) 
-    ssim_mean = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=batch_max))
-
-    return (1.0 - alpha) * mae + alpha * (1.0 - ssim_mean)
-
 
 # Metriken (Angepasst: CLIPPED auf 1.0 für Vergleichbarkeit)
 def mae_center(y_true, y_pred):
@@ -258,7 +238,7 @@ callbacks = [
 ]
 
 # Compilieren
-model = unet_2d_stacked(input_shape=(192, 240, DEPTH), output_activation="relu") 
+model = unet_2d_stacked(input_shape=(192, 240, DEPTH)) 
 
 model.compile(
     optimizer=optimizer,

@@ -1,8 +1,6 @@
 # unet_25d_SSIM_middle_improved_V2.py
 #!/usr/bin/env python3
 
-# I am changing kernel (3, 3) --> (5, 5)
-
 import os
 import random
 from datetime import datetime
@@ -33,7 +31,7 @@ BASEFILTERS = 64
 # Simples unet in 2.5D
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
-def conv_block_2d(x, filters, kernel_size=(5, 5), padding="same"):
+def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
     for _ in range(4):
         x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)

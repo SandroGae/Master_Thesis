@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 IN_DIR   = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
 OUT_DIR  = ROOT_DIR / "Plots/Unet/Analysis_ROI/Gaussian_fits"
-NPZ_FILE = "Pred_unet_25d_SSIM_middle_improved_V2_D5_S12_FullSeries.npz" # Datei mit ganzer Serie
+NPZ_FILE = "Pred_FILE_25d_middle_improved_V2_interpolated_D5_S12_FullSeries.npz" # Datei mit ganzer Serie
 
 # Settings
 SLICE_INDEX = 19 # Wähle Bild für Visualisierung oben
@@ -19,6 +19,8 @@ BACKGROUND_BOX_HEIGHT = 10
 FIT_WINDOW_FRAMES = (2, 38) # Bereich für Gauss Fit (Frames/Indizes)
 FIT_COLORS     = ['darkorange', 'mediumseagreen', 'darkviolet']
 TITLES         = ["Low Count", "Prediction", "Ground Truth"]
+
+out_name = f"Ana_{Path(NPZ_FILE).stem}_Slice{SLICE_INDEX}_SRBR_h.png"
 
 # Berechne Koordinaten Background boxes
 bg_top_y_bottom = max(0, ROI_Y_START - BACKGROUND_GAP)
@@ -267,7 +269,6 @@ def main():
         ax3.set_ylim(-0.1, 0.4)
 
     plt.tight_layout()
-    out_name = f"Ana_{Path(NPZ_FILE).stem}_Slice{SLICE_INDEX}_SRBR_h.png"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(OUT_DIR / out_name)
     plt.close(fig)
