@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras import models
-from tqdm import tqdm
+
 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
@@ -46,18 +46,6 @@ def create_windows(X: np.ndarray, y: np.ndarray, depth: int):
     center_offset = depth // 2
 
     X_list, y_list = [], []
-
-    with tqdm(total=total_windows, desc="Windows", unit="win") as pbar:
-        for s in range(n_series):
-            base = s * SERIES_LEN
-            series_x = X[base:base + SERIES_LEN]
-            series_y = y[base:base + SERIES_LEN]
-            for i in range(n_per_series):
-                stack = series_x[i:i + depth]
-                stack = np.transpose(np.squeeze(stack, axis=-1), (1, 2, 0))
-                X_list.append(stack)
-                y_list.append(series_y[i + center_offset])
-                pbar.update(1)
 
     return np.array(X_list), np.array(y_list)
 
@@ -99,7 +87,7 @@ def main():
     metrics = calculate_metrics(y_test, y_pred)
     df = pd.DataFrame([{"Model": MODEL_FILE, "Depth": depth, **metrics}])
 
-    out_csv = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "Results_Normalized_10k.csv"
+    out_csv = CODE_ROOT / "Analysis_ROI" / "Results_Normalized_10k.csv"
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
 
