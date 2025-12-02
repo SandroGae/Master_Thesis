@@ -34,10 +34,7 @@ POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
     for i in range(4):
-        # Logik: 
-        # i=0 (erste Schicht): dilation_rate=1 (Standard 3x3) -> Stabilisiert das Bild
-        # i>0 (restliche):     dilation_rate=2 (Dilated 3x3)  -> Wirkt wie 5x5 Kernel!
-        d_rate = 1 if i == 0 else 2
+        d_rate = 1 if i < 2 else 2
         x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, dilation_rate=d_rate, use_bias=True)(x)
         x = layers.ReLU()(x)
     return x
