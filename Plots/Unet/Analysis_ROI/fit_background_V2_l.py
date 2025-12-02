@@ -205,21 +205,39 @@ def main():
         ax3.axhline(0, color='gray', ls=':', alpha=0.5)
         
         if i == 1: 
-            # Prediction Fit (Grün)
+            # Prediction fit grün
             if results[1]['fit'] is not None:
-                sigma_val = results[1]['par'][2]  # Sigma Wert
-                sigma_err = results[1]['perr'][2] # Sigma Fehler
-                # Anzeige mit Fehler
-                l = f"Pred (Max={np.max(results[1]['fit']):.2f}, $\sigma$={sigma_val:.2f}$\pm${sigma_err:.2f})"
+                # parameters = [Amplitude, x0, sigma]
+                amp_val = results[1]['par'][0]   # Amplitude
+                mu_val  = results[1]['par'][1]   # Peak Position (x0)
+                sigma_val = results[1]['par'][2] # Breite
+                
+                # Fehler
+                mu_err = results[1]['perr'][1]
+                sigma_err = results[1]['perr'][2]
+
+                # Neuer Label-String mit Peak
+                l = (f"Pred (Peak={mu_val:.1f}$\pm${mu_err:.1f}, "
+                     f"$\sigma$={sigma_val:.2f}$\pm${sigma_err:.2f}, "
+                     f"Max={np.max(results[1]['fit']):.2f})")
+                     
                 ax3.plot(results[1]['x_axis'], results[1]['fit'], color=FIT_COLORS[1], ls='--', lw=2.5, label=l)
         else: 
             # LC (i=0) und GT (i=2) Einzelplots
             if results[i]['fit'] is not None:
-                sigma_val = results[i]['par'][2]  # Sigma Wert
-                sigma_err = results[i]['perr'][2] # Sigma Fehler
-                l = f"Gauss (Max={np.max(results[i]['fit']):.2f}, $\sigma$={sigma_val:.2f}$\pm${sigma_err:.2f})"
+                amp_val = results[i]['par'][0]
+                mu_val  = results[i]['par'][1]   # Peak Position
+                sigma_val = results[i]['par'][2]
+                
+                mu_err = results[i]['perr'][1]
+                sigma_err = results[i]['perr'][2]
+
+                # Neuer Label-String mit Peak
+                l = (f"Gauss (Peak={mu_val:.1f}$\pm${mu_err:.1f}, "
+                     f"$\sigma$={sigma_val:.2f}$\pm${sigma_err:.2f}, "
+                     f"Max={np.max(results[i]['fit']):.2f})")
+                     
                 ax3.plot(results[i]['x_axis'], results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
-            ax3.set_title("SRBR & Fit")
             
         ax3.set_xlabel("Pixel X")
         if i==0: 
