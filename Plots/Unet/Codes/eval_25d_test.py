@@ -17,7 +17,7 @@ DATA_ROOT = HOME / "data"
 CODE_ROOT = HOME / "code" / "Master_Thesis" / "Plots" / "Unet"
 H5_TEST_PATH = DATA_ROOT / "test_data_manipulated" / "test_every_second_image.hdf5"
 MODEL_DIR = DATA_ROOT / "checkpoints_unet_3d_simple"
-MODEL_FILE = "unet_25d_D5_VarStride1-24__20251201-093031_loss0.0690_val0.0594.keras"
+MODEL_FILE = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251119-171216_loss0.0519_val0.0585.keras"
 
 SERIES_LEN = 41
 NORM_SCALE = 10000.0
@@ -94,6 +94,7 @@ def main():
     norm_y = normalize_fixed(raw_y)
 
     model_path = MODEL_DIR / MODEL_FILE
+    print(f"Loading model: {model_path.name} ...")
     model = models.load_model(model_path, compile=False)
 
     try:
@@ -103,21 +104,25 @@ def main():
     except:
         depth = 5
 
+    # Denke dran, hier die korrigierte create_windows Funktion zu nutzen (siehe oben)
+    print("Creating windows...")
     X_test, y_test = create_windows(norm_x, norm_y, depth)
 
-    print("Predict...")
+    print(f"Predicting on {len(X_test)} samples...")
     y_pred = model.predict(X_test, batch_size=32, verbose=1)
 
     metrics = calculate_metrics(y_test, y_pred)
-    df = pd.DataFrame([{"Model": MODEL_FILE, "Depth": depth, **metrics}])
 
-    out_csv = CODE_ROOT / "Analysis_ROI" / "Results_Normalized_10k.csv"
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_csv, index=False)
-
-    print(f"MAE {metrics['MAE']:.5f}, SSIM {metrics['SSIM']:.4f}")
-    print("CSV:", out_csv)
-
+    # --- Einfache, saubere Ausgabe in der Konsole ---
+    print("\n" + "="*40)
+    print(f"  EVALUATION RESULTS")
+    print("="*40)
+    print(f"Model:   {MODEL_FILE}")
+    print(f"Samples: {len(X_test)}")
+    print("-" * 40)
+    for key, value in metrics.items():
+        print(f"{key:<10}: {value:.6f}") # 6 Nachkommastellen für Details
+    print("="*40 + "\n")
 
 if __name__ == "__main__":
     main()
