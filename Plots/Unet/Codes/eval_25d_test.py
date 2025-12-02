@@ -18,7 +18,7 @@ CODE_ROOT = HOME / "code" / "Master_Thesis" / "Plots" / "Unet"
 H5_TEST_PATH = DATA_ROOT / "original_data" / "test_data.hdf5"
 # H5_TEST_PATH = DATA_ROOT / "test_data_manipulated" / "test_every_third_image.hdf5"
 MODEL_DIR = DATA_ROOT / "checkpoints_unet_3d_simple"
-MODEL_FILE = "unet_25d_D5_VarStride1-24__20251201-093031_loss0.0690_val0.0594.keras"
+MODEL_FILE = "unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251202-121350_loss0.0527_val0.0587.keras"
 
 SERIES_LEN = 41
 NORM_SCALE = 10000.0
