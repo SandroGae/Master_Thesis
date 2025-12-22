@@ -32,13 +32,13 @@ BASEFILTERS = 64
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
 
 def transformer_block(x, dim, num_heads, mlp_dim, dropout=0.1):
-    # Layer Normalization 1 + Multi-Head Attention (Global Interaction)
+    # Self-Attention Stream
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = layers.MultiHeadAttention(num_heads=num_heads, key_dim=dim, dropout=dropout)(x, x)
-    x = layers.Add()([x, res]) # Residual Connection [cite: 673]
+    x = layers.Add()([x, res]) 
 
-    # Layer Normalization 2 + Feed Forward (MLP)
+    # MLP / Feed-Forward Stream
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = layers.Dense(mlp_dim, activation=tf.nn.gelu)(x)
@@ -48,24 +48,21 @@ def transformer_block(x, dim, num_heads, mlp_dim, dropout=0.1):
     return layers.Add()([x, res])
 
 def build_srdtrans(input_shape=(192, 240, 5), patch_size=4, embed_dim=128):
-    # Wichtig: Falls du das Modell in einer Schleife oder mehrmals aufrufst
     tf.keras.backend.clear_session() 
-    
     inputs = layers.Input(shape=input_shape, name="input_layer")
 
-    # --- 1. Temporal Encoder ---
+    # 1. Temporal Encoder
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same", name="enc_conv")(inputs)
     x = layers.ReLU(name="enc_relu")(x)
 
-    # --- 2. Patch Embedding & Position Encoding ---
+    # 2. Patch Embedding & Position Encoding
     h, w = input_shape[0], input_shape[1]
     num_patches = (h // patch_size) * (w // patch_size)
-    
     x = layers.Conv2D(embed_dim, kernel_size=patch_size, strides=patch_size, name="patch_embed_conv")(x) 
     curr_h, curr_w = x.shape[1], x.shape[2]
-    x = layers.Reshape((num_patches, embed_dim), name="patch_reshape")(x) [cite: 69, 665]
+    x = layers.Reshape((num_patches, embed_dim), name="patch_reshape")(x)
     
-    # Position Encoding Layer 
+    # Korrektes Tracking der Gewichte für Checkpoints
     pos_layer = layers.Layer(name="pos_encoding_layer")
     pos_emb_weight = pos_layer.add_weight(
         name="pos_emb_weight",
@@ -73,20 +70,16 @@ def build_srdtrans(input_shape=(192, 240, 5), patch_size=4, embed_dim=128):
         initializer="zeros",
         trainable=True
     )
-    
-    # Hier nutzen wir Add ohne manuellen Namen oder einen absolut eindeutigen
     x = layers.Add(name="final_pos_addition")([x, pos_emb_weight])
 
-    # --- 3. Spatiotemporal Transformer Blocks (STB) ---
+    # 3. Spatiotemporal Transformer Blocks
     for i in range(4):
-        # Wir geben jedem Block einen eigenen Index im Namen
         x = transformer_block(x, dim=embed_dim, num_heads=8, mlp_dim=embed_dim * 2, dropout=0.1)
 
-    # --- 4. Temporal Decoder ---
-    x = layers.Reshape((curr_h, curr_w, embed_dim), name="decoder_reshape")(x) [cite: 89]
-    x = layers.Conv2DTranspose(embed_dim // 2, kernel_size=patch_size, strides=patch_size, padding="same", name="dec_up")(x) [cite: 672]
+    # 4. Temporal Decoder
+    x = layers.Reshape((curr_h, curr_w, embed_dim), name="decoder_reshape")(x)
+    x = layers.Conv2DTranspose(embed_dim // 2, kernel_size=patch_size, strides=patch_size, padding="same", name="dec_up")(x)
     x = layers.ReLU(name="dec_relu")(x)
-    
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x)
 
     return models.Model(inputs, outputs, name="srdtrans_model")
