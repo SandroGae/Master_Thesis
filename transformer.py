@@ -54,13 +54,26 @@ def build_srdtrans(input_shape=(192, 240, 5), patch_size=4, embed_dim=128):
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(inputs)
     x = layers.ReLU()(x)
 
-    # --- 2. Patch Embedding ---
+    # --- 2. Patch Embedding & Position Encoding ---
     h, w = input_shape[0], input_shape[1]
     num_patches = (h // patch_size) * (w // patch_size)
-    
+
     x = layers.Conv2D(embed_dim, kernel_size=patch_size, strides=patch_size)(x) 
     curr_h, curr_w = x.shape[1], x.shape[2]
     x = layers.Reshape((num_patches, embed_dim))(x)
+
+    # TRICK: Wir erstellen eine Layer, die nur dazu dient, 
+    # die Position-Gewichte sauber zu verwalten und zu speichern.
+    pos_layer = layers.Layer(name="pos_embedding_layer")
+    pos_emb_weight = pos_layer.add_weight(
+        name="pos_emb",
+        shape=(1, num_patches, embed_dim),
+        initializer="zeros",
+        trainable=True
+    )
+
+    # Die Addition erfolgt jetzt über ein Gewicht, das Keras kennt
+    x = layers.Add(name="add_pos_embedding")([x, pos_emb_weight])
     
     # --- FEHLERBEHEBUNG HIER ---
     # Wir erstellen die Variable als Gewichte innerhalb einer Lambda-Layer
