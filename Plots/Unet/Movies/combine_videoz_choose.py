@@ -17,8 +17,8 @@ OUT_NAME = f"combined_series{SERIES}_dynamic_stack.mp4"
 INPUT_FILES = {
     "IRUNET":           f"IRUNet_Series_12_cut.mp4",
     "5stack_middle_V2":   f"25D_Model_Series12_Depth5.mp4",
-    "5stack_middle_V2_interpolated":    f"25D_Model_Series12_Depth5_interpolated.mp4",
-    "5stack_middle_V2_kernel_3x5":   f"25D_Model_Series12_Depth5_kernel_3x5.mp4"
+    # "5stack_middle_V2_interpolated":    f"25D_Model_Series12_Depth5_interpolated.mp4",
+    # "5stack_middle_V2_kernel_3x5":   f"25D_Model_Series12_Depth5_kernel_3x5.mp4"
 }
 
 FONT_OPTS = {"size": 30, "color": (255, 255, 255), "bg": (0, 0, 0), "height": 50}

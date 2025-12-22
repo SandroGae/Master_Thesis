@@ -23,12 +23,12 @@ MODEL_FILE = MODELS[CHOSEN_NAME]
 MODEL_PATH = ROOT_DIR / "Plots/Unet/Keras" / MODEL_FILE
 
 # Wahl der Serie
-SERIES_IDX = 12   
+SERIES_IDX = 29   
 SERIES_IDX_0 = SERIES_IDX - 1
 SERIES_LEN = 41
 
 MODEL_PATH   = ROOT_DIR / "Plots/Unet/Keras" / MODEL_FILE
-H5_TEST_PATH = ROOT_DIR / "data" / "original_data" / "test_data.hdf5"
+H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
 OUT_DIR      = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
 
 # Depth aus filename extrahieren

@@ -78,6 +78,10 @@ def create_windows(X: np.ndarray, y: np.ndarray, depth: int):
 def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray):
     y_t = tf.convert_to_tensor(y_true, dtype=tf.float32)
     y_p = tf.convert_to_tensor(y_pred, dtype=tf.float32)
+
+    y_t = tf.clip_by_value(y_t, 0.0, 1.0) # Clip eingefügt für Metriken wie im Originalcode!
+    y_p = tf.clip_by_value(y_p, 0.0, 1.0)
+
     mae = tf.reduce_mean(tf.abs(y_t - y_p)).numpy()
     mse = tf.reduce_mean(tf.square(y_t - y_p)).numpy()
     psnr = tf.reduce_mean(tf.image.psnr(y_t, y_p, max_val=1.0)).numpy()

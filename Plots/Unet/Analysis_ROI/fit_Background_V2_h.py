@@ -8,9 +8,11 @@ from pathlib import Path
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 IN_DIR   = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
 OUT_DIR  = ROOT_DIR / "Plots/Unet/Analysis_ROI/Gaussian_fits"
-NPZ_FILE = "Pred_FILE_25d_middle_improved_V2_interpolated_D5_S12_FullSeries.npz" # Datei mit ganzer Serie
 
-# Settings
+
+"""
+# Settings series 12
+NPZ_FILE = "Pred_FILE_25d_middle_improved_V2_interpolated_D5_S12_FullSeries.npz" # Datei mit ganzer Serie
 SLICE_INDEX = 19 # Wähle Bild für Visualisierung oben
 ROI_X_START, ROI_X_END = 65, 86
 ROI_Y_START, ROI_Y_END = 104, 115
@@ -19,6 +21,20 @@ BACKGROUND_BOX_HEIGHT = 10
 FIT_WINDOW_FRAMES = (2, 38) # Bereich für Gauss Fit (Frames/Indizes)
 FIT_COLORS     = ['darkorange', 'mediumseagreen', 'darkviolet']
 TITLES         = ["Low Count", "Prediction", "Ground Truth"]
+"""
+
+# Settings series 29
+NPZ_FILE = "Pred_FILE_25d_middle_improved_V2_interpolated_D5_S29_FullSeries.npz" # Datei mit ganzer Serie
+SLICE_INDEX = 24 # Wähle Bild für Visualisierung oben
+ROI_X_START, ROI_X_END = 65, 86
+ROI_Y_START, ROI_Y_END = 104, 115
+BACKGROUND_GAP        = 5   
+BACKGROUND_BOX_HEIGHT = 10  
+FIT_WINDOW_FRAMES = (2, 38) # Bereich für Gauss Fit (Frames/Indizes)
+FIT_COLORS     = ['darkorange', 'mediumseagreen', 'darkviolet']
+TITLES         = ["Low Count", "Prediction", "Ground Truth"]
+
+
 
 out_name = f"Ana_{Path(NPZ_FILE).stem}_Slice{SLICE_INDEX}_SRBR_h.png"
 
@@ -27,7 +43,6 @@ bg_top_y_bottom = max(0, ROI_Y_START - BACKGROUND_GAP)
 bg_top_y_top    = max(0, bg_top_y_bottom - BACKGROUND_BOX_HEIGHT)
 bg_bot_y_top    = ROI_Y_END + BACKGROUND_GAP
 bg_bot_y_bottom = bg_bot_y_top + BACKGROUND_BOX_HEIGHT
-
 
 def vis_norm(image):
     """
@@ -146,29 +161,78 @@ def gaussian(x, amplitude, mu, sigma):
     return amplitude * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 def perform_gaussian_fit(x, y, y_err, fit_window):
+    # 1. Datenvorbereitung
     mask = (x >= fit_window[0]) & (x <= fit_window[1])
     x_fit = x[mask]
     y_fit = y[mask]
     sigma_fit = y_err[mask] if y_err is not None else None
 
-    # Valid Check für SRBR
-    valid = np.isfinite(y_fit)
-    if np.sum(valid) < 4: 
+    if len(y_fit) < 5: 
         return None, None, None
-    x_fit = x_fit[valid]
-    y_fit = y_fit[valid]
-    if sigma_fit is not None: sigma_fit = sigma_fit[valid]
 
-    A  = np.max(y_fit)                                         
-    x0 = x_fit[np.argmax(y_fit)]                           
-    s  = (np.max(x_fit) - np.min(x_fit)) * 0.2             
-    p0 = [A, x0, s]
+    # --- Pre-Check: Ist da überhaupt Dynamik? ---
+    # Wenn Max und Min fast gleich sind (< 0.05), ist es nur Rauschen.
+    if (np.max(y_fit) - np.min(y_fit)) < 0.05:
+        return None, None, None
+
+    # --- Fit Setup ---
+    # Wir zwingen den Fit, in der Mitte zu suchen, nicht am Rand
+    window_width = fit_window[1] - fit_window[0]
+    center_x = (fit_window[1] + fit_window[0]) / 2
     
+    # Startwerte (Schätzung)
+    A_guess  = np.max(y_fit) - np.median(y_fit)
+    x0_guess = x_fit[np.argmax(y_fit)]
+    s_guess  = window_width * 0.15 
+
+    # Strenge Bounds: 
+    # Sigma muss klein genug sein, um ein echter Peak zu sein (max 40% des Fensters)
+    bounds = (
+        (0, fit_window[0], 0.5), 
+        (np.inf, fit_window[1], window_width * 0.4) 
+    )
+
     try:
-        parameters, pcov = curve_fit(gaussian, x_fit, y_fit, p0, sigma=sigma_fit, absolute_sigma=True, maxfev=5000)
-        perr = np.sqrt(np.diag(pcov)) # Fehler berechnen
-        return gaussian(x, *parameters), parameters, perr
-    except:
+        popt, pcov = curve_fit(
+            gaussian, x_fit, y_fit, p0=[A_guess, x0_guess, s_guess], 
+            sigma=sigma_fit, absolute_sigma=True, 
+            bounds=bounds, maxfev=5000
+        )
+        perr = np.sqrt(np.diag(pcov)) # Die berechneten Fehler der Parameter
+        
+        amp_fit, mu_fit, sigma_fit_val = popt
+        amp_err, mu_err, sigma_err     = perr
+
+        # --- JETZT KOMMEN DIE STRENGEN FILTER ---
+
+        # 1. "Unsicherheits-Killer" (Relative Error)
+        # Wenn der Fehler der Amplitude mehr als 50% der Amplitude selbst ist, 
+        # ist der Fit statistisches Raten. (Im Low Count ist amp_err oft riesig)
+        if amp_err > 0.5 * amp_fit:
+            return None, None, None
+            
+        # Dasselbe für die Breite: Wenn wir nicht wissen, wie breit er ist, ist er weg.
+        if sigma_err > 0.5 * sigma_fit_val:
+            return None, None, None
+
+        # 2. "Phantom-Peak Killer" (SNR post-fit)
+        # Wir berechnen das Rauschen der Datenpunkte UM den Fit herum (Residuen).
+        residuals = y_fit - gaussian(x_fit, *popt)
+        rmse_noise = np.std(residuals) # Root Mean Square Error
+
+        # Das Signal (Amplitude) muss mindestens 3-mal stärker sein als das Restrauschen.
+        # Im Low Count Bild ist das Signal vllt 0.2, aber das Rauschen auch 0.15 -> Ratio ~1.3 -> RAUS!
+        if amp_fit < 3.0 * rmse_noise:
+            return None, None, None
+
+        # 3. "Positions-Check"
+        # Wenn der Peak "irgendwo" ist (Fehler der Position > Breite des Peaks), ist er ungültig.
+        if mu_err > sigma_fit_val:
+            return None, None, None
+
+        return gaussian(x, *popt), popt, perr
+
+    except Exception:
         return None, None, None
 
 
@@ -230,16 +294,14 @@ def main():
         ax2.axvspan(FIT_WINDOW_FRAMES[0], FIT_WINDOW_FRAMES[1], color='green', alpha=0.15, label='_Fit Region')
         ax2.grid(True, alpha=0.3)
         if i==0: 
-            ax2.set_ylabel("Integrated Counts")
+            ax2.set_ylabel("Counts")
         if i==1: 
             ax2.legend(loc='upper right', fontsize=8)
         ax2.set_ylim(42.5, 57.5)
 
         # SRBR
         ax3 = axes[2, i]
-        ax3.errorbar(results[i]['x_axis'], results[i]['sbr'], 
-                     yerr=results[i]['error'], 
-                     fmt='.', markersize=8, elinewidth=2, capsize=2, color='black', alpha=0.6, label='SRBR Data')
+        ax3.errorbar(results[i]['x_axis'], results[i]['sbr'], yerr=results[i]['error'], fmt='.', markersize=5, color='black', alpha=0.6, label='SRBR')
         ax3.axhline(0, color='gray', ls=':', alpha=0.5)
         
         if i == 1: 
@@ -288,7 +350,7 @@ def main():
         # Scaling
         margin = 2
         ax3.set_xlim(max(0, FIT_WINDOW_FRAMES[0]-margin), results[i]['x_axis'][-1])
-        ax3.set_ylim(-0.1, 0.4)
+        ax3.set_ylim(-0.1, 0.5)
 
     plt.tight_layout()
     OUT_DIR.mkdir(parents=True, exist_ok=True)

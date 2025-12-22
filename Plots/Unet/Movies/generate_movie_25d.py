@@ -23,16 +23,16 @@ MODEL_FILE_5stack_kernel_5x5_dilated = "unet_25d_SSIM_middle_improved_V2__seed42
 
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / MODEL_FILE_5stack_kernel_5x5_dilated
-H5_TEST_PATH = ROOT_DIR / "data" / "original_data" / "test_data.hdf5"
+MODEL_PATH = ROOT_DIR / "Plots" / "Unet" / "Keras" / MODEL_FILE_5stack_interpolated
+H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
 MOVIES_DIR = ROOT_DIR / "Plots" / "Unet" / "Movies"
 
 DEPTH = 5
 SERIES_LEN = 41
-SERIES_IDX = 12  # (1-basiert)
+SERIES_IDX = 29  # (1-basiert)
 FPS = 3
 
-out_name = f"25D_Model_Series{SERIES_IDX}_Depth{DEPTH}_kernel_5x5_dilated.mp4"
+out_name = f"25D_Model_Series{SERIES_IDX}_Depth{DEPTH}_interpolated.mp4"
 
 
 def load_test_split(h5_path: Path):
