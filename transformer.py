@@ -50,34 +50,41 @@ def transformer_block(x, dim, num_heads, mlp_dim, dropout=0.1):
 def build_srdtrans(input_shape=(192, 240, 5), patch_size=4, embed_dim=128):
     inputs = layers.Input(shape=input_shape, name="input")
 
-    # 1. Temporal Encoder [cite: 658, 660]
+    # --- 1. Temporal Encoder ---
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(inputs)
     x = layers.ReLU()(x)
 
-    # 2. Patch Embedding 
+    # --- 2. Patch Embedding ---
     h, w = input_shape[0], input_shape[1]
     num_patches = (h // patch_size) * (w // patch_size)
+    
     x = layers.Conv2D(embed_dim, kernel_size=patch_size, strides=patch_size)(x) 
     curr_h, curr_w = x.shape[1], x.shape[2]
-    
-    # Flattening [cite: 665]
     x = layers.Reshape((num_patches, embed_dim))(x)
     
-    # Learned Position Encoding 
-    # In Keras functional muss das Embedding oft als Layer oder konstanter Tensor addiert werden
-    pos_emb = tf.Variable(tf.zeros((1, num_patches, embed_dim)), trainable=True, name="pos_embedding")
-    x = x + pos_emb
+    # --- FEHLERBEHEBUNG HIER ---
+    # Wir erstellen die Variable als Gewichte innerhalb einer Lambda-Layer
+    pos_emb_init = tf.zeros_initializer()
+    pos_embedding = tf.Variable(
+        initial_value=pos_emb_init(shape=(1, num_patches, embed_dim), dtype="float32"),
+        trainable=True,
+        name="pos_embedding"
+    )
+    
+    # Die Addition muss in einer Lambda-Layer gekapselt sein
+    # Wir übergeben pos_embedding explizit, damit Keras es erkennt
+    x = layers.Lambda(lambda t: t + pos_embedding, name="add_pos_embedding")(x)
+    # ---------------------------
 
-    # 3. Spatiotemporal Transformer Blocks (STB) [cite: 14, 76, 79]
-    for _ in range(4):
+    # --- 3. Spatiotemporal Transformer Blocks (STB) ---
+    for i in range(4):
         x = transformer_block(x, dim=embed_dim, num_heads=8, mlp_dim=embed_dim * 2)
 
-    # 4. Temporal Decoder [cite: 672]
+    # --- 4. Temporal Decoder ---
     x = layers.Reshape((curr_h, curr_w, embed_dim))(x)
     x = layers.Conv2DTranspose(embed_dim // 2, kernel_size=patch_size, strides=patch_size, padding="same")(x)
     x = layers.ReLU()(x)
     
-    # Final Output (Rekonstruktion des mittleren Slices)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="output")(x)
 
     return models.Model(inputs, outputs, name="srdtrans")
