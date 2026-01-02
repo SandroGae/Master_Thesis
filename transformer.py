@@ -50,40 +50,51 @@ def transformer_block(x, dim, num_heads, mlp_dim, dropout=0.1):
 def build_srdtrans(input_shape=(192, 240, 5), patch_size=4, embed_dim=128):
     tf.keras.backend.clear_session() 
     inputs = layers.Input(shape=input_shape, name="input_layer")
+    h, w, depth = input_shape
 
-    # 1. Temporal Encoder
-    x = layers.Conv2D(embed_dim, kernel_size=3, padding="same", name="enc_conv")(inputs)
+    # --- 1. TEMPORAL TRANSFORMER (Analog zum Paper: TemporalTransLayer) ---
+    # Wir behandeln jeden Pixel (192*240) als Batch und die Tiefe (5) als Sequenz
+    # Ziel: Beziehung zwischen den 5 Slices für jeden Pixel lernen
+    xt = layers.Reshape((h * w, depth))(inputs) # (None, 46080, 5)
+    
+    # Da MHA über die vorletzte Achse attendiert, müssen wir transponieren
+    xt = layers.Permute((2, 1))(xt) # (None, 5, 46080)
+    
+    # Temporal Attention: Was passiert an diesem Pixel über die Zeit?
+    xt = layers.MultiHeadAttention(num_heads=4, key_dim=h*w, name="temporal_attn")(xt, xt)
+    
+    # Zurück in die ursprüngliche Form bringen
+    xt = layers.Permute((2, 1))(xt) # (None, 46080, 5)
+    xt = layers.Reshape((h, w, depth))(xt) # (None, 192, 240, 5)
+
+    # --- 2. SPATIAL TRANSFORMER (Analog zum Paper: SpatioTransLayer) ---
+    # Vorbereitung: Lokale Merkmale extrahieren (wie im ursprünglichen Code)
+    x = layers.Conv2D(embed_dim, kernel_size=3, padding="same", name="enc_conv")(xt)
     x = layers.ReLU(name="enc_relu")(x)
 
-    # 2. Patch Embedding
-    h, w = input_shape[0], input_shape[1]
+    # Patch Embedding (Vom Bild zur räumlichen Sequenz)
     num_patches = (h // patch_size) * (w // patch_size)
-    
     x = layers.Conv2D(embed_dim, kernel_size=patch_size, strides=patch_size, name="patch_embed_conv")(x) 
     curr_h, curr_w = x.shape[1], x.shape[2]
     x = layers.Reshape((num_patches, embed_dim), name="patch_reshape")(x)
     
-    # --- FIX: Positional Encoding mit expliziter Batch-Dimension ---
+    # Positional Encoding (Wo im Bild bin ich?)
     positions = tf.range(start=0, limit=num_patches, delta=1)
     pos_encoding = layers.Embedding(input_dim=num_patches, output_dim=embed_dim, name="pos_enc_layer")(positions)
-    
-    # WICHTIG: Erweitere (2880, 128) zu (1, 2880, 128)
-    # Das verhindert, dass Keras die 2880 als Batch-Größe interpretiert!
-    pos_encoding = tf.expand_dims(pos_encoding, axis=0) 
-    
+    pos_encoding = tf.expand_dims(pos_encoding, axis=0) # Fix für OOM/Batch-Dim
     x = layers.Add(name="final_pos_addition")([x, pos_encoding])
 
-    # 3. Spatiotemporal Transformer Blocks
+    # Räumliche Transformer Blöcke (Globales Sichtfeld über das Bild)
     for i in range(4):
         x = transformer_block(x, dim=embed_dim, num_heads=8, mlp_dim=embed_dim * 2, dropout=0.1)
 
-    # 4. Temporal Decoder
+    # --- 3. DECODER ---
     x = layers.Reshape((curr_h, curr_w, embed_dim), name="decoder_reshape")(x)
     x = layers.Conv2DTranspose(embed_dim // 2, kernel_size=patch_size, strides=patch_size, padding="same", name="dec_up")(x)
     x = layers.ReLU(name="dec_relu")(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x)
 
-    return models.Model(inputs, outputs, name="srdtrans_model")
+    return models.Model(inputs, outputs, name="srdtrans_paper_analog")
 
 def load_split(h5_path):
     """
@@ -253,7 +264,7 @@ callbacks = [
 model = build_srdtrans(input_shape=(192, 240, DEPTH))
 
 # Optimizer + callbacks
-optimizer = tf.keras.optimizers.Adam(learning_rate=1e-5, amsgrad=True)
+optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4, amsgrad=True)
 
 model.compile(
     optimizer=optimizer,
