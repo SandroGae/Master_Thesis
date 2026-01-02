@@ -55,22 +55,28 @@ def build_srdtrans(input_shape=(192, 240, 5), patch_size=4, embed_dim=128):
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same", name="enc_conv")(inputs)
     x = layers.ReLU(name="enc_relu")(x)
 
-    # 2. Patch Embedding & Position Encoding
+    # 2. Patch Embedding
     h, w = input_shape[0], input_shape[1]
     num_patches = (h // patch_size) * (w // patch_size)
+    
+    # Conv2D als Patch-Projektion
     x = layers.Conv2D(embed_dim, kernel_size=patch_size, strides=patch_size, name="patch_embed_conv")(x) 
     curr_h, curr_w = x.shape[1], x.shape[2]
     x = layers.Reshape((num_patches, embed_dim), name="patch_reshape")(x)
     
-    # Korrektes Tracking der Gewichte für Checkpoints
-    pos_layer = layers.Layer(name="pos_encoding_layer")
-    pos_emb_weight = pos_layer.add_weight(
-        name="pos_emb_weight",
-        shape=(1, num_patches, embed_dim),
-        initializer="zeros",
-        trainable=True
-    )
-    x = layers.Add(name="final_pos_addition")([x, pos_emb_weight])
+    # --- KORREKTUR: Positional Encoding via Embedding-Layer (Funktionaler Stil) ---
+    # Erzeugt Indizes [0, 1, 2, ..., num_patches-1]
+    positions = tf.range(start=0, limit=num_patches, delta=1)
+    
+    # Embedding-Layer fungiert als Container für die trainierbaren Positions-Gewichte
+    pos_encoding = layers.Embedding(
+        input_dim=num_patches, 
+        output_dim=embed_dim, 
+        name="pos_enc_layer"
+    )(positions)
+    
+    # Addition der Gewichte zu den Patches (Broadcasting übernimmt Batch-Dimension)
+    x = layers.Add(name="final_pos_addition")([x, pos_encoding])
 
     # 3. Spatiotemporal Transformer Blocks
     for i in range(4):
@@ -80,10 +86,11 @@ def build_srdtrans(input_shape=(192, 240, 5), patch_size=4, embed_dim=128):
     x = layers.Reshape((curr_h, curr_w, embed_dim), name="decoder_reshape")(x)
     x = layers.Conv2DTranspose(embed_dim // 2, kernel_size=patch_size, strides=patch_size, padding="same", name="dec_up")(x)
     x = layers.ReLU(name="dec_relu")(x)
+    
+    # Output: Ein Channel (Mitte des Volumens) mit Sigmoid-Aktivierung
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x)
 
     return models.Model(inputs, outputs, name="srdtrans_model")
-
 
 
 def load_split(h5_path):
