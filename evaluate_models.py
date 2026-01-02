@@ -5,8 +5,9 @@ import numpy as np
 import tensorflow as tf
 from pathlib import Path
 from datetime import datetime
+from tqdm import tqdm  # Falls nicht installiert: pip install tqdm
 
-# Pfade
+# --- Pfade ---
 BASE_DIR = Path.home() / "VS_MASTER_THESIS"
 MODEL_DIR = BASE_DIR / "Plots" / "Unet" / "Keras"
 TEST_DATA_DIR = BASE_DIR / "original_data"
@@ -23,53 +24,13 @@ TEST_SETS = [
     TEST_DATA_DIR / "test_every_third_image.hdf5"
 ]
 
-def check_sanity():
-    """Prüft Pfade und Dimensionen vor dem Start."""
-    print("=== SANITY CHECK LÄUFT ===")
-    all_fine = True
-    
-    # 1. Pfade prüfen
-    for p in MODELS + TEST_SETS:
-        if not p.exists():
-            print(f"[ERROR] Datei nicht gefunden: {p}")
-            all_fine = False
-        else:
-            print(f"[OK] Pfad existiert: {p.name}")
-
-    if not all_fine:
-        sys.exit("Abbruch: Ein oder mehrere Pfade sind ungültig.")
-
-    # 2. Modell-Shapes und Daten-Shapes prüfen
-    try:
-        # Beispielhaft erstes Modell und erste Daten laden für Check
-        m = tf.keras.models.load_model(MODELS[0], compile=False)
-        m_shape = m.input_shape # (None, H, W, D) oder (None, D, H, W, 1)
-        
-        with h5py.File(TEST_SETS[0], "r") as f:
-            d_shape = f["low_count/data"].shape # (H, W, N)
-            
-        print(f"[INFO] Modell erwartet (H, W): ({m_shape[1]}, {m_shape[2]})")
-        print(f"[INFO] Daten liefern (H, W): ({d_shape[0]}, {d_shape[1]})")
-        
-        # Räumliche Auflösung (H, W) muss passen
-        # Bei 3D ist die Shape (None, D, H, W, 1), H und W also Index 2 und 3
-        if len(m_shape) == 5: # 3D
-            m_h, m_w = m_shape[2], m_shape[3]
-        else: # 2.5D
-            m_h, m_w = m_shape[1], m_shape[2]
-
-        if m_h != d_shape[0] or m_w != d_shape[1]:
-            print(f"[ERROR] Dimension Mismatch! Modell: {m_h}x{m_w}, Daten: {d_shape[0]}x{d_shape[1]}")
-            all_fine = False
-            
-    except Exception as e:
-        print(f"[ERROR] Fehler beim Sanity Check: {e}")
-        all_fine = False
-
-    if all_fine:
-        print("=== SANITY CHECK ERFOLGREICH. STARTE EVALUATION... ===\n")
-    else:
-        sys.exit("Abbruch wegen Inkompatibilität.")
+def mae_ssim_2d(y_true, y_pred, alpha=0.6):
+    """ Berechnet den Loss identisch zum Training """
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
+    ssim_val = tf.image.ssim(y_true, y_pred, max_val=1.0)
+    return (1.0 - alpha) * mae + alpha * (1.0 - tf.reduce_mean(ssim_val))
 
 def load_test_data(h5_path):
     with h5py.File(h5_path, "r") as f:
@@ -85,52 +46,76 @@ def prepare_volumes(X, y, depth):
     mid = depth // 2
     for i in range(n_vols):
         vol = X[i : i + depth].squeeze() 
-        vol = np.transpose(vol, (1, 2, 0))
+        vol = np.transpose(vol, (1, 2, 0)) # (H, W, D)
         X_vols.append(vol)
         y_targets.append(y[i + mid])
     return np.array(X_vols), np.array(y_targets)
 
 def main():
-    # Erst prüfen, dann rechnen
-    check_sanity()
+    # Gesamtfortschritt vorbereiten
+    total_runs = len(MODELS) * len(TEST_SETS)
+    print(f"Starte Evaluation von {total_runs} Kombinationen...")
 
     with open(RESULT_FILE, "w") as f:
         f.write(f"EVALUATION REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write("="*60 + "\n\n")
+        f.write("="*75 + "\n\n")
+
+    # Äußere Fortschrittsanzeige für die 6 Durchläufe
+    pbar = tqdm(total=total_runs, desc="Gesamtfortschritt")
 
     for model_path in MODELS:
+        # Modell einmal pro Gruppe laden
         model = tf.keras.models.load_model(model_path, compile=False)
         input_shape = model.input_shape
-        current_depth, is_3d = (input_shape[1], True) if len(input_shape) == 5 else (input_shape[3], False)
+        current_depth = input_shape[3] # 2.5D Logik
 
         for data_path in TEST_SETS:
+            # 1. Daten laden & vorbereiten
             X_raw, y_raw = load_test_data(data_path)
             X_test, y_test = prepare_volumes(X_raw, y_raw, current_depth)
 
-            # Normalisierung & Prediction
-            X_test_norm = np.array([(v / (np.sum(v) + 1e-12)) * 10000.0 for v in X_test])
-            y_test_norm = y_test / (np.sum(y_test, axis=(1, 2), keepdims=True) + 1e-12)
+            # 2. Normalisierung PRO SLICE (Wichtig für PSNR!)
+            # Summiere über H (Achse 1) und W (Achse 2), behalte Kanäle/Slices (D)
+            sums = np.sum(X_test, axis=(1, 2), keepdims=True) + 1e-12
+            X_test_norm = (X_test / sums) * 10000.0
+            
+            y_sums = np.sum(y_test, axis=(1, 2), keepdims=True) + 1e-12
+            y_test_norm = y_test / y_sums
 
-            if is_3d:
-                X_test_norm = np.transpose(X_test_norm, (0, 3, 1, 2))[..., np.newaxis]
+            # 3. Prädiktion mit Keras ProgressBar (verbose=1)
+            print(f"\nPrädiktion: {model_path.name} auf {data_path.name}")
+            preds = model.predict(X_test_norm, batch_size=16, verbose=1)
+            
+            # 4. Clipping & Metriken
+            preds = np.clip(preds, 0.0, 1.0)
+            y_test_norm = np.clip(y_test_norm, 0.0, 1.0)
 
-            preds = model.predict(X_test_norm, batch_size=16, verbose=0)
-            preds = np.clip(preds, 0, 1)
-            y_test_norm = np.clip(y_test_norm, 0, 1)
-
-            # Metriken
+            # Loss und Metriken berechnen
+            current_loss = mae_ssim_2d(y_test_norm, preds).numpy()
             mae = np.mean(np.abs(preds - y_test_norm))
             mse = np.mean(np.square(preds - y_test_norm))
-            psnr = tf.image.psnr(y_test_norm, preds, max_val=1.0).numpy().mean()
-            ssim = tf.image.ssim(tf.convert_to_tensor(y_test_norm), 
-                                 tf.convert_to_tensor(preds), max_val=1.0).numpy().mean()
+            psnr = tf.reduce_mean(tf.image.psnr(y_test_norm, preds, max_val=1.0)).numpy()
+            ssim = tf.reduce_mean(tf.image.ssim(tf.convert_to_tensor(y_test_norm), 
+                                               tf.convert_to_tensor(preds), max_val=1.0)).numpy()
 
-            # Output
-            res_str = f"MODEL: {model_path.name}\nDATA:  {data_path.name}\nMAE: {mae:.6f} | SSIM: {ssim:.6f} | PSNR: {psnr:.2f}\n{'-'*60}\n"
-            with open(RESULT_FILE, "a") as f: f.write(res_str)
-            print(f"Done: {model_path.name} on {data_path.name}")
+            # 5. Output Speicherung
+            res_str = (
+                f"MODEL: {model_path.name}\n"
+                f"DATA:  {data_path.name}\n"
+                f"LOSS:  {current_loss:.6f} (MAE_SSIM)\n"
+                f"MAE:   {mae:.6f} | MSE: {mse:.8f} | SSIM: {ssim:.6f} | PSNR: {psnr:.2f} dB\n"
+                f"{'-'*75}\n"
+            )
             
+            with open(RESULT_FILE, "a") as f_out:
+                f_out.write(res_str)
+            
+            pbar.update(1)
+            # RAM aufräumen
             del X_raw, y_raw, X_test, y_test, X_test_norm, y_test_norm, preds
+
+    pbar.close()
+    print(f"\nEvaluation abgeschlossen. Ergebnisse in: {RESULT_FILE}")
 
 if __name__ == "__main__":
     main()
