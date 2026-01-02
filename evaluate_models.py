@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 from pathlib import Path
 from datetime import datetime
-from tqdm import tqdm  # Falls nicht installiert: pip install tqdm
+from tqdm import tqdm
 
 # --- Pfade ---
 BASE_DIR = Path.home() / "VS_MASTER_THESIS"
@@ -25,7 +25,6 @@ TEST_SETS = [
 ]
 
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
-    """ Berechnet den Loss identisch zum Training """
     y_true = tf.cast(y_true, tf.float32)
     y_pred = tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -46,59 +45,57 @@ def prepare_volumes(X, y, depth):
     mid = depth // 2
     for i in range(n_vols):
         vol = X[i : i + depth].squeeze() 
-        vol = np.transpose(vol, (1, 2, 0)) # (H, W, D)
+        vol = np.transpose(vol, (1, 2, 0))
         X_vols.append(vol)
         y_targets.append(y[i + mid])
     return np.array(X_vols), np.array(y_targets)
 
 def main():
-    # Gesamtfortschritt vorbereiten
     total_runs = len(MODELS) * len(TEST_SETS)
-    print(f"Starte Evaluation von {total_runs} Kombinationen...")
+    print(f"Starte korrekte Evaluation von {total_runs} Kombinationen...")
 
     with open(RESULT_FILE, "w") as f:
         f.write(f"EVALUATION REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"HINWEIS: Normalisierung auf Summe 10.000 (identisch zu Training/Val)\n")
         f.write("="*75 + "\n\n")
 
-    # Äußere Fortschrittsanzeige für die 6 Durchläufe
     pbar = tqdm(total=total_runs, desc="Gesamtfortschritt")
 
     for model_path in MODELS:
-        # Modell einmal pro Gruppe laden
         model = tf.keras.models.load_model(model_path, compile=False)
         input_shape = model.input_shape
-        current_depth = input_shape[3] # 2.5D Logik
+        current_depth = input_shape[3]
 
         for data_path in TEST_SETS:
-            # 1. Daten laden & vorbereiten
             X_raw, y_raw = load_test_data(data_path)
             X_test, y_test = prepare_volumes(X_raw, y_raw, current_depth)
 
-            # 2. Normalisierung PRO SLICE (Wichtig für PSNR!)
-            # Summiere über H (Achse 1) und W (Achse 2), behalte Kanäle/Slices (D)
+            # Normalisierung Input
             sums = np.sum(X_test, axis=(1, 2), keepdims=True) + 1e-12
             X_test_norm = (X_test / sums) * 10000.0
             
+            # --- FIX: Ground Truth muss auch auf 10.000 skaliert werden! ---
             y_sums = np.sum(y_test, axis=(1, 2), keepdims=True) + 1e-12
-            y_test_norm = y_test / y_sums
+            y_test_norm = (y_test / y_sums) * 10000.0 # <--- SKALIERUNG HINZUGEFÜGT
 
-            # 3. Prädiktion mit Keras ProgressBar (verbose=1)
-            print(f"\nPrädiktion: {model_path.name} auf {data_path.name}")
+            # Prädiktion
+            print(f"\nPrädiktion: {model_path.name}")
             preds = model.predict(X_test_norm, batch_size=16, verbose=1)
             
-            # 4. Clipping & Metriken
+            # Clipping (identisch zu den Metrik-Funktionen im Training)
             preds = np.clip(preds, 0.0, 1.0)
             y_test_norm = np.clip(y_test_norm, 0.0, 1.0)
 
-            # Loss und Metriken berechnen
-            current_loss = mae_ssim_2d(y_test_norm, preds).numpy()
+            # Metriken (Loss muss auf Tensor-Format für mae_ssim_2d)
+            current_loss = mae_ssim_2d(tf.convert_to_tensor(y_test_norm), 
+                                       tf.convert_to_tensor(preds)).numpy()
+            
             mae = np.mean(np.abs(preds - y_test_norm))
             mse = np.mean(np.square(preds - y_test_norm))
             psnr = tf.reduce_mean(tf.image.psnr(y_test_norm, preds, max_val=1.0)).numpy()
             ssim = tf.reduce_mean(tf.image.ssim(tf.convert_to_tensor(y_test_norm), 
                                                tf.convert_to_tensor(preds), max_val=1.0)).numpy()
 
-            # 5. Output Speicherung
             res_str = (
                 f"MODEL: {model_path.name}\n"
                 f"DATA:  {data_path.name}\n"
@@ -111,11 +108,10 @@ def main():
                 f_out.write(res_str)
             
             pbar.update(1)
-            # RAM aufräumen
             del X_raw, y_raw, X_test, y_test, X_test_norm, y_test_norm, preds
 
     pbar.close()
-    print(f"\nEvaluation abgeschlossen. Ergebnisse in: {RESULT_FILE}")
+    print(f"\nEvaluation fertig. PSNR sollte jetzt wieder bei ~30-31 liegen.")
 
 if __name__ == "__main__":
     main()
