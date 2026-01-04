@@ -39,7 +39,10 @@ def window_reverse(windows, window_size, h, w):
 class SwinTransformerBlock(layers.Layer):
     def __init__(self, dim, num_heads, window_size, shift_size=0, **kwargs):
         super().__init__(**kwargs)
-        self.dim, self.num_heads, self.window_size, self.shift_size = dim, num_heads, window_size, shift_size
+        self.dim = dim
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
         self.norm1 = layers.LayerNormalization(epsilon=1e-6)
         self.attn = layers.MultiHeadAttention(num_heads=num_heads, key_dim=dim // num_heads)
         self.norm2 = layers.LayerNormalization(epsilon=1e-6)
@@ -52,57 +55,64 @@ class SwinTransformerBlock(layers.Layer):
         h, w = tf.shape(x)[1], tf.shape(x)[2]
         res = x
         x = self.norm1(x)
+
         if self.shift_size > 0:
             x = tf.pad(x, [[0, 0], [self.shift_size, 0], [self.shift_size, 0], [0, 0]])
             x = x[:, :h, :w, :]
+
         x_windows = window_partition(x, self.window_size)
         x_windows = tf.reshape(x_windows, (-1, self.window_size * self.window_size, self.dim))
         attn_windows = self.attn(x_windows, x_windows)
         attn_windows = tf.reshape(attn_windows, (-1, self.window_size, self.window_size, self.dim))
         x = window_reverse(attn_windows, self.window_size, h, w)
+
         x = layers.Add()([res, x])
         res = x
         x = self.norm2(x)
         return layers.Add()([res, self.mlp(x)])
 
-# 1. Positional Encoding (4D fuer korrektes Broadcasting)
+# --- Positional Encoding fuer 3D (Batch, Seq, Dim) ---
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
         self.pos_embeddings = self.add_weight(
             name="pos_embedding",
-            shape=(1, 1, seq_length, embedding_dim),  # (1, 1, d, embed)
+            shape=(1, seq_length, embedding_dim),   # (1, D, C)
             initializer="zeros",
             trainable=True
         )
 
     def call(self, x):
-        # x: (Batch, Pixels, Slices, Features)
         return x + self.pos_embeddings
 
-# 2. Modell
+# --- Modell ---
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
     h, w, d = input_shape
+    p = h * w
 
-    # --- 1. TEMPORAL TRANSFORMER ---
-    # (Batch, Pixels, Slices, Channels)
-    xt = layers.Reshape((h * w, d, 1))(inputs)          # (None, 46080, 5, 1)
-    xt = layers.Dense(4, name="temp_proj")(xt)          # (None, 46080, 5, 4)
+    # =========================
+    # 1) TEMPORAL TRANSFORMER
+    # =========================
+    # Start: (B, H, W, D)
+    xt = layers.Reshape((p, d, 1))(inputs)                         # (B, P, D, 1)
+
+    # Pixels in Batch falten -> stabile 3D-Attention ueber D
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, d, 1)))(xt)    # (B*P, D, 1)
+
+    # Projektion auf 4 Features
+    xt = layers.Dense(4, name="temp_proj")(xt)                     # (B*P, D, 4)
+
+    # Positional Encoding (nur ueber Sequenzlaenge D)
     xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=4)(xt)
 
-    for i in range(2):
+    for _ in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-
-        # WICHTIG: Attention nur ueber die Slice-Achse (Achse 2) laufen lassen,
-        # sonst attendiert Keras ueber (Pixels,Slices) -> 230400 Tokens -> OOM.
         xt = layers.MultiHeadAttention(
             num_heads=2,
-            key_dim=4,
-            attention_axes=(2,)   # <-- FIX
+            key_dim=2,   # 2 Heads * 2 = 4 passt gut zur Feature-Dim 4
         )(xt, xt)
-
         xt = layers.Add()([res_t, xt])
 
         res_t = xt
@@ -111,16 +121,32 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
         xt = layers.Dense(4)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Reduktion zurueck auf (Batch, 192, 240, 5)
-    xt = layers.Dense(1)(xt)                            # (None, 46080, 5, 1)
-    xt = layers.Reshape((h, w, d))(xt)                  # (None, 192, 240, 5)
+    # WICHTIGER FIX:
+    # NICHT Dense(1) auf dem riesigen (B*P*D,4) Tensor (GEMV-Launch-Fail),
+    # sondern zurueck ins Bild und 1x1 Conv2D fuer Projektion.
 
-    # --- 2. SPATIAL SWIN TRANSFORMER ---
+    # Zurueck zu (B, P, D, 4)
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, p, d, 4)))(xt)          # (B, P, D, 4)
+
+    # Zu (B, H, W, D, 4)
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, h, w, d, 4)))(xt)       # (B, H, W, D, 4)
+
+    # Feature-Achse an Slice-Achse haengen: (B, H, W, D*4) = (B, H, W, 20)
+    xt = layers.Reshape((h, w, d * 4))(xt)                                  # (B, H, W, 20)
+
+    # Projektion auf D Kanäle (5) via 1x1 Conv2D -> (B, H, W, D)
+    xt = layers.Conv2D(d, kernel_size=1, padding="same", name="temp_out")(xt)  # (B, H, W, 5)
+
+    # =========================
+    # 2) SPATIAL SWIN
+    # =========================
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
 
-    # --- 3. DECODER ---
+    # =========================
+    # 3) DECODER
+    # =========================
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x)
     x = layers.ReLU()(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid")(x)
@@ -131,7 +157,10 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
 
 class XRDDataGenerator:
     def __init__(self, h5_path, series_len, depth, is_train=True):
-        self.h5_path, self.series_len, self.depth, self.is_train = h5_path, series_len, depth, is_train
+        self.h5_path = h5_path
+        self.series_len = series_len
+        self.depth = depth
+        self.is_train = is_train
         with h5py.File(h5_path, "r") as f:
             self.total_samples = f["low_count/data"].shape[-1]
             self.n_series = self.total_samples // series_len
@@ -143,14 +172,18 @@ class XRDDataGenerator:
             low_data, high_data = f["low_count/data"], f["high_count/data"]
             if self.is_train:
                 np.random.shuffle(self.indices)
+
             for idx in self.indices:
                 s_idx, i_idx = idx // self.vols_per_series, idx % self.vols_per_series
                 start = s_idx * self.series_len + i_idx
+
                 x_vol = low_data[:, :, start : start + self.depth].astype(np.float32)
                 y_vol = high_data[:, :, start : start + self.depth].astype(np.float32)
+
                 for dd in range(self.depth):
                     x_vol[:, :, dd] /= (np.sum(x_vol[:, :, dd]) + 1e-12)
                     y_vol[:, :, dd] /= (np.sum(y_vol[:, :, dd]) + 1e-12)
+
                 scale = random.uniform(5000, 15000) if self.is_train else 10000
                 yield x_vol * scale, (y_vol[:, :, self.depth // 2] * scale)[:, :, np.newaxis]
 
