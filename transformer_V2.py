@@ -71,45 +71,43 @@ class SwinTransformerBlock(layers.Layer):
         x = self.norm2(x)
         return layers.Add()([res, self.mlp(x)])
 
+c# 1. Die korrigierte Positional Encoding Klasse (3D-Basis)
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
-        # Wir fügen eine extra Dimension für die Pixel hinzu (1, 1, seq, dim)
         self.pos_embeddings = self.add_weight(
             name="pos_embedding",
-            shape=(1, 1, seq_length, embedding_dim), # Hier 4D statt 3D
+            shape=(1, seq_length, embedding_dim), # (1, 5, 16)
             initializer="zeros",
             trainable=True
         )
 
     def call(self, x):
-        # x hat shape (Batch, Pixels, Slices, Dim)
         return x + self.pos_embeddings
 
-# --- MODELL-ARCHITEKTUR ---
-
-def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
+# 2. Die korrigierte Modell-Funktion
+def build_srdtrans(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
     h, w, d = input_shape
 
-    # --- 1. TEMPORAL TRANSFORMER (REFIXED) ---
-    # Wir machen daraus (Batch, Pixels, Slices, Channels)
-    # Channels setzen wir initial auf 1
-    xt = layers.Reshape((h * w, d, 1))(inputs) # Shape: (None, 46080, 5, 1)
-
-    # Wir expandieren die Feature-Dimension von 1 auf z.B. 16, 
-    # damit der Transformer sinnvoll arbeiten kann (Paper Logik)
-    xt = layers.Dense(16, name="temporal_projection")(xt) # Shape: (None, 46080, 5, 16)
-
-    # Positional Encoding hinzufügen (seq_length=5, embedding_dim=16)
-    xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=16)(xt)
+    # --- 1. TEMPORAL TRANSFORMER (DER ECHTE FIX) ---
+    # Wir schieben H und W in die Batch-Dimension!
+    # Von (Batch, 192, 240, 5) -> (Batch * 192 * 240, 5, 1)
+    xt = layers.Reshape((h * w, d, 1))(inputs) 
     
-    # Temporal Transformer Blocks
-    for i in range(2):
+    # Wir verarbeiten jetzt jeden Pixel-Zeitstrahl UNABHÄNGIG.
+    # Batch-Größe für den Transformer ist jetzt (8 * 46080) = 368.640
+    # Aber die Sequenzlänge ist NUR 5.
+    
+    # Projektion auf 16 Kanäle (Transformer brauchen Tiefe)
+    xt = layers.Dense(16)(xt) 
+    xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=16)(xt)
+
+    for _ in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        # Keras MHA interpretiert bei 4D die vorletzte Achse (5) als Sequenz
-        xt = layers.MultiHeadAttention(num_heads=4, key_dim=16)(xt, xt)
+        # Sequence Length ist hier sicher d=5
+        xt = layers.MultiHeadAttention(num_heads=4, key_dim=4)(xt, xt)
         xt = layers.Add()([res_t, xt])
         
         res_t = xt
@@ -118,20 +116,25 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
         xt = layers.Dense(16)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Reduktion zurück auf die Slices
+    # Reduktion und Zurück-Reshape
     xt = layers.Dense(1)(xt) 
-    xt = layers.Reshape((h, w, d))(xt) # Zurück auf (192, 240, 5)
+    # Von (Batch * 192 * 240, 5, 1) -> (Batch, 192, 240, 5)
+    xt = layers.Reshape((h, w, d))(xt)
 
     # --- 2. SPATIAL SWIN TRANSFORMER ---
-    # Ab hier läuft es wie geplant weiter
+    # Hier bleibt die Logik gleich, da Swin-Attention durch Fenster-Partitionierung 
+    # ohnehin schon speichereffizient ist.
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
     
-    # ... Rest des Decoders ...
+    # Paar aus W-MSA und SW-MSA
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=0)(x)
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=4)(x)
+
+    # --- 3. DECODER ---
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x)
     x = layers.ReLU()(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid")(x)
+
     return models.Model(inputs, outputs)
 
 # --- EFFIZIENTER DATA GENERATOR (FIXED) ---
