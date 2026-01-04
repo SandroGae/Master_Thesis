@@ -82,32 +82,33 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
     h, w, d = input_shape
 
-    # --- 1. TEMPORAL TRANSFORMER (DER FINALE OOM-FIX) ---
-    # Wir nutzen Lambda, um tf.reshape zu erzwingen, was Dimensionen in den Batch schiebt.
-    # Von (Batch, 192, 240, 5) -> (Batch * 192 * 240, 5, 1)
-    xt = layers.Lambda(lambda x: tf.reshape(x, (-1, d, 1)))(inputs)
+    # --- 1. TEMPORAL TRANSFORMER (STABILE VERSION) ---
+    # Shape: (Batch, 192, 240, 5) -> (Batch, 46080, 5)
+    # Wir lassen die Pixel-Dimension als Sequenz, aber reduzieren die Feature-Tiefe
+    xt = layers.Reshape((h * w, d))(inputs)
     
-    # Projektion auf Features
-    xt = layers.Dense(16)(xt) 
-    xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=16)(xt)
+    # Kleine Projektion (nur 4 Kanäle statt 16), um cuBLAS-Limits zu umgehen
+    xt = layers.Dense(4, name="temp_proj")(xt) 
+    
+    # Positional Encoding (seq_length=5, dim=4)
+    xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=4)(xt)
 
-    for _ in range(2):
+    for i in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        # Sequence Length ist jetzt garantiert 5! 
-        xt = layers.MultiHeadAttention(num_heads=4, key_dim=4)(xt, xt)
+        # Attention über die 5 Slices. key_dim klein halten!
+        xt = layers.MultiHeadAttention(num_heads=2, key_dim=4)(xt, xt)
         xt = layers.Add()([res_t, xt])
         
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        xt = layers.Dense(32, activation="gelu")(xt)
-        xt = layers.Dense(16)(xt)
+        xt = layers.Dense(8, activation="gelu")(xt)
+        xt = layers.Dense(4)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Reduktion und Zurück-Faltung in die Bildform
-    xt = layers.Dense(1)(xt) 
-    # Von (Batch * 46080, 5, 1) -> (Batch, 192, 240, 5)
-    xt = layers.Lambda(lambda x: tf.reshape(x, (-1, h, w, d)))(xt)
+    # Zurück auf einen Wert pro Pixel und Bildform
+    xt = layers.Dense(1)(xt)
+    xt = layers.Reshape((h, w, d))(xt)
 
     # --- 2. SPATIAL SWIN TRANSFORMER ---
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
