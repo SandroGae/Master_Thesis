@@ -74,33 +74,41 @@ class SwinTransformerBlock(layers.Layer):
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
+        # Wir fügen eine extra Dimension für die Pixel hinzu (1, 1, seq, dim)
         self.pos_embeddings = self.add_weight(
-            shape=(1, seq_length, embedding_dim), initializer="zeros", trainable=True)
-    def call(self, x): return x + self.pos_embeddings
+            name="pos_embedding",
+            shape=(1, 1, seq_length, embedding_dim), # Hier 4D statt 3D
+            initializer="zeros",
+            trainable=True
+        )
+
+    def call(self, x):
+        # x hat shape (Batch, Pixels, Slices, Dim)
+        return x + self.pos_embeddings
 
 # --- MODELL-ARCHITEKTUR ---
 
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
-    h, w, d = input_shape # h=192, w=240, d=5
+    h, w, d = input_shape
 
-    # --- 1. TEMPORAL TRANSFORMER (KORRIGIERT) ---
-    # Wir shapen so um, dass die Attention NUR über die Tiefe (d) läuft.
-    # Shape: (B, H, W, D) -> (B, H*W, D)
-    xt = layers.Reshape((h * w, d))(inputs)
-    
-    # Learned Positional Encoding hinzufügen (seq_length=d)
-    xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=1)(xt)
+    # --- 1. TEMPORAL TRANSFORMER (REFIXED) ---
+    # Wir machen daraus (Batch, Pixels, Slices, Channels)
+    # Channels setzen wir initial auf 1
+    xt = layers.Reshape((h * w, d, 1))(inputs) # Shape: (None, 46080, 5, 1)
+
+    # Wir expandieren die Feature-Dimension von 1 auf z.B. 16, 
+    # damit der Transformer sinnvoll arbeiten kann (Paper Logik)
+    xt = layers.Dense(16, name="temporal_projection")(xt) # Shape: (None, 46080, 5, 16)
+
+    # Positional Encoding hinzufügen (seq_length=5, embedding_dim=16)
+    xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=16)(xt)
     
     # Temporal Transformer Blocks
-    # WICHTIG: dim muss hier der Feature-Dimension entsprechen (hier 1, da ein Pixelwert)
-    # Wir expandieren kurz auf einen kleinen embed_dim für die Attention
-    xt = layers.Dense(16)(xt) # Kleine Projektion für stabilere Attention
-    
-    for _ in range(2):
+    for i in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        # Attention läuft jetzt über die Sequenzlänge d=5
+        # Keras MHA interpretiert bei 4D die vorletzte Achse (5) als Sequenz
         xt = layers.MultiHeadAttention(num_heads=4, key_dim=16)(xt, xt)
         xt = layers.Add()([res_t, xt])
         
@@ -110,21 +118,20 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
         xt = layers.Dense(16)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Zurück auf einen Wert pro Pixel reduzieren und in Bildform bringen
-    xt = layers.Dense(1)(xt)
-    xt = layers.Reshape((h, w, d))(xt)
+    # Reduktion zurück auf die Slices
+    xt = layers.Dense(1)(xt) 
+    xt = layers.Reshape((h, w, d))(xt) # Zurück auf (192, 240, 5)
 
     # --- 2. SPATIAL SWIN TRANSFORMER ---
-    # (Rest bleibt gleich wie in deinem Code)
+    # Ab hier läuft es wie geplant weiter
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
-
-    # --- 3. DECODER ---
+    
+    # ... Rest des Decoders ...
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x)
     x = layers.ReLU()(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid")(x)
-    
     return models.Model(inputs, outputs)
 
 # --- EFFIZIENTER DATA GENERATOR (FIXED) ---
