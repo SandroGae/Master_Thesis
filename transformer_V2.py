@@ -65,52 +65,56 @@ class SwinTransformerBlock(layers.Layer):
         x = self.norm2(x)
         return layers.Add()([res, self.mlp(x)])
 
+# 1. Korrigierte Positional Encoding Klasse (3D für korrektes Broadcasting)
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
         self.pos_embeddings = self.add_weight(
             name="pos_embedding",
-            shape=(1, seq_length, embedding_dim),
+            shape=(1, seq_length, embedding_dim), # (1, 5, 16)
             initializer="zeros",
             trainable=True
         )
     def call(self, x): return x + self.pos_embeddings
 
-# --- MODELL-ARCHITEKTUR ---
-
+# 2. Korrigierte Modell-Funktion
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
     h, w, d = input_shape
 
-    # --- 1. TEMPORAL TRANSFORMER (Der OOM-Killer Fix) ---
-    # Batch-Flattening: Wir schieben die Pixel in die Batch-Dimension
+    # --- 1. TEMPORAL TRANSFORMER (OOM FIX) ---
+    # Wir verschieben H und W in die Batch-Dimension
+    # Shape-Änderung: (Batch, 192, 240, 5) -> (Batch, 46080, 5, 1)
     xt = layers.Reshape((h * w, d, 1))(inputs) 
     
-    # Projektion auf höhere Feature-Ebene für die Attention
+    # Transformer benötigen eine Merkmals-Tiefe (hier 16 Kanäle)
     xt = layers.Dense(16)(xt) 
     xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=16)(xt)
 
     for _ in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        # Attention läuft nur über d=5 Slices
+        # Sequence Length ist jetzt d=5. Matrix ist nur 5x5 pro Pixel.
         xt = layers.MultiHeadAttention(num_heads=4, key_dim=4)(xt, xt)
         xt = layers.Add()([res_t, xt])
         
         res_t = xt
         xt = layers.LayerNormalization()(xt)
         xt = layers.Dense(32, activation="gelu")(xt)
-        xt = layers.Dense(16)(xt)
+        xt = xt = layers.Dense(16)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Reduktion und Zurück-Reshape auf Bildform
+    # Reduktion und Rückführung in Bildform
     xt = layers.Dense(1)(xt) 
     xt = layers.Reshape((h, w, d))(xt)
 
     # --- 2. SPATIAL SWIN TRANSFORMER ---
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
+    
+    # Swin-Attention nutzt Fenster (8x8), was bereits speichereffizient ist
+    
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=0)(x)
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=4)(x)
 
     # --- 3. DECODER ---
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x)
