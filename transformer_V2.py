@@ -75,15 +75,26 @@ class SwinTransformerBlock(layers.Layer):
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
+        self.seq_length = int(seq_length)
+        self.embedding_dim = int(embedding_dim)
         self.pos_embeddings = self.add_weight(
             name="pos_embedding",
-            shape=(1, seq_length, embedding_dim),   # (1, D, C)
+            shape=(1, self.seq_length, self.embedding_dim),
             initializer="zeros",
-            trainable=True
+            trainable=True,
         )
 
     def call(self, x):
         return x + self.pos_embeddings
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "seq_length": self.seq_length,
+            "embedding_dim": self.embedding_dim,
+        })
+        return config
+
 
 # --- Modell ---
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
@@ -186,6 +197,7 @@ class XRDDataGenerator:
 
                 scale = random.uniform(5000, 15000) if self.is_train else 10000
                 yield x_vol * scale, (y_vol[:, :, self.depth // 2] * scale)[:, :, np.newaxis]
+                
 
 # --- RUN ---
 
