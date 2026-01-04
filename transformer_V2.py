@@ -65,38 +65,40 @@ class SwinTransformerBlock(layers.Layer):
         x = self.norm2(x)
         return layers.Add()([res, self.mlp(x)])
 
+# 1. Korrigierte Positional Encoding Klasse (4D für korrektes Broadcasting)
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
         self.pos_embeddings = self.add_weight(
             name="pos_embedding",
-            shape=(1, seq_length, embedding_dim),
+            shape=(1, 1, seq_length, embedding_dim), # (1, 1, 5, 4)
             initializer="zeros",
             trainable=True
         )
-    def call(self, x): return x + self.pos_embeddings
 
-# --- MODELL-ARCHITEKTUR ---
+    def call(self, x):
+        # x kommt als (Batch, Pixels, Slices, Features) -> (None, 46080, 5, 4)
+        return x + self.pos_embeddings
 
+# 2. Korrigierte Modell-Funktion
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
     h, w, d = input_shape
 
-    # --- 1. TEMPORAL TRANSFORMER (STABILE VERSION) ---
-    # Shape: (Batch, 192, 240, 5) -> (Batch, 46080, 5)
-    # Wir lassen die Pixel-Dimension als Sequenz, aber reduzieren die Feature-Tiefe
-    xt = layers.Reshape((h * w, d))(inputs)
+    # --- 1. TEMPORAL TRANSFORMER (BROADCASTING FIX) ---
+    # Wir bringen die Daten in die Form (Batch, Pixels, Slices, Channels)
+    xt = layers.Reshape((h * w, d, 1))(inputs) # (None, 46080, 5, 1)
     
-    # Kleine Projektion (nur 4 Kanäle statt 16), um cuBLAS-Limits zu umgehen
-    xt = layers.Dense(4, name="temp_proj")(xt) 
+    # Projektion auf 4 Kanäle
+    xt = layers.Dense(4, name="temp_proj")(xt) # (None, 46080, 5, 4)
     
-    # Positional Encoding (seq_length=5, dim=4)
+    # Positional Encoding hinzufügen (Broadcasting über Pixels hinweg)
     xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=4)(xt)
 
     for i in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        # Attention über die 5 Slices. key_dim klein halten!
+        # Keras MHA versteht bei 4D automatisch, dass d=5 die Sequenz ist
         xt = layers.MultiHeadAttention(num_heads=2, key_dim=4)(xt, xt)
         xt = layers.Add()([res_t, xt])
         
@@ -106,11 +108,11 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
         xt = layers.Dense(4)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Zurück auf einen Wert pro Pixel und Bildform
+    # Reduktion und Zurück-Reshape auf Bildform (Batch, 192, 240, 5)
     xt = layers.Dense(1)(xt)
     xt = layers.Reshape((h, w, d))(xt)
 
-    # --- 2. SPATIAL SWIN TRANSFORMER ---
+    # --- 2. SPATIAL SWIN TRANSFORMER (BLEIBT GLEICH) ---
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
