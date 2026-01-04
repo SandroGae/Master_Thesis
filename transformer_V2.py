@@ -6,8 +6,6 @@ import h5py
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
-from datetime import datetime
-from pathlib import Path
 
 # --- REPRODUZIERBARKEIT & SETUP ---
 SEED = 42
@@ -39,7 +37,6 @@ def window_reverse(windows, window_size, h, w):
     return tf.reshape(x, (-1, h, w, c))
 
 class SwinTransformerBlock(layers.Layer):
-    """Swin-Block mit Padding statt Rolling für XRD-Datenkonsistenz."""
     def __init__(self, dim, num_heads, window_size, shift_size=0, **kwargs):
         super().__init__(**kwargs)
         self.dim, self.num_heads, self.window_size, self.shift_size = dim, num_heads, window_size, shift_size
@@ -55,58 +52,48 @@ class SwinTransformerBlock(layers.Layer):
         h, w = tf.shape(x)[1], tf.shape(x)[2]
         res = x
         x = self.norm1(x)
-
         if self.shift_size > 0:
             x = tf.pad(x, [[0, 0], [self.shift_size, 0], [self.shift_size, 0], [0, 0]])
             x = x[:, :h, :w, :]
-
         x_windows = window_partition(x, self.window_size)
         x_windows = tf.reshape(x_windows, (-1, self.window_size * self.window_size, self.dim))
         attn_windows = self.attn(x_windows, x_windows)
         attn_windows = tf.reshape(attn_windows, (-1, self.window_size, self.window_size, self.dim))
         x = window_reverse(attn_windows, self.window_size, h, w)
-
         x = layers.Add()([res, x])
         res = x
         x = self.norm2(x)
         return layers.Add()([res, self.mlp(x)])
 
-# 1. Die korrigierte Positional Encoding Klasse (3D-Basis)
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
         self.pos_embeddings = self.add_weight(
             name="pos_embedding",
-            shape=(1, seq_length, embedding_dim), # (1, 5, 16)
+            shape=(1, seq_length, embedding_dim),
             initializer="zeros",
             trainable=True
         )
+    def call(self, x): return x + self.pos_embeddings
 
-    def call(self, x):
-        return x + self.pos_embeddings
+# --- MODELL-ARCHITEKTUR ---
 
-# 2. Die korrigierte Modell-Funktion
-def build_srdtrans(input_shape=(192, 240, 5), embed_dim=96):
+def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
     h, w, d = input_shape
 
-    # --- 1. TEMPORAL TRANSFORMER (DER ECHTE FIX) ---
-    # Wir schieben H und W in die Batch-Dimension!
-    # Von (Batch, 192, 240, 5) -> (Batch * 192 * 240, 5, 1)
+    # --- 1. TEMPORAL TRANSFORMER (Der OOM-Killer Fix) ---
+    # Batch-Flattening: Wir schieben die Pixel in die Batch-Dimension
     xt = layers.Reshape((h * w, d, 1))(inputs) 
     
-    # Wir verarbeiten jetzt jeden Pixel-Zeitstrahl UNABHÄNGIG.
-    # Batch-Größe für den Transformer ist jetzt (8 * 46080) = 368.640
-    # Aber die Sequenzlänge ist NUR 5.
-    
-    # Projektion auf 16 Kanäle (Transformer brauchen Tiefe)
+    # Projektion auf höhere Feature-Ebene für die Attention
     xt = layers.Dense(16)(xt) 
     xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=16)(xt)
 
     for _ in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        # Sequence Length ist hier sicher d=5
+        # Attention läuft nur über d=5 Slices
         xt = layers.MultiHeadAttention(num_heads=4, key_dim=4)(xt, xt)
         xt = layers.Add()([res_t, xt])
         
@@ -116,19 +103,14 @@ def build_srdtrans(input_shape=(192, 240, 5), embed_dim=96):
         xt = layers.Dense(16)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Reduktion und Zurück-Reshape
+    # Reduktion und Zurück-Reshape auf Bildform
     xt = layers.Dense(1)(xt) 
-    # Von (Batch * 192 * 240, 5, 1) -> (Batch, 192, 240, 5)
     xt = layers.Reshape((h, w, d))(xt)
 
     # --- 2. SPATIAL SWIN TRANSFORMER ---
-    # Hier bleibt die Logik gleich, da Swin-Attention durch Fenster-Partitionierung 
-    # ohnehin schon speichereffizient ist.
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
-    
-    # Paar aus W-MSA und SW-MSA
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=0)(x)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=4)(x)
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
 
     # --- 3. DECODER ---
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x)
@@ -137,7 +119,7 @@ def build_srdtrans(input_shape=(192, 240, 5), embed_dim=96):
 
     return models.Model(inputs, outputs)
 
-# --- EFFIZIENTER DATA GENERATOR (FIXED) ---
+# --- DATA GENERATOR ---
 
 class XRDDataGenerator:
     def __init__(self, h5_path, series_len, depth, is_train=True):
@@ -160,7 +142,6 @@ class XRDDataGenerator:
                 x_vol = low_data[:, :, start : start + self.depth].astype(np.float32)
                 y_vol = high_data[:, :, start : start + self.depth].astype(np.float32)
 
-                # Augmentation & Normierung
                 if self.is_train and random.random() < 0.5:
                     x_vol, y_vol = x_vol[:, ::-1, :], y_vol[:, ::-1, :]
 
