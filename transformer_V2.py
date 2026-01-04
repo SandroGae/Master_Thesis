@@ -82,31 +82,49 @@ class LearnedPositionalEncoding(layers.Layer):
 
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
-    h, w, d = input_shape
+    h, w, d = input_shape # h=192, w=240, d=5
 
-    # 1. Temporal Transformer (Pixel-wise)
-    xt = layers.Reshape((h * w, d, 1))(inputs)
+    # --- 1. TEMPORAL TRANSFORMER (KORRIGIERT) ---
+    # Wir shapen so um, dass die Attention NUR über die Tiefe (d) läuft.
+    # Shape: (B, H, W, D) -> (B, H*W, D)
+    xt = layers.Reshape((h * w, d))(inputs)
+    
+    # Learned Positional Encoding hinzufügen (seq_length=d)
     xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=1)(xt)
+    
+    # Temporal Transformer Blocks
+    # WICHTIG: dim muss hier der Feature-Dimension entsprechen (hier 1, da ein Pixelwert)
+    # Wir expandieren kurz auf einen kleinen embed_dim für die Attention
+    xt = layers.Dense(16)(xt) # Kleine Projektion für stabilere Attention
+    
     for _ in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        xt = layers.MultiHeadAttention(num_heads=1, key_dim=4)(xt, xt)
+        # Attention läuft jetzt über die Sequenzlänge d=5
+        xt = layers.MultiHeadAttention(num_heads=4, key_dim=16)(xt, xt)
         xt = layers.Add()([res_t, xt])
+        
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        xt = layers.Dense(4, activation="gelu")(xt); xt = layers.Dense(1)(xt)
+        xt = layers.Dense(32, activation="gelu")(xt)
+        xt = layers.Dense(16)(xt)
         xt = layers.Add()([res_t, xt])
+
+    # Zurück auf einen Wert pro Pixel reduzieren und in Bildform bringen
+    xt = layers.Dense(1)(xt)
     xt = layers.Reshape((h, w, d))(xt)
 
-    # 2. Spatial Swin Transformer
+    # --- 2. SPATIAL SWIN TRANSFORMER ---
+    # (Rest bleibt gleich wie in deinem Code)
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
     x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
 
-    # 3. Decoder
+    # --- 3. DECODER ---
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x)
     x = layers.ReLU()(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid")(x)
+    
     return models.Model(inputs, outputs)
 
 # --- EFFIZIENTER DATA GENERATOR (FIXED) ---
