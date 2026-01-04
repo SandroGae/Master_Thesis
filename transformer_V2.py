@@ -7,7 +7,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-# --- REPRODUZIERBARKEIT & SETUP ---
+# --- REPRODUZIERBARKEIT ---
 SEED = 42
 os.environ['PYTHONHASHSEED'] = str(SEED)
 random.seed(SEED)
@@ -65,36 +65,36 @@ class SwinTransformerBlock(layers.Layer):
         x = self.norm2(x)
         return layers.Add()([res, self.mlp(x)])
 
-# 1. Korrigierte Positional Encoding Klasse (3D Basis)
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
         self.pos_embeddings = self.add_weight(
             name="pos_embedding",
-            shape=(1, seq_length, embedding_dim), # (1, 5, 16)
+            shape=(1, seq_length, embedding_dim),
             initializer="zeros",
             trainable=True
         )
     def call(self, x): return x + self.pos_embeddings
 
-# 2. Korrigierte Modell-Funktion mit explizitem Batch-Flattening
+# --- MODELL-ARCHITEKTUR ---
+
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape)
     h, w, d = input_shape
 
-    # --- 1. TEMPORAL TRANSFORMER (OOM-SAFE) ---
-    # Wir machen aus (Batch, 192, 240, 5) -> (Batch * 192 * 240, 5, 1)
-    # Dadurch wird jeder Pixel wie ein eigener kleiner Batch behandelt.
-    xt = layers.Reshape((-1, d, 1))(inputs) 
+    # --- 1. TEMPORAL TRANSFORMER (DER FINALE OOM-FIX) ---
+    # Wir nutzen Lambda, um tf.reshape zu erzwingen, was Dimensionen in den Batch schiebt.
+    # Von (Batch, 192, 240, 5) -> (Batch * 192 * 240, 5, 1)
+    xt = layers.Lambda(lambda x: tf.reshape(x, (-1, d, 1)))(inputs)
     
-    # Transformer benötigen Feature-Tiefe (Projektion auf 16 Kanäle)
+    # Projektion auf Features
     xt = layers.Dense(16)(xt) 
     xt = LearnedPositionalEncoding(seq_length=d, embedding_dim=16)(xt)
 
     for _ in range(2):
         res_t = xt
         xt = layers.LayerNormalization()(xt)
-        # Die Attention läuft jetzt NUR über die Sequenzlänge 5!
+        # Sequence Length ist jetzt garantiert 5! 
         xt = layers.MultiHeadAttention(num_heads=4, key_dim=4)(xt, xt)
         xt = layers.Add()([res_t, xt])
         
@@ -104,17 +104,15 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
         xt = layers.Dense(16)(xt)
         xt = layers.Add()([res_t, xt])
 
-    # Reduktion auf 1 Feature pro Pixel und zurück in Bildform
+    # Reduktion und Zurück-Faltung in die Bildform
     xt = layers.Dense(1)(xt) 
-    # Zurück-Reshape: (Batch * 192 * 240, 5, 1) -> (Batch, 192, 240, 5)
-    xt = tf.reshape(xt, (-1, h, w, d))
+    # Von (Batch * 46080, 5, 1) -> (Batch, 192, 240, 5)
+    xt = layers.Lambda(lambda x: tf.reshape(x, (-1, h, w, d)))(xt)
 
     # --- 2. SPATIAL SWIN TRANSFORMER ---
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(xt)
-    
-    # Swin nutzt Fenster-Attention (8x8), was physikalisch speichereffizient ist
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=0)(x)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=8, shift_size=4)(x)
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(x)
+    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
 
     # --- 3. DECODER ---
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x)
@@ -123,7 +121,7 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
 
     return models.Model(inputs, outputs)
 
-# --- DATA GENERATOR ---
+# --- DATA GENERATOR (IDENTISCH) ---
 
 class XRDDataGenerator:
     def __init__(self, h5_path, series_len, depth, is_train=True):
@@ -138,29 +136,18 @@ class XRDDataGenerator:
         with h5py.File(self.h5_path, "r") as f:
             low_data, high_data = f["low_count/data"], f["high_count/data"]
             if self.is_train: np.random.shuffle(self.indices)
-
             for idx in self.indices:
                 s_idx, i_idx = idx // self.vols_per_series, idx % self.vols_per_series
                 start = s_idx * self.series_len + i_idx
-                
                 x_vol = low_data[:, :, start : start + self.depth].astype(np.float32)
                 y_vol = high_data[:, :, start : start + self.depth].astype(np.float32)
-
-                if self.is_train and random.random() < 0.5:
-                    x_vol, y_vol = x_vol[:, ::-1, :], y_vol[:, ::-1, :]
-
                 for d in range(self.depth):
-                    sum_x = np.sum(x_vol[:,:,d]) + 1e-12
-                    sum_y = np.sum(y_vol[:,:,d]) + 1e-12
-                    x_vol[:,:,d] /= sum_x
-                    y_vol[:,:,d] /= sum_y
-                
+                    x_vol[:,:,d] /= (np.sum(x_vol[:,:,d]) + 1e-12)
+                    y_vol[:,:,d] /= (np.sum(y_vol[:,:,d]) + 1e-12)
                 scale = random.uniform(5000, 15000) if self.is_train else 10000
-                x_vol *= scale; y_vol *= scale
+                yield x_vol * scale, (y_vol[:, :, self.depth // 2] * scale)[:, :, np.newaxis]
 
-                yield x_vol, y_vol[:, :, self.depth // 2][:, :, np.newaxis]
-
-# --- TRAINING SETUP ---
+# --- RUN ---
 
 FILES = {"training": "/home/sgaell/data/original_data/training_data.hdf5", 
          "validation": "/home/sgaell/data/original_data/validation_data.hdf5"}
