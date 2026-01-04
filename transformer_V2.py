@@ -71,7 +71,7 @@ class SwinTransformerBlock(layers.Layer):
         x = self.norm2(x)
         return layers.Add()([res, self.mlp(x)])
 
-c# 1. Die korrigierte Positional Encoding Klasse (3D-Basis)
+# 1. Die korrigierte Positional Encoding Klasse (3D-Basis)
 class LearnedPositionalEncoding(layers.Layer):
     def __init__(self, seq_length, embedding_dim, **kwargs):
         super().__init__(**kwargs)
