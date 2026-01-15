@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 
-# --- Pfade ---
+# Pfade
 BASE_DIR = Path.home() / "VS_MASTER_THESIS"
 MODEL_DIR = BASE_DIR / "Plots" / "Unet" / "Keras"
 TEST_DATA_DIR = BASE_DIR / "original_data"
@@ -74,9 +74,9 @@ def main():
             sums = np.sum(X_test, axis=(1, 2), keepdims=True) + 1e-12
             X_test_norm = (X_test / sums) * 10000.0
             
-            # --- FIX: Ground Truth muss auch auf 10.000 skaliert werden! ---
+            # Ground Truth muss auch auf 10.000 skaliert werden!
             y_sums = np.sum(y_test, axis=(1, 2), keepdims=True) + 1e-12
-            y_test_norm = (y_test / y_sums) * 10000.0 # <--- SKALIERUNG HINZUGEFÜGT
+            y_test_norm = (y_test / y_sums) * 10000.0
 
             # Prädiktion
             print(f"\nPrädiktion: {model_path.name}")
@@ -111,7 +111,7 @@ def main():
             del X_raw, y_raw, X_test, y_test, X_test_norm, y_test_norm, preds
 
     pbar.close()
-    print(f"\nEvaluation fertig. PSNR sollte jetzt wieder bei ~30-31 liegen.")
+    print(f"\nEvaluation fertig")
 
 if __name__ == "__main__":
     main()
