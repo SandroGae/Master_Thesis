@@ -11,6 +11,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from sklearn.model_selection import KFold
+from tqdm import tqdm
 
 # Importiere deine Hilfsskripte
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
@@ -74,11 +75,35 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
 
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
-        low_count = f["low_count/data"][:]
-        high_count = f["high_count/data"][:]
-    low_count = np.moveaxis(low_count, -1, 0)[:, :, :, np.newaxis]
-    high_count = np.moveaxis(high_count, -1, 0)[:, :, :, np.newaxis]
-    return low_count.astype(np.float32), high_count.astype(np.float32)
+        low_ds = f["low_count/data"]
+        high_ds = f["high_count/data"]
+        
+        # Bestimme die Anzahl der Bilder (N ist die letzte Achse im HDF5)
+        num_imgs = low_ds.shape[-1]
+        h, w = low_ds.shape[0], low_ds.shape[1]
+        
+        # Arrays vor-allokieren (spart RAM-Spitzen beim Concatenate)
+        low_count = np.empty((num_imgs, h, w, 1), dtype=np.float32)
+        high_count = np.empty((num_imgs, h, w, 1), dtype=np.float32)
+        
+        print(f"Lade {h5_path}...")
+        pbar = tqdm(total=num_imgs, unit="Bilder", desc="RAM Loading")
+        
+        # In Blöcken laden (z.B. 100 Bilder pro Schritt)
+        chunk_size = 100
+        for start in range(0, num_imgs, chunk_size):
+            end = min(start + chunk_size, num_imgs)
+            # Im HDF5 ist es (H, W, N) -> wir brauchen (N, H, W, 1)
+            low_count[start:end, ..., 0] = np.moveaxis(low_ds[..., start:end], -1, 0)
+            high_count[start:end, ..., 0] = np.moveaxis(high_ds[..., start:end], -1, 0)
+            
+            # GB berechnen und im Balken anzeigen
+            current_gb = (low_count.nbytes + high_count.nbytes) / (1024**3)
+            pbar.set_postfix({"RAM": f"{current_gb:.2f} GB"})
+            pbar.update(end - start)
+            
+        pbar.close()
+    return low_count, high_count
 
 def make_strided_windows(X, y, series_len, depth, stride, step=1):
     N, H, W, C = X.shape
@@ -165,13 +190,16 @@ kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
 
 for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     fold_id = fold + 1
-    print(f"\n--- STARTE FOLD {fold_id} ---")
+    print(f"\n\n{'='*40}")
+    print(f"STARTE FOLD {fold_id} / 5")
+    print(f"{'='*40}")
     
+    # Fold-spezifische Pfade
     FOLD_NAME = f"{BASE_NAME}_fold{fold_id}_{RUN_ID}"
     FOLD_DIR = TB_ROOT / FOLD_NAME
     FOLD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Training Daten (Interpoliert) extrahieren
+    # 1. Training Daten (Interpoliert) extrahieren
     def get_data_interp(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -180,9 +208,10 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
             y_l.append(y_interp_raw[start : start + SERIES_LEN_INTERP])
         return np.concatenate(X_l), np.concatenate(y_l)
 
+    print(f"Extrahiere Trainings-Serien für Fold {fold_id}...")
     X_tr_fold, y_tr_fold = get_data_interp(train_idx)
 
-    # Validation Daten (Original) extrahieren
+    # 2. Validation Daten (Original) extrahieren
     def get_data_orig(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -191,25 +220,46 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
             y_l.append(y_orig_raw[start : start + SERIES_LEN_ORIG])
         return np.concatenate(X_l), np.concatenate(y_l)
 
+    print(f"Extrahiere Validierungs-Serien für Fold {fold_id}...")
     X_va_fold, y_va_fold = get_data_orig(val_idx)
 
-    # Fensterbau (Training mit Multi-Stride, Val mit Stride 1)
+    # 3. Fensterbau mit RAM-Überwachung
     X_tr_win_list, y_tr_win_list = [], []
+    total_win_gb = 0
+    
+    print(f"Generiere Volumina (Training)...")
     SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
     for s in SELECTED_STRIDES:
         step = 5 if s == 12 else (4 if s == 24 else 6)
         Xw, yw = make_strided_windows(X_tr_fold, y_tr_fold, SERIES_LEN_INTERP, DEPTH, stride=s, step=step)
+        
         if len(Xw) > 0:
-            X_tr_win_list.append(Xw); y_tr_win_list.append(yw)
+            # Direkt in float32 umwandeln
+            Xw_f = Xw.astype(np.float32)
+            yw_f = yw.astype(np.float32)
+            X_tr_win_list.append(Xw_f)
+            y_tr_win_list.append(yw_f)
+            
+            # Speicher berechnen
+            total_win_gb += (Xw_f.nbytes + yw_f.nbytes) / (1024**3)
+            print(f" -> Stride {s}: {len(Xw)} Fenster. Aktueller RAM-Bedarf der Liste: {total_win_gb:.2f} GB")
 
+    print(f"Kombiniere alle Strides (Concatenate)...")
     X_tr_win = np.concatenate(X_tr_win_list, axis=0)
     y_tr_win = np.concatenate(y_tr_win_list, axis=0)
-    X_va_win, y_va_win = make_strided_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH, stride=1)
+    
+    # Sofort Speicher der Liste freigeben
+    del X_tr_win_list, y_tr_win_list, X_tr_fold, y_tr_fold
 
+    print(f"Generiere Volumina (Validation, Stride 1)...")
+    X_va_win, y_va_win = make_strided_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH, stride=1)
+    del X_va_fold, y_va_fold
+
+    print(f"Shuffle Daten...")
     X_tr_win, y_tr_win = shuffle_initial(X_tr_win, y_tr_win, SEED)
     X_va_win, y_va_win = shuffle_initial(X_va_win, y_va_win, SEED)
 
-    # Modell & Datasets
+    # 4. Modell-Training Setup
     model = unet_2d_stacked(input_shape=(192, 240, DEPTH))
     opt = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
     model.compile(optimizer=opt, loss=mae_ssim_2d, metrics=[mae_center, mse_center, psnr_center, ssim_center])
@@ -223,7 +273,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
               .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
               .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
-    # Training
     fold_callbacks = [
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         make_epoch_ckpt_callback(FOLD_NAME),
@@ -231,13 +280,18 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
         *tb_callbacks(FOLD_DIR)
     ]
 
+    # 5. Start Training
+    print(f"Training Fold {fold_id} startet...")
     history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
 
+    # 6. Finalisieren & Metriken
     all_fold_scores.append(min(history.history['val_mae_center']))
     meta = make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, opt, 5e-4, (192,240,DEPTH), (5000,15000), (10000,10001))
     finalize_run(model, history, FOLD_NAME, meta)
     
+    # 7. Härtester RAM-Cleanup
+    print(f"Bereinige Speicher für Fold {fold_id}...")
     tf.keras.backend.clear_session()
-    del X_tr_win, y_tr_win, X_va_win, y_va_win # RAM Management
+    del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
 
 print(f"\nK-Fold abgeschlossen. Durchschnittlicher MAE: {np.mean(all_fold_scores):.6f}")
