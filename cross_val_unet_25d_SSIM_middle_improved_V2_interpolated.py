@@ -188,18 +188,37 @@ all_fold_scores = []
 
 kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
 
+# --- DATEN LADEN & K-FOLD LOOP ---
+
+# 1. Lade beide Versionen der Trainingsdaten (WICHTIG!)
+print(f"Lade Trainingsdaten (Interpoliert für Training): {TRAIN_FILE}")
+X_interp_raw, y_interp_raw = load_split(TRAIN_FILE)
+
+# Wir laden die originalen 41-Slice-Versionen der Trainingsdaten für eine saubere Validierung
+TRAIN_ORIG_FILE = Path.home() / "data/original_data/training_data.hdf5"
+print(f"Lade Trainingsdaten (Original für Validation): {TRAIN_ORIG_FILE}")
+X_orig_raw, y_orig_raw = load_split(TRAIN_ORIG_FILE)
+
+# 2. Pool auf Basis der Trainingsserien erstellen (ca. 80 Serien)
+num_series = len(X_orig_raw) // SERIES_LEN_ORIG
+series_indices = np.arange(num_series)
+
+BASE_NAME = "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated"
+RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
+TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
+all_fold_scores = []
+
+kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
+
 for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     fold_id = fold + 1
-    print(f"\n\n{'='*40}")
-    print(f"STARTE FOLD {fold_id} / 5")
-    print(f"{'='*40}")
+    print(f"\n\n{'='*40}\nSTARTE FOLD {fold_id} / 5\n{'='*40}")
     
-    # Fold-spezifische Pfade
     FOLD_NAME = f"{BASE_NAME}_fold{fold_id}_{RUN_ID}"
     FOLD_DIR = TB_ROOT / FOLD_NAME
     FOLD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Training Daten (Interpoliert) extrahieren
+    # A. Extrahiere Interpolierte Serien für Training (80% des Pools)
     def get_data_interp(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -208,10 +227,9 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
             y_l.append(y_interp_raw[start : start + SERIES_LEN_INTERP])
         return np.concatenate(X_l), np.concatenate(y_l)
 
-    print(f"Extrahiere Trainings-Serien für Fold {fold_id}...")
     X_tr_fold, y_tr_fold = get_data_interp(train_idx)
 
-    # 2. Validation Daten (Original) extrahieren
+    # B. Extrahiere Originale Serien für Validation (20% des Pools)
     def get_data_orig(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -220,46 +238,30 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
             y_l.append(y_orig_raw[start : start + SERIES_LEN_ORIG])
         return np.concatenate(X_l), np.concatenate(y_l)
 
-    print(f"Extrahiere Validierungs-Serien für Fold {fold_id}...")
     X_va_fold, y_va_fold = get_data_orig(val_idx)
 
-    # 3. Fensterbau mit RAM-Überwachung
+    # 3. Fensterbau (Training: Multi-Stride, Val: Stride 1)
+    print(f"Generiere Volumina für Fold {fold_id}...")
     X_tr_win_list, y_tr_win_list = [], []
-    total_win_gb = 0
-    
-    print(f"Generiere Volumina (Training)...")
     SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
+    
     for s in SELECTED_STRIDES:
         step = 5 if s == 12 else (4 if s == 24 else 6)
         Xw, yw = make_strided_windows(X_tr_fold, y_tr_fold, SERIES_LEN_INTERP, DEPTH, stride=s, step=step)
-        
         if len(Xw) > 0:
-            # Direkt in float32 umwandeln
-            Xw_f = Xw.astype(np.float32)
-            yw_f = yw.astype(np.float32)
-            X_tr_win_list.append(Xw_f)
-            y_tr_win_list.append(yw_f)
-            
-            # Speicher berechnen
-            total_win_gb += (Xw_f.nbytes + yw_f.nbytes) / (1024**3)
-            print(f" -> Stride {s}: {len(Xw)} Fenster. Aktueller RAM-Bedarf der Liste: {total_win_gb:.2f} GB")
+            X_tr_win_list.append(Xw.astype(np.float32))
+            y_tr_win_list.append(yw.astype(np.float32))
 
-    print(f"Kombiniere alle Strides (Concatenate)...")
     X_tr_win = np.concatenate(X_tr_win_list, axis=0)
     y_tr_win = np.concatenate(y_tr_win_list, axis=0)
     
-    # Sofort Speicher der Liste freigeben
-    del X_tr_win_list, y_tr_win_list, X_tr_fold, y_tr_fold
-
-    print(f"Generiere Volumina (Validation, Stride 1)...")
+    # Validierung immer auf den Originaldaten des Folds mit Stride 1
     X_va_win, y_va_win = make_strided_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH, stride=1)
-    del X_va_fold, y_va_fold
 
-    print(f"Shuffle Daten...")
     X_tr_win, y_tr_win = shuffle_initial(X_tr_win, y_tr_win, SEED)
     X_va_win, y_va_win = shuffle_initial(X_va_win, y_va_win, SEED)
 
-    # 4. Modell-Training Setup
+    # 4. Modell & Datasets
     model = unet_2d_stacked(input_shape=(192, 240, DEPTH))
     opt = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
     model.compile(optimizer=opt, loss=mae_ssim_2d, metrics=[mae_center, mse_center, psnr_center, ssim_center])
@@ -273,6 +275,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
               .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
               .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
+    # 5. Training
     fold_callbacks = [
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         make_epoch_ckpt_callback(FOLD_NAME),
@@ -280,18 +283,13 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
         *tb_callbacks(FOLD_DIR)
     ]
 
-    # 5. Start Training
-    print(f"Training Fold {fold_id} startet...")
     history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
 
-    # 6. Finalisieren & Metriken
+    # 6. Cleanup
     all_fold_scores.append(min(history.history['val_mae_center']))
-    meta = make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, opt, 5e-4, (192,240,DEPTH), (5000,15000), (10000,10001))
-    finalize_run(model, history, FOLD_NAME, meta)
+    finalize_run(model, history, FOLD_NAME, make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, opt, 5e-4, (192,240,DEPTH)))
     
-    # 7. Härtester RAM-Cleanup
-    print(f"Bereinige Speicher für Fold {fold_id}...")
     tf.keras.backend.clear_session()
-    del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
+    del X_tr_win, y_tr_win, X_va_win, y_va_win, X_tr_fold, y_tr_fold, X_va_fold, y_va_fold
 
 print(f"\nK-Fold abgeschlossen. Durchschnittlicher MAE: {np.mean(all_fold_scores):.6f}")
