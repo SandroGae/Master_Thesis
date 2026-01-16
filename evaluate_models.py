@@ -51,15 +51,19 @@ def load_test_data(h5_path):
     return low, high
 
 def prepare_volumes_prealloc(X, y, depth):
+    """Optimiert mit korrekter Achsen-Transformation für 2.5D."""
     n_vols = len(X) - depth + 1
+    # Ziel-Form: (Anzahl_Fenster, Höhe, Breite, Tiefe)
     X_res = np.empty((n_vols, 192, 240, depth), dtype=np.float32)
     y_res = np.empty((n_vols, 192, 240, 1), dtype=np.float32)
     mid = depth // 2
+    
     for i in range(n_vols):
-        X_res[i] = np.transpose(np.squeeze(X[i : i + depth], -1), (0, 2, 3, 1))[0] # Squeeze fix
-        # Da X_res (N, H, W, D) erwartet:
-        X_res[i] = np.transpose(np.squeeze(X[i : i + depth], -1), (1, 2, 0))
+        window = X[i : i + depth]
+        window = np.squeeze(window, axis=-1)
+        X_res[i] = np.transpose(window, (1, 2, 0))
         y_res[i] = y[i + mid]
+        
     return X_res, y_res
 
 def main():
