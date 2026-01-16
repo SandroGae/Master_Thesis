@@ -1,5 +1,4 @@
 import os
-import sys
 import h5py
 import numpy as np
 import tensorflow as tf
@@ -7,26 +6,38 @@ from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
 
-# Pfade
-BASE_DIR = Path.home() / "VS_MASTER_THESIS"
-MODEL_DIR = BASE_DIR / "Plots" / "Unet" / "Keras"
-TEST_DATA_DIR = BASE_DIR / "original_data"
-RESULT_FILE = BASE_DIR / "evaluation_results.txt"
+# GPU Optimierung
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
+# --- PFADE ---
+HOME = Path.home()
+DATA_ROOT = HOME / "data"
+MODEL_DIR = DATA_ROOT / "checkpoints_unet_3d_simple"
+TEST_DATA_DIR = DATA_ROOT / "original_data"
+RESULT_FILE = HOME / "code/Master_Thesis/Plots/Unet/evaluation_results_comprehensive.txt"
+
+# Deine Liste der Modelle
 MODELS = [
-    MODEL_DIR / "1_unet_25d_SSIM_middle_improved_V2_interpolated_D5_VarStride1-24__20251201-093031_loss0.0690_val0.05942.keras",
-    MODEL_DIR / "2_unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20251119-171216_loss0.0519_val0.0585.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_fold1_20260115-112330_loss0.0527_val0.0598.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_fold2_20260115-112330_loss0.0527_val0.0549.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_fold3_20260115-112330_loss0.0524_val0.0578.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_fold4_20260115-112330_loss0.0539_val0.0530.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_fold5_20260115-112330_loss0.0530_val0.0574.keras",
+    "random_seed_unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20260115-163356_loss0.0521_val0.0585.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold1_20260116-130113_loss0.0543_val0.0582.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold1_20260116-142232__best.keras"
 ]
 
+# Deine 3 Test-Datensets
 TEST_SETS = [
-    TEST_DATA_DIR / "test_data.hdf5",
-    TEST_DATA_DIR / "test_every_second_image.hdf5",
-    TEST_DATA_DIR / "test_every_third_image.hdf5"
+    "test_data.hdf5",
+    "test_every_second_image.hdf5",
+    "test_every_third_image.hdf5"
 ]
+
+SERIES_LEN = 41
 
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
     ssim_val = tf.image.ssim(y_true, y_pred, max_val=1.0)
     return (1.0 - alpha) * mae + alpha * (1.0 - tf.reduce_mean(ssim_val))
@@ -39,79 +50,59 @@ def load_test_data(h5_path):
     high = np.moveaxis(high, -1, 0)[..., np.newaxis].astype(np.float32)
     return low, high
 
-def prepare_volumes(X, y, depth):
+def prepare_volumes_prealloc(X, y, depth):
     n_vols = len(X) - depth + 1
-    X_vols, y_targets = [], []
+    X_res = np.empty((n_vols, 192, 240, depth), dtype=np.float32)
+    y_res = np.empty((n_vols, 192, 240, 1), dtype=np.float32)
     mid = depth // 2
     for i in range(n_vols):
-        vol = X[i : i + depth].squeeze() 
-        vol = np.transpose(vol, (1, 2, 0))
-        X_vols.append(vol)
-        y_targets.append(y[i + mid])
-    return np.array(X_vols), np.array(y_targets)
+        X_res[i] = np.transpose(np.squeeze(X[i : i + depth], -1), (0, 2, 3, 1))[0] # Squeeze fix
+        # Da X_res (N, H, W, D) erwartet:
+        X_res[i] = np.transpose(np.squeeze(X[i : i + depth], -1), (1, 2, 0))
+        y_res[i] = y[i + mid]
+    return X_res, y_res
 
 def main():
-    total_runs = len(MODELS) * len(TEST_SETS)
-    print(f"Starte korrekte Evaluation von {total_runs} Kombinationen...")
-
     with open(RESULT_FILE, "w") as f:
         f.write(f"EVALUATION REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"HINWEIS: Normalisierung auf Summe 10.000 (identisch zu Training/Val)\n")
-        f.write("="*75 + "\n\n")
+        f.write("="*145 + "\n")
+        f.write(f"{'Model Name':<50} | {'Dataset':<25} | {'Loss':<10} | {'MAE':<10} | {'MSE':<12} | {'SSIM':<10}\n")
+        f.write("-" * 145 + "\n")
 
-    pbar = tqdm(total=total_runs, desc="Gesamtfortschritt")
-
-    for model_path in MODELS:
+    for model_name in MODELS:
+        model_path = MODEL_DIR / model_name
+        if not model_path.exists(): continue
+        
         model = tf.keras.models.load_model(model_path, compile=False)
-        input_shape = model.input_shape
-        current_depth = input_shape[3]
+        depth = model.input_shape[3]
 
-        for data_path in TEST_SETS:
+        for set_name in TEST_SETS:
+            data_path = TEST_DATA_DIR / set_name
+            if not data_path.exists(): continue
+            
+            print(f"Eval: {model_name[:20]}... on {set_name}")
             X_raw, y_raw = load_test_data(data_path)
-            X_test, y_test = prepare_volumes(X_raw, y_raw, current_depth)
+            X_test, y_test = prepare_volumes_prealloc(X_raw, y_raw, depth)
 
-            # Normalisierung Input
-            sums = np.sum(X_test, axis=(1, 2), keepdims=True) + 1e-12
-            X_test_norm = (X_test / sums) * 10000.0
-            
-            # Ground Truth muss auch auf 10.000 skaliert werden!
-            y_sums = np.sum(y_test, axis=(1, 2), keepdims=True) + 1e-12
-            y_test_norm = (y_test / y_sums) * 10000.0
+            # Normalisierung & Clipping
+            X_norm = (X_test / (np.sum(X_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
+            y_norm = (y_test / (np.sum(y_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
 
-            # Prädiktion
-            print(f"\nPrädiktion: {model_path.name}")
-            preds = model.predict(X_test_norm, batch_size=16, verbose=1)
-            
-            # Clipping (identisch zu den Metrik-Funktionen im Training)
+            preds = model.predict(X_norm, batch_size=32, verbose=0)
             preds = np.clip(preds, 0.0, 1.0)
-            y_test_norm = np.clip(y_test_norm, 0.0, 1.0)
+            y_norm = np.clip(y_norm, 0.0, 1.0)
 
-            # Metriken (Loss muss auf Tensor-Format für mae_ssim_2d)
-            current_loss = mae_ssim_2d(tf.convert_to_tensor(y_test_norm), 
-                                       tf.convert_to_tensor(preds)).numpy()
-            
-            mae = np.mean(np.abs(preds - y_test_norm))
-            mse = np.mean(np.square(preds - y_test_norm))
-            psnr = tf.reduce_mean(tf.image.psnr(y_test_norm, preds, max_val=1.0)).numpy()
-            ssim = tf.reduce_mean(tf.image.ssim(tf.convert_to_tensor(y_test_norm), 
-                                               tf.convert_to_tensor(preds), max_val=1.0)).numpy()
+            # Metriken
+            y_t = tf.convert_to_tensor(y_norm); y_p = tf.convert_to_tensor(preds)
+            loss_v = mae_ssim_2d(y_t, y_p).numpy()
+            mae = np.mean(np.abs(preds - y_norm))
+            mse = np.mean(np.square(preds - y_norm))
+            ssim = tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0)).numpy()
 
-            res_str = (
-                f"MODEL: {model_path.name}\n"
-                f"DATA:  {data_path.name}\n"
-                f"LOSS:  {current_loss:.6f} (MAE_SSIM)\n"
-                f"MAE:   {mae:.6f} | MSE: {mse:.8f} | SSIM: {ssim:.6f} | PSNR: {psnr:.2f} dB\n"
-                f"{'-'*75}\n"
-            )
+            res_line = f"{model_name[:50]:<50} | {set_name:<25} | {loss_v:<10.6f} | {mae:<10.6f} | {mse:<12.8f} | {ssim:<10.6f}\n"
+            with open(RESULT_FILE, "a") as f_out: f_out.write(res_line)
             
-            with open(RESULT_FILE, "a") as f_out:
-                f_out.write(res_str)
-            
-            pbar.update(1)
-            del X_raw, y_raw, X_test, y_test, X_test_norm, y_test_norm, preds
-
-    pbar.close()
-    print(f"\nEvaluation fertig")
+            tf.keras.backend.clear_session()
 
 if __name__ == "__main__":
     main()
