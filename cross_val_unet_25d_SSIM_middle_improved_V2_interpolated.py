@@ -13,7 +13,6 @@ from tensorflow.keras import layers, models
 from sklearn.model_selection import KFold
 from tqdm import tqdm
 
-# Importiere deine Hilfsskripte
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
@@ -29,8 +28,8 @@ tf.config.experimental.enable_op_determinism()
 DEPTH = 5
 MAX_STRIDE = 24
 USE_POISSON_NOISE = True
-SERIES_LEN_INTERP = 241  # Für Training (Interpoliert)
-SERIES_LEN_ORIG   = 41   # Für Validation (Original)
+SERIES_LEN_INTERP = 241
+SERIES_LEN_ORIG   = 41
 BASEFILTERS       = 64
 BATCH_SIZE        = 8
 AUTOTUNE          = tf.data.AUTOTUNE
@@ -42,9 +41,8 @@ ORIG_DIR   = Path.home() / "data/original_data"
 
 suffix = "pois_on.hdf5" if USE_POISSON_NOISE else "pois_off.hdf5"
 TRAIN_FILE = INTERP_DIR / f"interpolated_training_data_{suffix}"
-VAL_FILE   = ORIG_DIR / "validation_data.hdf5"
 
-# --- Funktionen (Modell, Windows, Metriken) ---
+# --- FUNKTIONEN (Bleiben identisch) ---
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
@@ -60,9 +58,7 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     c3 = conv_block_2d(p2, base_filters * 4) ; p3 = layers.MaxPooling2D((2, 2))(c3)
     c4 = conv_block_2d(p3, base_filters * 8) ; p4 = layers.MaxPooling2D((2, 2))(c4)
     bn = conv_block_2d(p4, base_filters * 16)
-
     u4 = layers.Conv2DTranspose(base_filters * 8, (2, 2), strides=(2, 2), padding="same")(bn)
-
     u4 = layers.Concatenate()([u4, c4]) ; c5 = conv_block_2d(u4, base_filters * 8)
     u3 = layers.Conv2DTranspose(base_filters * 4, (2, 2), strides=(2, 2), padding="same")(c5)
     u3 = layers.Concatenate()([u3, c3]) ; c6 = conv_block_2d(u3, base_filters * 4)
@@ -77,31 +73,20 @@ def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
         low_ds = f["low_count/data"]
         high_ds = f["high_count/data"]
-        
-        # Bestimme die Anzahl der Bilder (N ist die letzte Achse im HDF5)
         num_imgs = low_ds.shape[-1]
         h, w = low_ds.shape[0], low_ds.shape[1]
-        
-        # Arrays vor-allokieren (spart RAM-Spitzen beim Concatenate)
         low_count = np.empty((num_imgs, h, w, 1), dtype=np.float32)
         high_count = np.empty((num_imgs, h, w, 1), dtype=np.float32)
-        
         print(f"Lade {h5_path}...")
         pbar = tqdm(total=num_imgs, unit="Bilder", desc="RAM Loading")
-        
-        # In Blöcken laden (z.B. 100 Bilder pro Schritt)
         chunk_size = 100
         for start in range(0, num_imgs, chunk_size):
             end = min(start + chunk_size, num_imgs)
-            # Im HDF5 ist es (H, W, N) -> wir brauchen (N, H, W, 1)
             low_count[start:end, ..., 0] = np.moveaxis(low_ds[..., start:end], -1, 0)
             high_count[start:end, ..., 0] = np.moveaxis(high_ds[..., start:end], -1, 0)
-            
-            # GB berechnen und im Balken anzeigen
             current_gb = (low_count.nbytes + high_count.nbytes) / (1024**3)
             pbar.set_postfix({"RAM": f"{current_gb:.2f} GB"})
             pbar.update(end - start)
-            
         pbar.close()
     return low_count, high_count
 
@@ -146,7 +131,7 @@ def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
         return (x / sum_x) * scale, (y / sum_y) * scale
     return map_volume
 
-# Metriken/Loss (identisch zu deinem Code)
+# Metriken (Clipped)
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -172,34 +157,13 @@ def ssim_center(y_true, y_pred):
 
 # --- DATEN LADEN & K-FOLD LOOP ---
 
-print(f"Lade Interpolierte Daten: {TRAIN_FILE}")
-X_interp_raw, y_interp_raw = load_split(TRAIN_FILE)
-print(f"Lade Original Daten: {VAL_FILE}")
-X_orig_raw, y_orig_raw = load_split(VAL_FILE)
-
-# Wir nehmen an, dass die Serien-Indizes in beiden Dateien korrespondieren
-num_series = len(X_orig_raw) // SERIES_LEN_ORIG
-series_indices = np.arange(num_series)
-
-BASE_NAME = "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated"
-RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
-TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
-all_fold_scores = []
-
-kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
-
-# --- DATEN LADEN & K-FOLD LOOP ---
-
-# 1. Lade beide Versionen der Trainingsdaten (WICHTIG!)
-print(f"Lade Trainingsdaten (Interpoliert für Training): {TRAIN_FILE}")
+print(f"Lade Trainingsdaten (Interpoliert): {TRAIN_FILE}")
 X_interp_raw, y_interp_raw = load_split(TRAIN_FILE)
 
-# Wir laden die originalen 41-Slice-Versionen der Trainingsdaten für eine saubere Validierung
 TRAIN_ORIG_FILE = Path.home() / "data/original_data/training_data.hdf5"
-print(f"Lade Trainingsdaten (Original für Validation): {TRAIN_ORIG_FILE}")
+print(f"Lade Trainingsdaten (Original für Val): {TRAIN_ORIG_FILE}")
 X_orig_raw, y_orig_raw = load_split(TRAIN_ORIG_FILE)
 
-# 2. Pool auf Basis der Trainingsserien erstellen (ca. 80 Serien)
 num_series = len(X_orig_raw) // SERIES_LEN_ORIG
 series_indices = np.arange(num_series)
 
@@ -218,7 +182,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     FOLD_DIR = TB_ROOT / FOLD_NAME
     FOLD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # A. Extrahiere Interpolierte Serien für Training (80% des Pools)
+    # 1. Daten extrahieren & Roh-Teile sofort löschen
     def get_data_interp(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -229,7 +193,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
 
     X_tr_fold, y_tr_fold = get_data_interp(train_idx)
 
-    # B. Extrahiere Originale Serien für Validation (20% des Pools)
     def get_data_orig(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -240,7 +203,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
 
     X_va_fold, y_va_fold = get_data_orig(val_idx)
 
-    # 3. Fensterbau (Training: Multi-Stride, Val: Stride 1)
+    # 2. Fensterbau mit Peak-Management
     print(f"Generiere Volumina für Fold {fold_id}...")
     X_tr_win_list, y_tr_win_list = [], []
     SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
@@ -251,17 +214,22 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
         if len(Xw) > 0:
             X_tr_win_list.append(Xw.astype(np.float32))
             y_tr_win_list.append(yw.astype(np.float32))
+    
+    # Wichtig: Fold-Rohdaten löschen bevor Concatenate startet
+    del X_tr_fold, y_tr_fold
 
     X_tr_win = np.concatenate(X_tr_win_list, axis=0)
+    del X_tr_win_list # Liste sofort löschen um RAM-Peak zu senken
     y_tr_win = np.concatenate(y_tr_win_list, axis=0)
-    
-    # Validierung immer auf den Originaldaten des Folds mit Stride 1
+    del y_tr_win_list
+
     X_va_win, y_va_win = make_strided_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH, stride=1)
+    del X_va_fold, y_va_fold
 
     X_tr_win, y_tr_win = shuffle_initial(X_tr_win, y_tr_win, SEED)
     X_va_win, y_va_win = shuffle_initial(X_va_win, y_va_win, SEED)
 
-    # 4. Modell & Datasets
+    # 3. Training
     model = unet_2d_stacked(input_shape=(192, 240, DEPTH))
     opt = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
     model.compile(optimizer=opt, loss=mae_ssim_2d, metrics=[mae_center, mse_center, psnr_center, ssim_center])
@@ -275,7 +243,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
               .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
               .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
-    # 5. Training
     fold_callbacks = [
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         make_epoch_ckpt_callback(FOLD_NAME),
@@ -285,11 +252,11 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
 
     history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
 
-    # 6. Cleanup
+    # 4. Final Cleanup
     all_fold_scores.append(min(history.history['val_mae_center']))
     finalize_run(model, history, FOLD_NAME, make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, opt, 5e-4, (192,240,DEPTH)))
     
     tf.keras.backend.clear_session()
-    del X_tr_win, y_tr_win, X_va_win, y_va_win, X_tr_fold, y_tr_fold, X_va_fold, y_va_fold
+    del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
 
 print(f"\nK-Fold abgeschlossen. Durchschnittlicher MAE: {np.mean(all_fold_scores):.6f}")
