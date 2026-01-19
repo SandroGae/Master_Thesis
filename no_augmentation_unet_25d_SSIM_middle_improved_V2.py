@@ -194,8 +194,12 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
 
     history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
 
+    # Final Cleanup
     all_fold_scores.append(min(history.history['val_mae_center']))
-    meta = make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, optimizer, 5e-4, (192,240,DEPTH), (10000,10000), (10000,10000))
+    # Erweitere den Aufruf um ein Dictionary für zusätzliche Infos
+    meta = make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, optimizer, 5e-4, (192,240,DEPTH))
+    meta["scaling_factor"] = 10000.0  # Manuelle Ergänzung
+    meta["augmentation"] = "none"      # Wichtige Info für die Arbeit
     finalize_run(model, history, FOLD_NAME, meta)
     
     tf.keras.backend.clear_session()
