@@ -236,8 +236,12 @@ SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
 
 print(f"Generiere Volumina für Strides: {SELECTED_STRIDES}...")
 
- # Logik für sinnvolle Step Werte um RAM zu reduzieren
- # Für 5 Volumen aktuell [Stride, Bilder pro 41er Serie] --> [1, 40], [2, 39], [4, 38], [6, 37], [12, 39], [24, 37]
+ # Stride 1: 40
+ # Stride 2: 39
+ # Stride 4: 38 
+ # Stride 6: 37
+ # Stride 12: 39
+ # Stride 24: 37  --> in total 35'440 Volumina
 for stride_size in SELECTED_STRIDES:
     if stride_size == 12:
         current_step = 5

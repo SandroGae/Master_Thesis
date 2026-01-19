@@ -14,7 +14,7 @@ HOME = Path.home()
 DATA_ROOT = HOME / "data"
 MODEL_DIR = DATA_ROOT / "checkpoints_unet_3d_simple"
 TEST_DATA_DIR = DATA_ROOT / "original_data"
-RESULT_FILE = HOME / "code/Master_Thesis/Plots/Unet/evaluation_results_comprehensive.txt"
+RESULT_FILE = HOME / "code/Master_Thesis/evaluation_results.txt"
 
 # Deine Liste der Modelle
 MODELS = [

@@ -1,4 +1,4 @@
-# cross_val_unet_25d_SSIM_middle_improved_V2_interpolated.py
+# cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_SEED43.py
 #!/usr/bin/env python3
 
 import os
@@ -16,12 +16,14 @@ from tqdm import tqdm
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
-# Reproduzierbarkeit
-SEED = 42
-os.environ['PYTHONHASHSEED'] = str(SEED)
-random.seed(SEED)
-np.random.seed(SEED)
-tf.random.set_seed(SEED)
+# --- REPRODUZIERBARKEIT ---
+DATA_SPLIT_SEED = 42  # Bleibt 42, damit Fold 2 dieselben Patienten enthält
+INIT_SEED = 43        # Neuer Seed
+
+os.environ['PYTHONHASHSEED'] = str(DATA_SPLIT_SEED)
+random.seed(DATA_SPLIT_SEED)
+np.random.seed(DATA_SPLIT_SEED)
+# Globaler TF Seed wird unten im Loop spezifisch für die Initialisierung gesetzt
 tf.config.experimental.enable_op_determinism()
 
 # Konfiguration
@@ -42,7 +44,7 @@ ORIG_DIR   = Path.home() / "data/original_data"
 suffix = "pois_on.hdf5" if USE_POISSON_NOISE else "pois_off.hdf5"
 TRAIN_FILE = INTERP_DIR / f"interpolated_training_data_{suffix}"
 
-# --- FUNKTIONEN (Bleiben identisch) ---
+# --- FUNKTIONEN ---
 
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
@@ -86,8 +88,6 @@ def load_split(h5_path):
             end = min(start + chunk_size, num_imgs)
             low_count[start:end, ..., 0] = np.moveaxis(low_ds[..., start:end], -1, 0)
             high_count[start:end, ..., 0] = np.moveaxis(high_ds[..., start:end], -1, 0)
-            current_gb = (low_count.nbytes + high_count.nbytes) / (1024**3)
-            pbar.set_postfix({"RAM": f"{current_gb:.2f} GB"})
             pbar.update(end - start)
         pbar.close()
     return low_count, high_count
@@ -97,7 +97,6 @@ def make_strided_windows(X, y, series_len, depth, stride, step=1):
     n_series = N // series_len
     span_needed = (depth - 1) * stride + 1
     n_vols_per_series = series_len - span_needed + 1
-    if n_vols_per_series <= 0: return np.empty((0, depth, H, W, C)), np.empty((0, depth, H, W, C))
     X_vols, y_vols = [], []
     for i in range(n_series):
         base = i * series_len
@@ -133,7 +132,6 @@ def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
         return (x / sum_x) * scale, (y / sum_y) * scale
     return map_volume
 
-# Metriken (Clipped)
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -157,79 +155,55 @@ def ssim_center(y_true, y_pred):
     y_t, y_p = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0))
 
-# --- DATEN LADEN & K-FOLD LOOP ---
-
-print(f"Lade Trainingsdaten (Interpoliert): {TRAIN_FILE}")
+# --- DATEN LADEN ---
 X_interp_raw, y_interp_raw = load_split(TRAIN_FILE)
-
 TRAIN_ORIG_FILE = Path.home() / "data/original_data/training_data.hdf5"
-print(f"Lade Trainingsdaten (Original für Val): {TRAIN_ORIG_FILE}")
 X_orig_raw, y_orig_raw = load_split(TRAIN_ORIG_FILE)
 
 num_series = len(X_orig_raw) // SERIES_LEN_ORIG
 series_indices = np.arange(num_series)
 
-BASE_NAME = "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated"
-RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
-TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
-all_fold_scores = []
+kf = KFold(n_splits=5, shuffle=True, random_state=DATA_SPLIT_SEED)
 
-kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
-
+# --- FOLD LOOP ---
 for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     fold_id = fold + 1
-    print(f"\n\n{'='*40}\nSTARTE FOLD {fold_id} / 5\n{'='*40}")
     
-    FOLD_NAME = f"{BASE_NAME}_fold{fold_id}_{RUN_ID}"
-    FOLD_DIR = TB_ROOT / FOLD_NAME
+    # GEZIELTES TRAINING NUR FÜR FOLD 2
+    if fold_id != 2:
+        continue
+        
+    print(f"\n{'='*60}\nRE-RUN FOLD {fold_id} | INIT-SEED: {INIT_SEED}\n{'='*60}")
+    
+    # Hier setzen wir den Initialisierungs-Seed für das Netzwerk
+    tf.random.set_seed(INIT_SEED)
+
+    BASE_NAME = "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_SEED43"
+    RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
+    FOLD_NAME = f"{BASE_NAME}_fold{fold_id}_SEED{INIT_SEED}_{RUN_ID}"
+    FOLD_DIR = Path.home() / "data" / "tblogs_unet_3d_simple" / FOLD_NAME
     FOLD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Daten extrahieren & Roh-Teile sofort löschen
-    def get_data_interp(indices):
-        X_l, y_l = [], []
-        for i in indices:
-            start = i * SERIES_LEN_INTERP
-            X_l.append(X_interp_raw[start : start + SERIES_LEN_INTERP])
-            y_l.append(y_interp_raw[start : start + SERIES_LEN_INTERP])
-        return np.concatenate(X_l), np.concatenate(y_l)
+    # 1. Daten extrahieren
+    X_tr_fold = np.concatenate([X_interp_raw[i*SERIES_LEN_INTERP : (i+1)*SERIES_LEN_INTERP] for i in train_idx])
+    y_tr_fold = np.concatenate([y_interp_raw[i*SERIES_LEN_INTERP : (i+1)*SERIES_LEN_INTERP] for i in train_idx])
+    X_va_fold = np.concatenate([X_orig_raw[i*SERIES_LEN_ORIG : (i+1)*SERIES_LEN_ORIG] for i in val_idx])
+    y_va_fold = np.concatenate([y_orig_raw[i*SERIES_LEN_ORIG : (i+1)*SERIES_LEN_ORIG] for i in val_idx])
 
-    X_tr_fold, y_tr_fold = get_data_interp(train_idx)
-
-    def get_data_orig(indices):
-        X_l, y_l = [], []
-        for i in indices:
-            start = i * SERIES_LEN_ORIG
-            X_l.append(X_orig_raw[start : start + SERIES_LEN_ORIG])
-            y_l.append(y_orig_raw[start : start + SERIES_LEN_ORIG])
-        return np.concatenate(X_l), np.concatenate(y_l)
-
-    X_va_fold, y_va_fold = get_data_orig(val_idx)
-
-    # 2. Fensterbau mit Peak-Management
-    print(f"Generiere Volumina für Fold {fold_id}...")
+    # 2. Fensterbau
     X_tr_win_list, y_tr_win_list = [], []
-    SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
-    
-    for s in SELECTED_STRIDES:
+    for s in [1, 2, 4, 6, 12, 24]:
         step = 5 if s == 12 else (4 if s == 24 else 6)
         Xw, yw = make_strided_windows(X_tr_fold, y_tr_fold, SERIES_LEN_INTERP, DEPTH, stride=s, step=step)
-        if len(Xw) > 0:
-            X_tr_win_list.append(Xw.astype(np.float32))
-            y_tr_win_list.append(yw.astype(np.float32))
+        X_tr_win_list.append(Xw.astype(np.float32))
+        y_tr_win_list.append(yw.astype(np.float32))
     
-    # Wichtig: Fold-Rohdaten löschen bevor Concatenate startet
-    del X_tr_fold, y_tr_fold
-
     X_tr_win = np.concatenate(X_tr_win_list, axis=0)
-    del X_tr_win_list # Liste sofort löschen um RAM-Peak zu senken
     y_tr_win = np.concatenate(y_tr_win_list, axis=0)
-    del y_tr_win_list
-
     X_va_win, y_va_win = make_strided_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH, stride=1)
-    del X_va_fold, y_va_fold
 
-    X_tr_win, y_tr_win = shuffle_initial(X_tr_win, y_tr_win, SEED)
-    X_va_win, y_va_win = shuffle_initial(X_va_win, y_va_win, SEED)
+    X_tr_win, y_tr_win = shuffle_initial(X_tr_win, y_tr_win, DATA_SPLIT_SEED)
+    X_va_win, y_va_win = shuffle_initial(X_va_win, y_va_win, DATA_SPLIT_SEED)
 
     # 3. Training
     model = unet_2d_stacked(input_shape=(192, 240, DEPTH))
@@ -237,7 +211,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     model.compile(optimizer=opt, loss=mae_ssim_2d, metrics=[mae_center, mse_center, psnr_center, ssim_center])
 
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr_win, y_tr_win))
-                .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
+                .shuffle(1000, seed=DATA_SPLIT_SEED, reshuffle_each_iteration=True)
                 .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=AUTOTUNE)
                 .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
@@ -245,20 +219,16 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
               .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=AUTOTUNE)
               .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
-    fold_callbacks = [
+    callbacks = [
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         make_epoch_ckpt_callback(FOLD_NAME),
         tf.keras.callbacks.CSVLogger(str(FOLD_DIR / f"{FOLD_NAME}.csv")),
         *tb_callbacks(FOLD_DIR)
     ]
 
-    history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
+    history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=callbacks, verbose=2)
 
-    # 4. Final Cleanup
-    all_fold_scores.append(min(history.history['val_mae_center']))
     finalize_run(model, history, FOLD_NAME, make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, opt, 5e-4, (192,240,DEPTH)))
-    
     tf.keras.backend.clear_session()
-    del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
 
-print(f"\nK-Fold abgeschlossen. Durchschnittlicher MAE: {np.mean(all_fold_scores):.6f}")
+print("\nFold 2 Re-Run abgeschlossen.")
