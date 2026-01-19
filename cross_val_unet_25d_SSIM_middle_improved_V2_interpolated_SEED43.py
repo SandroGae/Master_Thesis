@@ -18,7 +18,7 @@ from tb_utils import make_run_dir, tb_callbacks
 
 # --- REPRODUZIERBARKEIT ---
 DATA_SPLIT_SEED = 42  # Bleibt 42, damit Fold 2 dieselben Patienten enthält
-INIT_SEED = 43        # Neuer Seed
+INIT_SEED = 42        # Neuer Seed
 
 os.environ['PYTHONHASHSEED'] = str(DATA_SPLIT_SEED)
 random.seed(DATA_SPLIT_SEED)
@@ -132,6 +132,17 @@ def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
         return (x / sum_x) * scale, (y / sum_y) * scale
     return map_volume
 
+
+def lr_warmup_func(epoch, lr):
+    target_lr = 5e-4
+    warmup_epochs = 3
+    
+    if epoch < warmup_epochs:
+        # Berechnet die LR für die ersten 3 Epochen
+        new_lr = (epoch + 1) * (target_lr / warmup_epochs)
+        return new_lr
+    return lr
+
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -220,6 +231,9 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
               .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
     callbacks = [
+        # Nutzt die oben definierte Funktion
+        tf.keras.callbacks.LearningRateScheduler(lr_warmup_func, verbose=1),
+        
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         make_epoch_ckpt_callback(FOLD_NAME),
         tf.keras.callbacks.CSVLogger(str(FOLD_DIR / f"{FOLD_NAME}.csv")),
