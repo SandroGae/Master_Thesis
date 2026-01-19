@@ -8,6 +8,10 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import matplotlib
+matplotlib.use('Agg') # Deaktiviert die GUI-Anforderung für Headless-Server
+import matplotlib.pyplot as plt
+
 import tensorflow as tf
 from tensorflow.keras import layers, models
 from sklearn.model_selection import KFold
@@ -68,7 +72,12 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     u2 = layers.Concatenate()([u2, c2]) ; c7 = conv_block_2d(u2, base_filters * 2)
     u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1]) ; c8 = conv_block_2d(u1, base_filters)
-    out = layers.Conv2D(1, (1, 1), activation=output_activation, name="output")(c8)
+    x = layers.Conv2D(filters=2, kernel_size=(1, 1), activation="linear", name="output_raw")(c8) # Changed filters: 1 --> 2 / activation: sigmoid --> linear
+
+    mu = layers.Activation("sigmoid", name="mu_output")(x[..., 0:1]) # Sigmoid für rekonstruktion
+    sigma = layers.Lambda(lambda t: tf.math.softplus(t) + 1e-6, name="sigma_output")(x[..., 1:2]) # Linear für Unsicherheit
+    out = layers.Concatenate()([mu, sigma])
+
     return models.Model(inputs, out, name="unet_25d_stacked")
 
 def load_split(h5_path):
@@ -133,29 +142,69 @@ def normalize_and_scale_3d_per_slice(scale: float):
         return x * scale_t, y * scale_t
     return map_volume
 
-# Metriken (Clipped)
-def mae_ssim_2d(y_true, y_pred, alpha=0.6):
-    y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
-    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    ssim = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-    return (1.0 - alpha) * mae + alpha * (1.0 - ssim)
+
+def combined_probabilistic_loss(y_true, y_pred, alpha=0.6):
+    # y_pred kommt bereits fertig aktiviert aus dem Modell:
+    # mu ist [0, 1] via Sigmoid, sigma ist >0 via Softplus
+    mu = y_pred[..., 0:1]
+    sigma = y_pred[..., 1:2] 
+    
+    # 2. Der NLL-Teil (Negative Log-Likelihood der Laplace-Verteilung)
+    # nll_loss berechnet die aleatorische Unsicherheit
+    nll_loss = tf.math.log(2.0 * sigma) + (tf.abs(y_true - mu) / sigma)
+    
+    # 3. Der SSIM-Teil (Strukturerhalt für mu)
+    ssim_val = tf.image.ssim(y_true, mu, max_val=1.0)
+    ssim_loss = 1.0 - tf.reduce_mean(ssim_val)
+    
+    return (1.0 - alpha) * tf.reduce_mean(nll_loss) + alpha * ssim_loss
+
 
 def mae_center(y_true, y_pred):
-    y_t, y_p = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
+    y_p = tf.clip_by_value(y_pred[..., 0:1], 0.0, 1.0)
+    y_t = tf.clip_by_value(y_true, 0.0, 1.0)
     return tf.reduce_mean(tf.abs(y_t - y_p))
 
 def mse_center(y_true, y_pred):
-    y_t, y_p = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
+    y_p = tf.clip_by_value(y_pred[..., 0:1], 0.0, 1.0)
+    y_t = tf.clip_by_value(y_true, 0.0, 1.0)
     return tf.reduce_mean(tf.math.squared_difference(y_t, y_p))
 
 def psnr_center(y_true, y_pred):
-    y_t, y_p = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
-    mse = tf.reduce_mean(tf.math.squared_difference(y_t, y_p), axis=(1,2,3))
+    y_p = tf.clip_by_value(y_pred[..., 0:1], 0.0, 1.0)
+    y_t = tf.clip_by_value(y_true, 0.0, 1.0)
+    mse = tf.reduce_mean(tf.math.squared_difference(y_t, y_p), axis=(1, 2, 3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
 def ssim_center(y_true, y_pred):
-    y_t, y_p = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
+    y_p = tf.clip_by_value(y_pred[..., 0:1], 0.0, 1.0)
+    y_t = tf.clip_by_value(y_true, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0))
+
+
+# Heatmap
+def save_uncertainty_analysis(model, test_data, fold_id, folder):
+    # Vorhersage für ein Testbeispiel
+    prediction = model.predict(test_data[:1])
+    mu = prediction[0, ..., 0]
+    sigma = prediction[0, ..., 1]
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    axes[0].imshow(test_data[0, ..., 2], cmap='gray')
+    axes[0].set_title("Input (Low-Count)")
+    
+    axes[1].imshow(mu, cmap='gray')
+    axes[1].set_title(f"Rekonstruktion mu (Fold {fold_id})")
+    
+    # 'inferno' visualisiert hohe Unsicherheit in hellen Farben
+    im = axes[2].imshow(sigma, cmap='inferno')
+    axes[2].set_title("Unsicherheit sigma (Aleatorisch)")
+    fig.colorbar(im, ax=axes[2])
+    
+    plt.tight_layout()
+    plt.savefig(folder / f"fold_{fold_id}_uncertainty_check.png")
+    plt.close(fig)
+
 
 # --- DATEN LADEN & K-FOLD LOOP ---
 
@@ -169,7 +218,7 @@ X_orig_raw, y_orig_raw = load_split(TRAIN_ORIG_FILE)
 num_series = len(X_orig_raw) // SERIES_LEN_ORIG
 series_indices = np.arange(num_series)
 
-BASE_NAME = "no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated"
+BASE_NAME = "confidence_no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated"
 RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
 TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
 all_fold_scores = []
@@ -234,7 +283,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     # 3. Training
     model = unet_2d_stacked(input_shape=(192, 240, DEPTH))
     optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-    model.compile(optimizer=optimizer, loss=mae_ssim_2d, metrics=[mae_center, mse_center, psnr_center, ssim_center])
+    model.compile(optimizer=optimizer, loss=combined_probabilistic_loss, metrics=[mae_center, mse_center, psnr_center, ssim_center])
 
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr_win, y_tr_win))
                 .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
@@ -261,7 +310,11 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     meta["scaling_factor"] = 10000.0  # Manuelle Ergänzung
     meta["augmentation"] = "none"      # Wichtige Info für die Arbeit
     finalize_run(model, history, FOLD_NAME, meta)
-    
+
+    for sample_x, sample_y in val_ds.take(1):
+        save_uncertainty_analysis(model, sample_x, fold_id, FOLD_DIR)
+
+    # 4. Final Cleanup
     tf.keras.backend.clear_session()
     del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
 

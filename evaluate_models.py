@@ -18,14 +18,35 @@ RESULT_FILE = HOME / "code/Master_Thesis/evaluation_results.txt"
 
 # Deine Liste der Modelle
 MODELS = [
+    # Standard Cross-Validation
     "cross_val_unet_25d_SSIM_middle_improved_V2_fold1_20260115-112330_loss0.0527_val0.0598.keras",
     "cross_val_unet_25d_SSIM_middle_improved_V2_fold2_20260115-112330_loss0.0527_val0.0549.keras",
     "cross_val_unet_25d_SSIM_middle_improved_V2_fold3_20260115-112330_loss0.0524_val0.0578.keras",
     "cross_val_unet_25d_SSIM_middle_improved_V2_fold4_20260115-112330_loss0.0539_val0.0530.keras",
     "cross_val_unet_25d_SSIM_middle_improved_V2_fold5_20260115-112330_loss0.0530_val0.0574.keras",
+
+    # Random Seed Tests
     "random_seed_unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20260115-163356_loss0.0521_val0.0585.keras",
+    "random_seed_unet_25d_SSIM_middle_improved_V2__seed43__bf64__D5__lossMAE_SSIM__20260115-173320_loss0.0516_val0.0587.keras",
+    "random_seed_unet_25d_SSIM_middle_improved_V2__seed44__bf64__D5__lossMAE_SSIM__20260115-183246_loss0.0521_val0.0586.keras",
+    "random_seed_unet_25d_SSIM_middle_improved_V2__seed45__bf64__D5__lossMAE_SSIM__20260115-193254_loss0.0517_val0.0584.keras",
+    "random_seed_unet_25d_SSIM_middle_improved_V2__seed46__bf64__D5__lossMAE_SSIM__20260115-203232_loss0.0519_val0.0587.keras",
+
+    # No Augmentation Tests
     "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold1_20260116-130113_loss0.0543_val0.0582.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold1_20260116-142232__best.keras"
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold2_20260116-130113_loss0.0535_val0.0560.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold3_20260116-130113_loss0.0540_val0.0582.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold4_20260116-130113_loss0.0535_val0.0532.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold5_20260116-130113_loss0.0543_val0.0561.keras",
+
+    # Interpolated Data Tests (Folds 1-5)
+    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold1_20260116-142232_loss0.0684_val0.0573.keras",
+    "fold2_only_unet_25d_SSIM_middle_improved_V2_interpolated_fold2_SEED42_20260119-105727_loss0.0703_val0.0533.keras"
+    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold3_20260116-142232_loss0.0684_val0.0561.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold4_20260116-142232_loss0.0679_val0.0582.keras",
+    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold5_20260116-142232_loss0.0702_val0.0558.keras",
+
+    # No augmentation + Interpolated (Folds 1-5)
 ]
 
 # Deine 3 Test-Datensets
@@ -53,7 +74,6 @@ def load_test_data(h5_path):
 def prepare_volumes_prealloc(X, y, depth):
     """Optimiert mit korrekter Achsen-Transformation für 2.5D."""
     n_vols = len(X) - depth + 1
-    # Ziel-Form: (Anzahl_Fenster, Höhe, Breite, Tiefe)
     X_res = np.empty((n_vols, 192, 240, depth), dtype=np.float32)
     y_res = np.empty((n_vols, 192, 240, 1), dtype=np.float32)
     mid = depth // 2
@@ -67,25 +87,41 @@ def prepare_volumes_prealloc(X, y, depth):
     return X_res, y_res
 
 def main():
-    with open(RESULT_FILE, "w") as f:
+    # Header schreiben
+    with open(RESULT_FILE, "w", encoding="utf-8") as f:
         f.write(f"EVALUATION REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write("="*145 + "\n")
-        f.write(f"{'Model Name':<50} | {'Dataset':<25} | {'Loss':<10} | {'MAE':<10} | {'MSE':<12} | {'SSIM':<10}\n")
-        f.write("-" * 145 + "\n")
+        f.write("="*160 + "\n")
+        f.write(f"{'Dataset':<30} | {'Model Name':<60} | {'Loss':<12} | {'MAE':<12} | {'MSE':<12} | {'SSIM':<10}\n")
+        f.write("-" * 160 + "\n")
 
-    for model_name in MODELS:
-        model_path = MODEL_DIR / model_name
-        if not model_path.exists(): continue
-        
-        model = tf.keras.models.load_model(model_path, compile=False)
-        depth = model.input_shape[3]
-
-        for set_name in TEST_SETS:
-            data_path = TEST_DATA_DIR / set_name
-            if not data_path.exists(): continue
+    # Äußere Schleife: Datensets
+    for set_name in TEST_SETS:
+        data_path = TEST_DATA_DIR / set_name
+        if not data_path.exists():
+            print(f"Skipping {set_name}: File not found.")
+            continue
             
-            print(f"Eval: {model_name[:20]}... on {set_name}")
-            X_raw, y_raw = load_test_data(data_path)
+        print(f"\nProcessing Dataset: {set_name}")
+        X_raw, y_raw = load_test_data(data_path)
+        
+        # Speicher für die 5 Cross-Val Folds (für Average-Berechnung)
+        fold_metrics = {
+            "loss": [],
+            "mae": [],
+            "mse": [],
+            "ssim": []
+        }
+
+        # Innere Schleife: Modelle
+        for model_name in MODELS:
+            model_path = MODEL_DIR / model_name
+            if not model_path.exists():
+                continue
+            
+            # Modell laden und Vorbereitung
+            model = tf.keras.models.load_model(model_path, compile=False)
+            depth = model.input_shape[3]
+            
             X_test, y_test = prepare_volumes_prealloc(X_raw, y_raw, depth)
 
             # Normalisierung & Clipping
@@ -96,17 +132,57 @@ def main():
             preds = np.clip(preds, 0.0, 1.0)
             y_norm = np.clip(y_norm, 0.0, 1.0)
 
-            # Metriken
-            y_t = tf.convert_to_tensor(y_norm); y_p = tf.convert_to_tensor(preds)
-            loss_v = mae_ssim_2d(y_t, y_p).numpy()
-            mae = np.mean(np.abs(preds - y_norm))
-            mse = np.mean(np.square(preds - y_norm))
-            ssim = tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0)).numpy()
-
-            res_line = f"{model_name[:50]:<50} | {set_name:<25} | {loss_v:<10.6f} | {mae:<10.6f} | {mse:<12.8f} | {ssim:<10.6f}\n"
-            with open(RESULT_FILE, "a") as f_out: f_out.write(res_line)
+            # Metriken berechnen
+            y_t = tf.convert_to_tensor(y_norm)
+            y_p = tf.convert_to_tensor(preds)
             
+            loss_v = float(mae_ssim_2d(y_t, y_p).numpy())
+            mae_v = float(np.mean(np.abs(preds - y_norm)))
+            mse_v = float(np.mean(np.square(preds - y_norm)))
+            ssim_v = float(tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0)).numpy())
+
+            # Ist es eines der 5 Folds? (Check auf 'cross_val' und 'fold' aber nicht 'interpolated')
+            is_cv_fold = "cross_val" in model_name and "fold" in model_name and "interpolated" not in model_name
+            
+            if is_cv_fold:
+                fold_metrics["loss"].append(loss_v)
+                fold_metrics["mae"].append(mae_v)
+                fold_metrics["mse"].append(mse_v)
+                fold_metrics["ssim"].append(ssim_v)
+
+            # Zeile in Datei schreiben
+            res_line = f"{set_name:<30} | {model_name[:60]:<60} | {loss_v:<12.6f} | {mae_v:<12.6f} | {mse_v:<12.8f} | {ssim_v:<10.6f}\n"
+            with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
+                f_out.write(res_line)
+
+            # Wenn das 5. Fold erreicht ist, Durchschnitt berechnen und schreiben
+            if is_cv_fold and "fold5" in model_name:
+                avg_loss = np.mean(fold_metrics["loss"])
+                std_loss = np.std(fold_metrics["loss"])
+                
+                avg_mae = np.mean(fold_metrics["mae"])
+                std_mae = np.std(fold_metrics["mae"])
+                
+                avg_mse = np.mean(fold_metrics["mse"])
+                std_mse = np.std(fold_metrics["mse"])
+                
+                avg_ssim = np.mean(fold_metrics["ssim"])
+                std_ssim = np.std(fold_metrics["ssim"])
+
+                stat_line = (
+                    f"{'-'*30:30} | {'AVERAGE (Fold 1-5)':<60} | "
+                    f"{avg_loss:.4f}±{std_loss:.4f} | {avg_mae:.4f}±{std_mae:.4f} | "
+                    f"{avg_mse:.6f}±{std_mse:.6f} | {avg_ssim:.4f}±{std_ssim:.4f}\n"
+                )
+                with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
+                    f_out.write(stat_line)
+                    f_out.write("-" * 160 + "\n")
+
             tf.keras.backend.clear_session()
+        
+        # Trenner nach jedem Datenset-Block
+        with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
+            f_out.write("="*160 + "\n")
 
 if __name__ == "__main__":
     main()

@@ -189,7 +189,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     # Hier setzen wir den Initialisierungs-Seed für das Netzwerk
     tf.random.set_seed(INIT_SEED)
 
-    BASE_NAME = "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_SEED43"
+    BASE_NAME = "fold2_only_unet_25d_SSIM_middle_improved_V2_interpolated"
     RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
     FOLD_NAME = f"{BASE_NAME}_fold{fold_id}_SEED{INIT_SEED}_{RUN_ID}"
     FOLD_DIR = Path.home() / "data" / "tblogs_unet_3d_simple" / FOLD_NAME
