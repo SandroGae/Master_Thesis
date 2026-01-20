@@ -18,19 +18,19 @@ RESULT_FILE = HOME / "code/Master_Thesis/evaluation_results_V2.txt"
 
 # Deine Liste der Modelle
 MODELS = [
-    # Standard Cross-Validation
-    "cross_val_unet_25d_improved_V2_fold1_20260115-112330_loss0.0527_val0.0598.keras",
-    "cross_val_unet_25d_improved_V2_fold2_20260115-112330_loss0.0527_val0.0549.keras",
-    "cross_val_unet_25d_improved_V2_fold3_20260115-112330_loss0.0524_val0.0578.keras",
-    "cross_val_unet_25d_improved_V2_fold4_20260115-112330_loss0.0539_val0.0530.keras",
-    "cross_val_unet_25d_improved_V2_fold5_20260115-112330_loss0.0530_val0.0574.keras",
-
     # Random Seed Tests
     "random_seed_unet_25d_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20260115-163356_loss0.0521_val0.0585.keras",
     "random_seed_unet_25d_improved_V2__seed43__bf64__D5__lossMAE_SSIM__20260115-173320_loss0.0516_val0.0587.keras",
     "random_seed_unet_25d_improved_V2__seed44__bf64__D5__lossMAE_SSIM__20260115-183246_loss0.0521_val0.0586.keras",
     "random_seed_unet_25d_improved_V2__seed45__bf64__D5__lossMAE_SSIM__20260115-193254_loss0.0517_val0.0584.keras",
     "random_seed_unet_25d_improved_V2__seed46__bf64__D5__lossMAE_SSIM__20260115-203232_loss0.0519_val0.0587.keras",
+
+    # Standard Cross-Validation
+    "cross_val_unet_25d_improved_V2_fold1_20260115-112330_loss0.0527_val0.0598.keras",
+    "cross_val_unet_25d_improved_V2_fold2_20260115-112330_loss0.0527_val0.0549.keras",
+    "cross_val_unet_25d_improved_V2_fold3_20260115-112330_loss0.0524_val0.0578.keras",
+    "cross_val_unet_25d_improved_V2_fold4_20260115-112330_loss0.0539_val0.0530.keras",
+    "cross_val_unet_25d_improved_V2_fold5_20260115-112330_loss0.0530_val0.0574.keras",
 
     # No Augmentation Tests
     "no_augmentation_unet_25d_improved_V2_fold1_20260116-130113_loss0.0543_val0.0582.keras",

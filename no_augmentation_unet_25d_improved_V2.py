@@ -31,7 +31,6 @@ BATCH_SIZE = 8
 AUTOTUNE = tf.data.AUTOTUNE
 
 # --- Funktionen ---
-
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
     for _ in range(4):
