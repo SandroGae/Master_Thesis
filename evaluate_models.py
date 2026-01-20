@@ -104,73 +104,68 @@ def main():
         print(f"\nProcessing Dataset: {set_name}")
         X_raw, y_raw = load_test_data(data_path)
         
-        # Speicher für die 5 Cross-Val Folds (für Average-Berechnung)
-        fold_metrics = {
-            "loss": [],
-            "mae": [],
-            "mse": [],
-            "ssim": []
-        }
-
-        # Innere Schleife: Modelle
-        for model_name in MODELS:
-            model_path = MODEL_DIR / model_name
-            if not model_path.exists():
-                continue
+        # Wir gehen die Liste MODELS in 5er-Schritten durch
+        for i in range(0, len(MODELS), 5):
+            model_group = MODELS[i : i + 5]
             
-            # Modell laden und Vorbereitung
-            model = tf.keras.models.load_model(model_path, compile=False)
-            depth = model.input_shape[3]
-            
-            X_test, y_test = prepare_volumes_prealloc(X_raw, y_raw, depth)
+            # Speicher für die Metriken dieser 5er-Gruppe
+            group_metrics = {
+                "loss": [], "mae": [], "mse": [], "ssim": []
+            }
 
-            # Normalisierung & Clipping
-            X_norm = (X_test / (np.sum(X_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
-            y_norm = (y_test / (np.sum(y_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
-
-            preds = model.predict(X_norm, batch_size=32, verbose=0)
-            preds = np.clip(preds, 0.0, 1.0)
-            y_norm = np.clip(y_norm, 0.0, 1.0)
-
-            # Metriken berechnen
-            y_t = tf.convert_to_tensor(y_norm)
-            y_p = tf.convert_to_tensor(preds)
-            
-            loss_v = float(mae_ssim_2d(y_t, y_p).numpy())
-            mae_v = float(np.mean(np.abs(preds - y_norm)))
-            mse_v = float(np.mean(np.square(preds - y_norm)))
-            ssim_v = float(tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0)).numpy())
-
-            # Ist es eines der 5 Folds? (Check auf 'cross_val' und 'fold' aber nicht 'interpolated')
-            is_cv_fold = "cross_val" in model_name and "fold" in model_name and "interpolated" not in model_name
-            
-            if is_cv_fold:
-                fold_metrics["loss"].append(loss_v)
-                fold_metrics["mae"].append(mae_v)
-                fold_metrics["mse"].append(mse_v)
-                fold_metrics["ssim"].append(ssim_v)
-
-            # Zeile in Datei schreiben
-            res_line = f"{set_name:<30} | {model_name[:60]:<60} | {loss_v:<12.6f} | {mae_v:<12.6f} | {mse_v:<12.8f} | {ssim_v:<10.6f}\n"
-            with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
-                f_out.write(res_line)
-
-            # Wenn das 5. Fold erreicht ist, Durchschnitt berechnen und schreiben
-            if is_cv_fold and "fold5" in model_name:
-                avg_loss = np.mean(fold_metrics["loss"])
-                std_loss = np.std(fold_metrics["loss"])
+            # Innere Schleife: Die 5 Modelle der aktuellen Gruppe
+            for model_name in model_group:
+                model_path = MODEL_DIR / model_name
+                if not model_path.exists():
+                    print(f"Warning: Model {model_name} not found.")
+                    continue
                 
-                avg_mae = np.mean(fold_metrics["mae"])
-                std_mae = np.std(fold_metrics["mae"])
+                # Modell laden
+                model = tf.keras.models.load_model(model_path, compile=False)
+                depth = model.input_shape[3]
                 
-                avg_mse = np.mean(fold_metrics["mse"])
-                std_mse = np.std(fold_metrics["mse"])
+                # Daten vorbereiten & evaluieren
+                X_test, y_test = prepare_volumes_prealloc(X_raw, y_raw, depth)
                 
-                avg_ssim = np.mean(fold_metrics["ssim"])
-                std_ssim = np.std(fold_metrics["ssim"])
+                # Normalisierung
+                X_norm = (X_test / (np.sum(X_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
+                y_norm = (y_test / (np.sum(y_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
+
+                preds = model.predict(X_norm, batch_size=32, verbose=0)
+                preds = np.clip(preds, 0.0, 1.0)
+                y_norm = np.clip(y_norm, 0.0, 1.0)
+
+                # Metriken berechnen
+                y_t = tf.convert_to_tensor(y_norm)
+                y_p = tf.convert_to_tensor(preds)
+                
+                loss_v = float(mae_ssim_2d(y_t, y_p).numpy())
+                mae_v = float(np.mean(np.abs(preds - y_norm)))
+                mse_v = float(np.mean(np.square(preds - y_norm)))
+                ssim_v = float(tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0)).numpy())
+
+                # In Gruppen-Metriken speichern
+                group_metrics["loss"].append(loss_v)
+                group_metrics["mae"].append(mae_v)
+                group_metrics["mse"].append(mse_v)
+                group_metrics["ssim"].append(ssim_v)
+
+                # Einzel-Ergebnis schreiben
+                res_line = f"{set_name:<30} | {model_name[:60]:<60} | {loss_v:<12.6f} | {mae_v:<12.6f} | {mse_v:<12.8f} | {ssim_v:<10.6f}\n"
+                with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
+                    f_out.write(res_line)
+
+                tf.keras.backend.clear_session()
+
+            # Nachdem die 5 Modelle durch sind: Durchschnitt für die Gruppe berechnen
+            if group_metrics["loss"]: # Nur berechnen, wenn die Gruppe nicht leer war
+                avg_loss, std_loss = np.mean(group_metrics["loss"]), np.std(group_metrics["loss"])
+                avg_mae,  std_mae  = np.mean(group_metrics["mae"]),  np.std(group_metrics["mae"])
+                avg_mse,  std_mse  = np.mean(group_metrics["mse"]),  np.std(group_metrics["mse"])
+                avg_ssim, std_ssim = np.mean(group_metrics["ssim"]), np.std(group_metrics["ssim"])
 
                 stat_line = (
-                    f"{'-'*30:30} | {'AVERAGE (Fold 1-5)':<60} | "
+                    f"{'-'*30:30} | {'AVERAGE OF GROUP':<60} | "
                     f"{avg_loss:.4f}±{std_loss:.4f} | {avg_mae:.4f}±{std_mae:.4f} | "
                     f"{avg_mse:.6f}±{std_mse:.6f} | {avg_ssim:.4f}±{std_ssim:.4f}\n"
                 )
@@ -178,11 +173,11 @@ def main():
                     f_out.write(stat_line)
                     f_out.write("-" * 160 + "\n")
 
-            tf.keras.backend.clear_session()
-        
         # Trenner nach jedem Datenset-Block
         with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
             f_out.write("="*160 + "\n")
+
+    print("Evaluation FINITO")
 
 if __name__ == "__main__":
     main()
