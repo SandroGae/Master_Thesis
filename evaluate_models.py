@@ -47,6 +47,11 @@ MODELS = [
     "cross_val_unet_25d_improved_V2_interpolated_fold5_20260116-142232_loss0.0702_val0.0558.keras",
 
     # No augmentation + Interpolated (Folds 1-5)
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated_fold1_20260119-104144_loss0.0703_val0.0574.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated_fold2_20260119-104144_loss0.0704_val0.0533.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated_fold3_20260119-104144_loss0.0717_val0.0566.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated_fold4_20260119-104144_loss0.0687_val0.0589.keras",
+    "no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated_fold5_20260119-104144_loss0.0716_val0.0546.keras",
 ]
 
 # Deine 3 Test-Datensets
