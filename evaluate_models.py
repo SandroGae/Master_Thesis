@@ -9,7 +9,7 @@ from tqdm import tqdm
 # GPU Optimierung
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
-# --- PFADE ---
+# PFADE
 HOME = Path.home()
 DATA_ROOT = HOME / "data"
 MODEL_DIR = DATA_ROOT / "checkpoints_unet_3d_simple"
@@ -92,51 +92,39 @@ def prepare_volumes_prealloc(X, y, depth):
     return X_res, y_res
 
 def main():
-    # Header schreiben
+    # Header schreiben - Jetzt mit PSNR Spalte
     with open(RESULT_FILE, "w", encoding="utf-8") as f:
         f.write(f"EVALUATION REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write("="*160 + "\n")
-        f.write(f"{'Dataset':<30} | {'Model Name':<60} | {'Loss':<12} | {'MAE':<12} | {'MSE':<12} | {'SSIM':<10}\n")
-        f.write("-" * 160 + "\n")
+        f.write("="*185 + "\n")
+        f.write(f"{'Dataset':<30} | {'Model Name':<60} | {'Loss':<12} | {'MAE':<12} | {'MSE':<12} | {'SSIM':<10} | {'PSNR':<10}\n")
+        f.write("-" * 185 + "\n")
 
-    # Äußere Schleife: Datensets
     for set_name in TEST_SETS:
         data_path = TEST_DATA_DIR / set_name
-        if not data_path.exists():
-            print(f"Skipping {set_name}: File not found.")
-            continue
+        if not data_path.exists(): continue
             
         print(f"\nProcessing Dataset: {set_name}")
         X_raw, y_raw = load_test_data(data_path)
         
-        # Wir gehen die Liste MODELS in 5er-Schritten durch
         for i in range(0, len(MODELS), 5):
             model_group = MODELS[i : i + 5]
-            
-            # Speicher für die Metriken dieser 5er-Gruppe
-            group_metrics = {
-                "loss": [], "mae": [], "mse": [], "ssim": []
-            }
+            group_metrics = {"loss": [], "mae": [], "mse": [], "ssim": [], "psnr": []}
 
-            # Innere Schleife: Die 5 Modelle der aktuellen Gruppe
             for model_name in model_group:
                 model_path = MODEL_DIR / model_name
-                if not model_path.exists():
-                    print(f"Warning: Model {model_name} not found.")
-                    continue
+                if not model_path.exists(): continue
                 
-                # Modell laden
                 model = tf.keras.models.load_model(model_path, compile=False)
                 depth = model.input_shape[3]
-                
-                # Daten vorbereiten & evaluieren
                 X_test, y_test = prepare_volumes_prealloc(X_raw, y_raw, depth)
                 
                 # Normalisierung
-                X_norm = (X_test / (np.sum(X_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
-                y_norm = (y_test / (np.sum(y_test, axis=(1,2,3), keepdims=True) + 1e-12)) * 10000.0
+                X_norm = (X_test / (np.sum(X_test, axis=(1, 2), keepdims=True) + 1e-12)) * 10000.0
+                y_norm = (y_test / (np.sum(y_test, axis=(1, 2), keepdims=True) + 1e-12)) * 10000.0
 
                 preds = model.predict(X_norm, batch_size=32, verbose=0)
+                
+                # Clipping auf [0, 1] für alle Metriken
                 preds = np.clip(preds, 0.0, 1.0)
                 y_norm = np.clip(y_norm, 0.0, 1.0)
 
@@ -145,42 +133,45 @@ def main():
                 y_p = tf.convert_to_tensor(preds)
                 
                 loss_v = float(mae_ssim_2d(y_t, y_p).numpy())
-                mae_v = float(np.mean(np.abs(preds - y_norm)))
-                mse_v = float(np.mean(np.square(preds - y_norm)))
+                mae_v  = float(np.mean(np.abs(preds - y_norm)))
+                mse_v  = float(np.mean(np.square(preds - y_norm)))
                 ssim_v = float(tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0)).numpy())
+                
+                # PSNR Berechnung (analog zum Trainings-Skript)
+                psnr_v = 10.0 * np.log10(1.0 / (mse_v + 1e-12))
 
-                # In Gruppen-Metriken speichern
+                # Speichern
                 group_metrics["loss"].append(loss_v)
                 group_metrics["mae"].append(mae_v)
                 group_metrics["mse"].append(mse_v)
                 group_metrics["ssim"].append(ssim_v)
+                group_metrics["psnr"].append(psnr_v)
 
-                # Einzel-Ergebnis schreiben
-                res_line = f"{set_name:<30} | {model_name[:60]:<60} | {loss_v:<12.6f} | {mae_v:<12.6f} | {mse_v:<12.8f} | {ssim_v:<10.6f}\n"
+                # Zeile schreiben
+                res_line = f"{set_name:<30} | {model_name[:60]:<60} | {loss_v:<12.6f} | {mae_v:<12.6f} | {mse_v:<12.8f} | {ssim_v:<10.6f} | {psnr_v:<10.4f}\n"
                 with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
                     f_out.write(res_line)
 
                 tf.keras.backend.clear_session()
 
-            # Nachdem die 5 Modelle durch sind: Durchschnitt für die Gruppe berechnen
-            if group_metrics["loss"]: # Nur berechnen, wenn die Gruppe nicht leer war
-                avg_loss, std_loss = np.mean(group_metrics["loss"]), np.std(group_metrics["loss"])
-                avg_mae,  std_mae  = np.mean(group_metrics["mae"]),  np.std(group_metrics["mae"])
-                avg_mse,  std_mse  = np.mean(group_metrics["mse"]),  np.std(group_metrics["mse"])
-                avg_ssim, std_ssim = np.mean(group_metrics["ssim"]), np.std(group_metrics["ssim"])
-
+            # Durchschnitt der Gruppe
+            if group_metrics["loss"]:
+                metrics_summary = {k: (np.mean(v), np.std(v)) for k, v in group_metrics.items()}
+                
                 stat_line = (
                     f"{'-'*30:30} | {'AVERAGE OF GROUP':<60} | "
-                    f"{avg_loss:.4f}±{std_loss:.4f} | {avg_mae:.4f}±{std_mae:.4f} | "
-                    f"{avg_mse:.6f}±{std_mse:.6f} | {avg_ssim:.4f}±{std_ssim:.4f}\n"
+                    f"{metrics_summary['loss'][0]:.4f}±{metrics_summary['loss'][1]:.4f} | "
+                    f"{metrics_summary['mae'][0]:.4f}±{metrics_summary['mae'][1]:.4f} | "
+                    f"{metrics_summary['mse'][0]:.6f}±{metrics_summary['mse'][1]:.6f} | "
+                    f"{metrics_summary['ssim'][0]:.4f}±{metrics_summary['ssim'][1]:.4f} | "
+                    f"{metrics_summary['psnr'][0]:.2f}±{metrics_summary['psnr'][1]:.2f}\n"
                 )
                 with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
                     f_out.write(stat_line)
-                    f_out.write("-" * 160 + "\n")
+                    f_out.write("-" * 185 + "\n")
 
-        # Trenner nach jedem Datenset-Block
         with open(RESULT_FILE, "a", encoding="utf-8") as f_out:
-            f_out.write("="*160 + "\n")
+            f_out.write("="*185 + "\n")
 
     print("Evaluation FINITO")
 
