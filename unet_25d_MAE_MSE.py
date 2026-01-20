@@ -158,6 +158,13 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
     return map_volume
 
 
+def lr_warmup_scheduler(epoch, lr):
+    warmup_epochs = 3
+    base_lr = 5e-4
+    if epoch < warmup_epochs:
+        # Linearer Anstieg: Epoche 0 -> 1/3, Epoche 1 -> 2/3, Epoche 2 -> 3/3
+        return base_lr * (epoch + 1) / warmup_epochs
+    return lr
 
 # Loss
 def get_mae_mse_loss(alpha_val):
@@ -247,6 +254,7 @@ for alpha_val in ALPHA_LIST:
     optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
     
     current_callbacks = [
+        tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         make_epoch_ckpt_callback(RUN_NAME),
         tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"log_{RUN_NAME}.csv")),
