@@ -19,32 +19,32 @@ RESULT_FILE = HOME / "code/Master_Thesis/evaluation_results.txt"
 # Deine Liste der Modelle
 MODELS = [
     # Standard Cross-Validation
-    "cross_val_unet_25d_SSIM_middle_improved_V2_fold1_20260115-112330_loss0.0527_val0.0598.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_fold2_20260115-112330_loss0.0527_val0.0549.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_fold3_20260115-112330_loss0.0524_val0.0578.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_fold4_20260115-112330_loss0.0539_val0.0530.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_fold5_20260115-112330_loss0.0530_val0.0574.keras",
+    "cross_val_unet_25d_improved_V2_fold1_20260115-112330_loss0.0527_val0.0598.keras",
+    "cross_val_unet_25d_improved_V2_fold2_20260115-112330_loss0.0527_val0.0549.keras",
+    "cross_val_unet_25d_improved_V2_fold3_20260115-112330_loss0.0524_val0.0578.keras",
+    "cross_val_unet_25d_improved_V2_fold4_20260115-112330_loss0.0539_val0.0530.keras",
+    "cross_val_unet_25d_improved_V2_fold5_20260115-112330_loss0.0530_val0.0574.keras",
 
     # Random Seed Tests
-    "random_seed_unet_25d_SSIM_middle_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20260115-163356_loss0.0521_val0.0585.keras",
-    "random_seed_unet_25d_SSIM_middle_improved_V2__seed43__bf64__D5__lossMAE_SSIM__20260115-173320_loss0.0516_val0.0587.keras",
-    "random_seed_unet_25d_SSIM_middle_improved_V2__seed44__bf64__D5__lossMAE_SSIM__20260115-183246_loss0.0521_val0.0586.keras",
-    "random_seed_unet_25d_SSIM_middle_improved_V2__seed45__bf64__D5__lossMAE_SSIM__20260115-193254_loss0.0517_val0.0584.keras",
-    "random_seed_unet_25d_SSIM_middle_improved_V2__seed46__bf64__D5__lossMAE_SSIM__20260115-203232_loss0.0519_val0.0587.keras",
+    "random_seed_unet_25d_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20260115-163356_loss0.0521_val0.0585.keras",
+    "random_seed_unet_25d_improved_V2__seed43__bf64__D5__lossMAE_SSIM__20260115-173320_loss0.0516_val0.0587.keras",
+    "random_seed_unet_25d_improved_V2__seed44__bf64__D5__lossMAE_SSIM__20260115-183246_loss0.0521_val0.0586.keras",
+    "random_seed_unet_25d_improved_V2__seed45__bf64__D5__lossMAE_SSIM__20260115-193254_loss0.0517_val0.0584.keras",
+    "random_seed_unet_25d_improved_V2__seed46__bf64__D5__lossMAE_SSIM__20260115-203232_loss0.0519_val0.0587.keras",
 
     # No Augmentation Tests
-    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold1_20260116-130113_loss0.0543_val0.0582.keras",
-    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold2_20260116-130113_loss0.0535_val0.0560.keras",
-    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold3_20260116-130113_loss0.0540_val0.0582.keras",
-    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold4_20260116-130113_loss0.0535_val0.0532.keras",
-    "no_augmentation_unet_25d_SSIM_middle_improved_V2_fold5_20260116-130113_loss0.0543_val0.0561.keras",
+    "no_augmentation_unet_25d_improved_V2_fold1_20260116-130113_loss0.0543_val0.0582.keras",
+    "no_augmentation_unet_25d_improved_V2_fold2_20260116-130113_loss0.0535_val0.0560.keras",
+    "no_augmentation_unet_25d_improved_V2_fold3_20260116-130113_loss0.0540_val0.0582.keras",
+    "no_augmentation_unet_25d_improved_V2_fold4_20260116-130113_loss0.0535_val0.0532.keras",
+    "no_augmentation_unet_25d_improved_V2_fold5_20260116-130113_loss0.0543_val0.0561.keras",
 
     # Interpolated Data Tests (Folds 1-5)
-    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold1_20260116-142232_loss0.0684_val0.0573.keras",
-    "fold2_only_unet_25d_SSIM_middle_improved_V2_interpolated_fold2_SEED42_20260119-105727_loss0.0703_val0.0533.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold3_20260116-142232_loss0.0684_val0.0561.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold4_20260116-142232_loss0.0679_val0.0582.keras",
-    "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold5_20260116-142232_loss0.0702_val0.0558.keras",
+    "cross_val_unet_25d_improved_V2_interpolated_fold1_20260116-142232_loss0.0684_val0.0573.keras",
+    "fold2_only_unet_25d_improved_V2_interpolated_fold2_SEED42_20260119-105727_loss0.0703_val0.0533.keras",
+    "cross_val_unet_25d_improved_V2_interpolated_fold3_20260116-142232_loss0.0684_val0.0561.keras",
+    "cross_val_unet_25d_improved_V2_interpolated_fold4_20260116-142232_loss0.0679_val0.0582.keras",
+    "cross_val_unet_25d_improved_V2_interpolated_fold5_20260116-142232_loss0.0702_val0.0558.keras",
 
     # No augmentation + Interpolated (Folds 1-5)
 ]

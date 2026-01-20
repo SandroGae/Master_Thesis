@@ -1,4 +1,4 @@
-# no_augmentation_unet_25d_SSIM_middle_improved_V2.py
+# no_augmentation_unet_25d_improved_V2.py
 #!/usr/bin/env python3
 
 import os
@@ -140,7 +140,7 @@ y_all = np.concatenate([y_train, y_val], axis=0)
 num_series = len(X_all) // SERIES_LEN
 series_indices = np.arange(num_series)
 
-BASE_NAME = "no_augmentation_unet_25d_SSIM_middle_improved_V2"
+BASE_NAME = "no_augmentation_unet_25d_improved_V2"
 RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
 TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
 all_fold_scores = []

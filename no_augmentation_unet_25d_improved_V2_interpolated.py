@@ -1,4 +1,4 @@
-# cross_val_unet_25d_SSIM_middle_improved_V2_interpolated.py
+# cross_val_unet_25d_improved_V2_interpolated.py
 #!/usr/bin/env python3
 
 import os
@@ -169,7 +169,7 @@ X_orig_raw, y_orig_raw = load_split(TRAIN_ORIG_FILE)
 num_series = len(X_orig_raw) // SERIES_LEN_ORIG
 series_indices = np.arange(num_series)
 
-BASE_NAME = "no_augmentation_unet_25d_SSIM_middle_improved_V2_interpolated"
+BASE_NAME = "no_augmentation_unet_25d_improved_V2_interpolated"
 RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
 TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
 all_fold_scores = []

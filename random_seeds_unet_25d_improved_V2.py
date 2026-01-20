@@ -1,4 +1,4 @@
-# random_seeds_unet_25d_SSIM_middle_improved_V2.py
+# random_seeds_unet_25d_improved_V2.py
 #!/usr/bin/env python3
 
 import os
@@ -153,7 +153,7 @@ for seed_val in SEEDS:
     tf.random.set_seed(seed_val)
     tf.config.experimental.enable_op_determinism()
 
-    BASE_NAME = "random_seed_unet_25d_SSIM_middle_improved_V2"
+    BASE_NAME = "random_seed_unet_25d_improved_V2"
     RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
     RUN_NAME = f"{BASE_NAME}__seed{seed_val}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 

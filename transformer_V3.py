@@ -1,5 +1,5 @@
+# transformer_V3
 #!/usr/bin/env python3
-# transformer_V2_matched_unet_pipeline.py
 
 import os
 import random
@@ -404,11 +404,11 @@ model.compile(
 )
 
 # Run-Namen / Callbacks (optional gleich wie UNet)
-BASE_NAME = "srdtrans_swin_SSIM_middle_improved_pipeline"
+BASE_NAME = "srdtrans_swin_improved_pipeline"
 RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__emb{EMBED_DIM}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
-TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
+TB_ROOT = Path.home() / "data" / "tblogs_transformer"
 TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
