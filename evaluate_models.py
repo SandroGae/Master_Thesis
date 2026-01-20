@@ -41,7 +41,7 @@ MODELS = [
 
     # Interpolated Data Tests (Folds 1-5)
     "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold1_20260116-142232_loss0.0684_val0.0573.keras",
-    "fold2_only_unet_25d_SSIM_middle_improved_V2_interpolated_fold2_SEED42_20260119-105727_loss0.0703_val0.0533.keras"
+    "fold2_only_unet_25d_SSIM_middle_improved_V2_interpolated_fold2_SEED42_20260119-105727_loss0.0703_val0.0533.keras",
     "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold3_20260116-142232_loss0.0684_val0.0561.keras",
     "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold4_20260116-142232_loss0.0679_val0.0582.keras",
     "cross_val_unet_25d_SSIM_middle_improved_V2_interpolated_fold5_20260116-142232_loss0.0702_val0.0558.keras",
