@@ -29,7 +29,7 @@ SERIES_LEN = 41
 BASEFILTERS = 64
 BATCH_SIZE = 8
 EPOCHS = 100
-ALPHA_LIST = [0.10, 0.15, 0.20, 0.25, 0.30]
+ALPHA_LIST = [0.0, 0.02, 0.04, 0.06, 0.08, 0.12]
 
 # Simples unet in 2.5D
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
@@ -240,7 +240,7 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
 
 # TRAINING SWEEP
 for alpha_val in ALPHA_LIST:
-    BASE_NAME = "unet_25d_MAE_MSE_RUN2"
+    BASE_NAME = "unet_25d_MAE_MSE_RUN3"
     RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
     RUN_NAME = f"{BASE_NAME}_alpha{alpha_val}_bf{BASEFILTERS}_D{DEPTH}_{RUN_ID}"
     
