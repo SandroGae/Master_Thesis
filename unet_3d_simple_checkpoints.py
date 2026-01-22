@@ -7,23 +7,23 @@ import tensorflow as tf
 
 
 # Zielverzeichnis fuer Modelle/JSONs
-def get_out_dirs() -> Path:
-    root = Path.home() / "data" / "checkpoints_unet_3d_simple"
+def get_out_dirs(folder_name: str) -> Path:
+    root = Path.home() / "data" / folder_name
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 # Speichert während des Trainings immer nur das beste Modell (nach val_loss)
-def make_epoch_ckpt_callback(run_name: str) -> tf.keras.callbacks.ModelCheckpoint:
-    root = get_out_dirs()
-    pattern = str(root / f"{run_name}__best.keras")  # fester Temp-Name
+def make_epoch_ckpt_callback(run_name: str, folder_name: str) -> tf.keras.callbacks.ModelCheckpoint:
+    root = get_out_dirs(folder_name)
+    pattern = str(root / f"{run_name}__best.keras")
     return tf.keras.callbacks.ModelCheckpoint(
         filepath=pattern,
         save_weights_only=False,
         save_best_only=True,
         monitor="val_loss",
         mode="min",
-        verbose=1,  # zeigt "Saving model to ..." an
+        verbose=1,
     )
 
 
@@ -38,18 +38,9 @@ def finalize_run(
     history: tf.keras.callbacks.History,
     run_name: str,
     meta: dict | None,
-    store_arch: str = "summary",   # "summary" | "json_file" | "none"
-) -> str:
-    """
-    Speichert das beste Keras-File dauerhaft mit Loss im Dateinamen und legt
-    ein schlankes JSON ab. 'model_config' wird NICHT in die JSON gepackt.
-
-    store_arch:
-      - "summary": nur 'model_summary' ins JSON (lesbar) [Default]
-      - "json_file": Architektur separat als *.model.json (eingezogen)
-      - "none": weder Summary noch Architektur (nicht empfohlen)
-    """
-    root = get_out_dirs()
+    store_arch: str = "summary",
+    folder_name: str = "checkpoints_unet_3d_simple") -> str: 
+    root = get_out_dirs(folder_name)
 
     # --- beste Epoche / Kennzahlen
     hist = history.history

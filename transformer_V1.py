@@ -1,4 +1,4 @@
-# transformer.py
+# transformer_V1.py
 #!/usr/bin/env python3
 
 import os
@@ -226,11 +226,13 @@ print("Lade Daten...")
 FILES = {   "training":   "/home/sgaell/data/original_data/training_data.hdf5",
             "validation": "/home/sgaell/data/original_data/validation_data.hdf5",}
 
-BASE_NAME = "unet_25d_SSIM_middle_improved_V2"
+BASE_NAME = "transformer_V1"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
 TB_ROOT    = Path.home() / "data" / "tblogs_transformer"
+CKPT_FOLDER = "checkpoints_transformer"
+
 TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -251,8 +253,8 @@ BATCH_SIZE = 8
 
 callbacks = [
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=2),
-    make_epoch_ckpt_callback(RUN_NAME),
-    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
+    make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER), 
+    tf.keras.callbacks.CSVLogger(str(Path.home() / "data" / CKPT_FOLDER / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
 ]
 
@@ -332,5 +334,5 @@ meta = make_meta_dict(
     extra={"loss": "mae_ssim(alpha=0.6)", "metrics": ["mae_center","mse_center","psnr_center","ssim_center"]}
 )
 
-final_path = finalize_run(model, history, RUN_NAME, meta)
+final_path = finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
 print("Training beendet...")
