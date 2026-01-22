@@ -1,3 +1,4 @@
+# transformer_V3.py
 #!/usr/bin/env python3
 
 import os
@@ -10,13 +11,10 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-# Deine Helper-Skripte
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
-# -----------------------------
 # Reproduzierbarkeit
-# -----------------------------
 SEED = 42
 os.environ["PYTHONHASHSEED"] = str(SEED)
 random.seed(SEED)
@@ -24,9 +22,7 @@ np.random.seed(SEED)
 tf.random.set_seed(SEED)
 tf.config.experimental.enable_op_determinism()
 
-# -----------------------------
-# Parameter & Pfade
-# -----------------------------
+# Parameter
 DEPTH = 5
 SERIES_LEN = 41
 EMBED_DIM = 96
@@ -44,18 +40,14 @@ FILES = {
     "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
 }
 
-# -----------------------------
 # Warmup Scheduler
-# -----------------------------
 def lr_warmup_scheduler(epoch, lr):
     warmup_epochs = 5
     if epoch < warmup_epochs:
         return INITIAL_LR * (epoch + 1) / warmup_epochs
     return lr
 
-# -----------------------------
-# Daten-Pipeline (Exakt wie UNet)
-# -----------------------------
+# Daten-Pipeline (analog wie UNET)
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
         low_count = f["low_count/data"][:]
@@ -104,9 +96,8 @@ def prepare_transformer_input(x, y):
     y_center = y[tf.shape(y)[0] // 2]
     return x, y_center
 
-# -----------------------------
-# Loss & Metriken
-# -----------------------------
+
+# Loss und Metriken (analog wie UNET)
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -130,9 +121,8 @@ def ssim_center(y_true, y_pred):
     y_true, y_pred = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
 
-# -----------------------------
-# Swin Komponenten (Funktional)
-# -----------------------------
+
+# Swin Komponenten
 def window_partition_func(x, window_size):
     B, H, W, C = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
     x = tf.reshape(x, (B, H // window_size, window_size, W // window_size, window_size, C))
@@ -163,18 +153,17 @@ def swin_block_functional(x, dim, num_heads, window_size, shift_size=0):
     x = layers.Dense(dim)(x)
     return layers.Add()([res2, x])
 
-# -----------------------------
-# Modell Bau
-# -----------------------------
+
+# Modellaufbau
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape, name="input")
     h, w, d = input_shape
 
-    # 1) Temporal Encoder
+    # Temporal Encoder
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(inputs)
     x = layers.ReLU()(x)
 
-    # 2) Temporal Attention (Fix: attn_dim=100 für Teilbarkeit durch d=5)
+    # Temporal Attention (Fix: attn_dim=100 für Teilbarkeit durch d=5)
     attn_dim = 100 
     x_for_attn = layers.Dense(attn_dim)(x) 
     xt = layers.Reshape((h * w, d, attn_dim // d))(x_for_attn)
@@ -188,20 +177,21 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     xt = layers.Lambda(lambda t: tf.reshape(t, (-1, h, w, attn_dim)))(xt)
     x_spat = layers.Dense(embed_dim)(xt)
 
-    # 3) Spatial Swin Blocks
+    # Spatial Swin Blocks
     x_spat = swin_block_functional(x_spat, embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)
     x_spat = swin_block_functional(x_spat, embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)
 
-    # 4) Decoder
+    # Decoder
     x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x_spat)
     x = layers.ReLU()(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x)
 
     return models.Model(inputs, outputs, name="srdtrans_v3_final")
 
-# -----------------------------
+
+
+
 # Main Run
-# -----------------------------
 print("Lade Daten...")
 X_train, y_train = load_split(FILES["training"])
 X_val, y_val = load_split(FILES["validation"])
