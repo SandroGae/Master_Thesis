@@ -170,34 +170,38 @@ def swin_block_functional(x, dim, num_heads, window_size, shift_size=0):
 # Das Hauptmodell (Paper-Replikation ohne Klassen)
 # -----------------------------
 
-def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
+def build_srdtrans_swin(input_shape=(192, 240, DEPTH), embed_dim=96):
     inputs = layers.Input(shape=input_shape, name="input") # (B, 192, 240, 5)
     h, w, d = input_shape
 
-    # 1) TEMPORAL ENCODER (Paper: extrahiert lokale Features)
+    # 1) TEMPORAL ENCODER
+    # Wir wählen embed_dim so, dass sie für die Attention später passt
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(inputs)
-    x = layers.ReLU()(x)
+    x = layers.ReLU()(x) # (B, 192, 240, 96)
 
-    # 2) TEMPORAL ATTENTION (WICHTIG: Korrektur des OOM-Fehlers)
-    # Wir machen Attention NUR über die Tiefe D (5 Slices)
-    # Trick: Wir schieben H*W in die Batch-Dimension
-    xt = layers.Reshape((h * w, d, embed_dim // d))(x)
-    # Folding: (Batch * 192 * 240, 5, Features)
-    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, d, embed_dim // d)))(xt)
+    # 2) TEMPORAL ATTENTION (Der Fix für den Reshape-Fehler)
+    # Wir projizieren die 96 Kanäle zuerst auf einen Wert, der durch d (5) teilbar ist,
+    # z.B. 100 Kanäle (5 Slices * 20 Features pro Slice)
+    attn_dim = 100 
+    x_for_attn = layers.Dense(attn_dim)(x) 
+    
+    # Jetzt klappt der Reshape: (192*240, 5, 20)
+    # 46080 * 5 * 20 = 4.608.000 (identisch zu 46080 * 100)
+    xt = layers.Reshape((h * w, d, attn_dim // d))(x_for_attn)
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, d, attn_dim // d)))(xt)
     
     res_t = xt
     xt = layers.LayerNormalization(epsilon=1e-6)(xt)
-    # Hier ist die Matrix nur 5x5 pro Pixel -> EXTREM schnell
-    xt = layers.MultiHeadAttention(num_heads=4, key_dim=8)(xt, xt)
+    # Attention über die 5 Slices
+    xt = layers.MultiHeadAttention(num_heads=4, key_dim=(attn_dim // d) // 4)(xt, xt)
     xt = layers.Add()([res_t, xt])
     
-    # Zurück in die Bildform (Batch, 192, 240, embed_dim)
-    x_spat = layers.Lambda(lambda t: tf.reshape(t, (-1, h, w, embed_dim)))(xt)
+    # Zurück in Bildform und wieder auf embed_dim (96) bringen
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, h, w, attn_dim)))(xt)
+    x_spat = layers.Dense(embed_dim)(xt)
 
     # 3) SPATIAL SWIN BLOCKS (Räumliche Details)
-    # Block 1: Normales Fenster
     x_spat = swin_block_functional(x_spat, embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)
-    # Block 2: Verschobenes Fenster (Shifted Window)
     x_spat = swin_block_functional(x_spat, embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)
 
     # 4) DECODER
@@ -205,7 +209,7 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     x = layers.ReLU()(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x)
 
-    return models.Model(inputs, outputs, name="srdtrans_no_classes")
+    return models.Model(inputs, outputs, name="srdtrans_v3_fixed_math")
 
 # -----------------------------
 # Main Training Run
