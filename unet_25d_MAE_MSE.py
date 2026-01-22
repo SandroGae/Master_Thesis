@@ -117,7 +117,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 def lr_warmup_scheduler(epoch, lr):
     warmup_epochs = 3
-    base_lr = 2e-4
+    base_lr = 5e-4
     if epoch < warmup_epochs:
         return base_lr * (epoch + 1) / warmup_epochs
     return lr
@@ -204,7 +204,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
     
     current_callbacks = [
         tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6, verbose=1), # Changed patience from 10 --> 5
+        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
         make_epoch_ckpt_callback(RUN_NAME),
         tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"log_{RUN_NAME}.csv")),
         *tb_callbacks(TB_RUN_DIR)
@@ -216,7 +216,7 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(X_all)):
     history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, verbose=2, callbacks=current_callbacks)
 
     meta = make_meta_dict(script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=EPOCHS, 
-                          optimizer=optimizer, learning_rate=2e-4, input_shape=(192, 240, DEPTH), # Changed learning_rate from 5e-4 --> 2e-4
+                          optimizer=optimizer, learning_rate=5e-4, input_shape=(192, 240, DEPTH),
                           extra={"alpha": ALPHA_FIXED, "fold": fold+1})
     
     finalize_run(model, history, RUN_NAME, meta)
