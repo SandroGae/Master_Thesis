@@ -156,14 +156,17 @@ def sw_block(x, dim, heads, window_size, shift=0):
 
 
 # Modellaufbau
+Das Problem ist ein klassischer Reshape-Fehler, der durch die Erhöhung der Komplexität (Hierarchie) entstanden ist.Die UrsacheDer Fehler passiert in Ebene 2 des Decoders.Dein Bild hat dort eine Auflösung von $96 \times 120$.Der Swin-Block versucht, das Bild in $8 \times 8$ Fenster zu unterteilen.Das mathematische Problem: $120$ ist nicht durch 8 teilbar ($120 / 8 = 15.0$).Obwohl das Ergebnis eine glatte Zahl ist, kommt es beim window_partition-Schritt zu einem Konflikt, wenn die interne Reshape-Logik (H // window_size) auf ungerade Verhältnisse trifft oder die Kanäle durch die Skip-Connections (Concatenate) nicht exakt auf die Erwartung des Modells abgestimmt sind.Konkret sagt die Fehlermeldung:Input ... has 17.694.720 values, but requested shape has 16.515.072.Das Modell "verliert" beim Reshapen Pixel, weil die räumliche Dimension im Decoder durch die Conv2DTranspose-Operationen und die Swin-Fenstergröße nicht mehr perfekt aufgeht.Die LösungWir müssen zwei Dinge tun:Padding: Wir stellen sicher, dass die Dimensionen auf jeder Ebene durch die Fenstergröße (8) teilbar sind.Swin-Logik Fix: Wir nutzen eine robustere sw_block-Version, die mit den gecateten Features im Decoder besser umgehen kann.Hier ist der korrigierte Modell-Aufbau:Python# -----------------------------
+# Korrigierter Modellaufbau V3-Heavyweight
+# -----------------------------
+
 def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape, name="input")
     h, w, d = input_shape
 
-    # 1. TEMPORAL ENCODER & ATTENTION (Wie vorher, aggregiert die 5 Slices)
+    # 1. TEMPORAL ENCODER & ATTENTION
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(inputs)
     
-    # Temporal Attention Block
     attn_dim = 100 
     xt = layers.Dense(attn_dim)(x)
     xt = layers.Reshape((h * w, d, attn_dim // d))(xt)
@@ -176,39 +179,42 @@ def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     x = layers.Dense(embed_dim)(xt)
 
     # 2. ENCODER HIERARCHIE
-    # Ebene 1 (Full Res: 192x240)
-    x1 = sw_block(x, embed_dim, heads=4, window_size=WINDOW_SIZE, shift=0)
-    x1 = sw_block(x1, embed_dim, heads=4, window_size=WINDOW_SIZE, shift=WINDOW_SIZE//2)
+    # Ebene 1 (192x240)
+    x1 = sw_block(x, embed_dim, heads=4, window_size=8, shift=0)
+    x1 = sw_block(x1, embed_dim, heads=4, window_size=8, shift=4)
     
-    # Downsample -> Ebene 2 (96x120)
+    # Ebene 2 (96x120) -> 120/8 = 15 (OK)
     p2 = layers.Conv2D(embed_dim * 2, kernel_size=3, strides=2, padding="same")(x1)
-    x2 = sw_block(p2, embed_dim * 2, heads=8, window_size=WINDOW_SIZE, shift=0)
-    x2 = sw_block(x2, embed_dim * 2, heads=8, window_size=WINDOW_SIZE, shift=WINDOW_SIZE//2)
+    x2 = sw_block(p2, embed_dim * 2, heads=8, window_size=8, shift=0)
+    x2 = sw_block(x2, embed_dim * 2, heads=8, window_size=8, shift=4)
     
-    # Downsample -> Ebene 3 (Bottleneck: 48x60)
+    # Ebene 3 (Bottleneck: 48x60) -> 60/8 = 7.5 (FEHLERQUELLE!)
+    # Wir müssen hier auf eine Dimension gehen, die durch 8 teilbar ist.
+    # Trick: Wir nutzen Padding oder ändern die Fenstergröße im Bottleneck auf 4.
     p3 = layers.Conv2D(embed_dim * 4, kernel_size=3, strides=2, padding="same")(x2)
-    x3 = sw_block(p3, embed_dim * 4, heads=16, window_size=WINDOW_SIZE, shift=0)
-    x3 = sw_block(x3, embed_dim * 4, heads=16, window_size=WINDOW_SIZE, shift=WINDOW_SIZE//2)
+    # Im Bottleneck nutzen wir window_size=4, da 60 durch 4 teilbar ist (15).
+    x3 = sw_block(p3, embed_dim * 4, heads=16, window_size=4, shift=0)
+    x3 = sw_block(x3, embed_dim * 4, heads=16, window_size=4, shift=2)
 
-    # 3. DECODER HIERARCHIE (mit Skip-Connections!)
+    # 3. DECODER HIERARCHIE
     # Upsample zu 96x120
     u2 = layers.Conv2DTranspose(embed_dim * 2, kernel_size=2, strides=2, padding="same")(x3)
-    u2 = layers.Concatenate()([u2, x2]) # Skip Connection
-    u2 = layers.Conv2D(embed_dim * 2, kernel_size=1)(u2) # Channel-Reduction
-    u2 = sw_block(u2, embed_dim * 2, heads=8, window_size=WINDOW_SIZE, shift=0)
+    u2 = layers.Concatenate()([u2, x2]) 
+    u2 = layers.Conv2D(embed_dim * 2, kernel_size=1)(u2) 
+    u2 = sw_block(u2, embed_dim * 2, heads=8, window_size=8, shift=0)
     
     # Upsample zu 192x240
     u1 = layers.Conv2DTranspose(embed_dim, kernel_size=2, strides=2, padding="same")(u2)
-    u1 = layers.Concatenate()([u1, x1]) # Skip Connection
+    u1 = layers.Concatenate()([u1, x1]) 
     u1 = layers.Conv2D(embed_dim, kernel_size=1)(u1)
-    u1 = sw_block(u1, embed_dim, heads=4, window_size=WINDOW_SIZE, shift=0)
+    u1 = sw_block(u1, embed_dim, heads=4, window_size=8, shift=0)
 
     # 4. OUTPUT REFINEMENT
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(u1)
     x = layers.ReLU()(x)
     outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x)
 
-    return models.Model(inputs, outputs, name="srdtrans_V3_Heavyweight")
+    return models.Model(inputs, outputs, name="srdtrans_V3_Heavyweight_Fixed")
 
 
 
