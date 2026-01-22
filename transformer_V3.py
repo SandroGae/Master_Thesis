@@ -119,105 +119,93 @@ def ssim_center(y_true, y_pred):
 # -----------------------------
 # Swin Transformer Komponenten
 # -----------------------------
-def window_partition(x, window_size):
+def window_partition_func(x, window_size):
+    # Teilt das Bild in kleine Quadrate
     B, H, W, C = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
     x = tf.reshape(x, (B, H // window_size, window_size, W // window_size, window_size, C))
     x = tf.transpose(x, (0, 1, 3, 2, 4, 5))
-    return tf.reshape(x, (-1, window_size, window_size, C))
+    return tf.reshape(x, (-1, window_size * window_size, C))
 
-def window_reverse(windows, window_size, h, w):
+def window_reverse_func(windows, window_size, h, w):
+    # Setzt die Quadrate wieder zum Bild zusammen
     c = windows.shape[-1]
     x = tf.reshape(windows, (-1, h // window_size, w // window_size, window_size, window_size, c))
     x = tf.transpose(x, (0, 1, 3, 2, 4, 5))
     return tf.reshape(x, (-1, h, w, c))
 
-class SwinTransformerBlock(layers.Layer):
-    def __init__(self, dim, num_heads, window_size, shift_size=0, **kwargs):
-        super().__init__(**kwargs)
-        self.dim, self.num_heads, self.window_size, self.shift_size = dim, num_heads, window_size, shift_size
-        self.norm1 = layers.LayerNormalization(epsilon=1e-6)
-        self.attn = layers.MultiHeadAttention(num_heads=num_heads, key_dim=dim // num_heads)
-        self.norm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.mlp = models.Sequential([layers.Dense(dim * 4, activation=tf.nn.gelu), layers.Dense(dim)])
-
-    def call(self, x):
-        h, w = tf.shape(x)[1], tf.shape(x)[2]
-        res = x
-        x = self.norm1(x)
-        if self.shift_size > 0:
-            x = tf.pad(x, [[0, 0], [self.shift_size, 0], [self.shift_size, 0], [0, 0]])
-            x = x[:, :h, :w, :]
-        x_win = window_partition(x, self.window_size)
-        x_win = tf.reshape(x_win, (-1, self.window_size * self.window_size, self.dim))
-        attn_win = self.attn(x_win, x_win)
-        attn_win = tf.reshape(attn_win, (-1, self.window_size, self.window_size, self.dim))
-        x = window_reverse(attn_win, self.window_size, h, w)
-        x = layers.Add()([res, x])
-        res = x
-        return layers.Add()([res, self.mlp(self.norm2(x))])
-
-class LearnedPositionalEncoding(layers.Layer):
-    def __init__(self, seq_length, embedding_dim, **kwargs):
-        super().__init__(**kwargs)
-        self.seq_length, self.embedding_dim = seq_length, embedding_dim
-        self.pos_embeddings = self.add_weight(name="pos_embedding", shape=(1, seq_length, embedding_dim), initializer="zeros", trainable=True)
-    def call(self, x): return x + self.pos_embeddings
+def swin_block_functional(x, dim, num_heads, window_size, shift_size=0):
+    # Ein Swin-Block ohne eine einzige Klasse!
+    h, w = tf.shape(x)[1], tf.shape(x)[2]
+    res = x
+    
+    # 1. Normierung
+    x = layers.LayerNormalization(epsilon=1e-6)(x)
+    
+    # 2. Optionaler Shift (für das Paper wichtig)
+    if shift_size > 0:
+        x = tf.roll(x, shift=(-shift_size, -shift_size), axis=(1, 2))
+        
+    # 3. Fenster-Partitionierung
+    x_windows = window_partition_func(x, window_size) # (Num_Windows*B, 64, Dim)
+    
+    # 4. Attention (Hier wird nur innerhalb der 64 Pixel eines Fensters gerechnet!)
+    attn_windows = layers.MultiHeadAttention(num_heads=num_heads, key_dim=dim // num_heads)(x_windows, x_windows)
+    
+    # 5. Fenster zurückbauen
+    x = window_reverse_func(attn_windows, window_size, h, w)
+    
+    # 6. Reverse Shift
+    if shift_size > 0:
+        x = tf.roll(x, shift=(shift_size, shift_size), axis=(1, 2))
+        
+    # 7. Residual + MLP
+    x = layers.Add()([res, x])
+    res2 = x
+    x = layers.LayerNormalization(epsilon=1e-6)(x)
+    x = layers.Dense(dim * 4, activation="gelu")(x)
+    x = layers.Dense(dim)(x)
+    return layers.Add()([res2, x])
 
 # -----------------------------
-# SRDTrans Modell-Bau
+# Das Hauptmodell (Paper-Replikation ohne Klassen)
 # -----------------------------
-def build_srdtrans_swin(input_shape=(192, 240, DEPTH), embed_dim=96):
+
+def build_srdtrans_swin(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape, name="input") # (B, 192, 240, 5)
     h, w, d = input_shape
 
-    # =========================================================================
-    # 1) TEMPORAL ENCODER MODULE (Paper: compresses temporal scale via Conv)
-    # =========================================================================
-    # Anstatt Reshape/Dense nutzen wir Convolutions, um Features zu extrahieren 
-    # ohne die räumliche Auflösung zu verringern (Methods: no spatial downsampling).
-    
-    # Erste Faltung extrahiert Merkmale aus der Tiefe (D)
-    x_enc = layers.Conv2D(embed_dim, kernel_size=3, padding="same", name="temp_enc_1")(inputs)
-    x_enc = layers.ReLU()(x_enc)
-    
-    # Zweite Faltung (Paper: r=4 Kompression, hier als Feature-Bottleneck für D=5)
-    x_enc = layers.Conv2D(embed_dim, kernel_size=3, padding="same", name="temp_enc_2")(x_enc)
-    x_enc = layers.ReLU()(x_enc) # (B, 192, 240, embed_dim)
+    # 1) TEMPORAL ENCODER (Paper: extrahiert lokale Features)
+    x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(inputs)
+    x = layers.ReLU()(x)
 
-    # =========================================================================
-    # 2) SPATIOTEMPORAL TRANSFORMER BLOCK (STB)
-    # =========================================================================
-    # Der STB verarbeitet nun die hochdimensionalen Features aus dem Encoder.
+    # 2) TEMPORAL ATTENTION (WICHTIG: Korrektur des OOM-Fehlers)
+    # Wir machen Attention NUR über die Tiefe D (5 Slices)
+    # Trick: Wir schieben H*W in die Batch-Dimension
+    xt = layers.Reshape((h * w, d, embed_dim // d))(x)
+    # Folding: (Batch * 192 * 240, 5, Features)
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, d, embed_dim // d)))(xt)
     
-    # A) Temporal Attention (Innerhalb des STB)
-    # Da wir nun embed_dim Kanäle haben, machen wir die Attention über diese "Feature-Zeit"
-    p = h * w
-    xt = layers.Reshape((p, embed_dim))(x_enc)
-    
-    # Wir nutzen hier die klassische MultiHeadAttention für globale Abhängigkeiten
     res_t = xt
     xt = layers.LayerNormalization(epsilon=1e-6)(xt)
-    xt = layers.MultiHeadAttention(num_heads=8, key_dim=embed_dim // 8)(xt, xt)
+    # Hier ist die Matrix nur 5x5 pro Pixel -> EXTREM schnell
+    xt = layers.MultiHeadAttention(num_heads=4, key_dim=8)(xt, xt)
     xt = layers.Add()([res_t, xt])
     
-    # Zurück in Bildform für den räumlichen Teil
-    xt = layers.Reshape((h, w, embed_dim))(xt)
+    # Zurück in die Bildform (Batch, 192, 240, embed_dim)
+    x_spat = layers.Lambda(lambda t: tf.reshape(t, (-1, h, w, embed_dim)))(xt)
 
-    # B) Spatial Swin (Paper: Swin transformer to capture fine-grained features)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)(xt)
-    x = SwinTransformerBlock(dim=embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)(x)
+    # 3) SPATIAL SWIN BLOCKS (Räumliche Details)
+    # Block 1: Normales Fenster
+    x_spat = swin_block_functional(x_spat, embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=0)
+    # Block 2: Verschobenes Fenster (Shifted Window)
+    x_spat = swin_block_functional(x_spat, embed_dim, num_heads=8, window_size=WINDOW_SIZE, shift_size=WINDOW_SIZE // 2)
 
-    # =========================================================================
-    # 3) TEMPORAL DECODER MODULE (Paper: uncompressed to original scale)
-    # =========================================================================
-    # Der Decoder projiziert die Transformer-Features zurück auf die Ziel-Auflösung.
-    x_dec = layers.Conv2DTranspose(embed_dim // 2, kernel_size=3, padding="same", name="temp_dec_1")(x)
-    x_dec = layers.ReLU()(x_dec)
-    
-    # Finaler Output (H, W, 1) wie im 2.5D Ansatz
-    outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x_dec)
+    # 4) DECODER
+    x = layers.Conv2D(embed_dim // 2, kernel_size=3, padding="same")(x_spat)
+    x = layers.ReLU()(x)
+    outputs = layers.Conv2D(1, kernel_size=3, padding="same", activation="sigmoid", name="final_output")(x)
 
-    return models.Model(inputs, outputs, name="srdtrans_paper_faithful")
+    return models.Model(inputs, outputs, name="srdtrans_no_classes")
 
 # -----------------------------
 # Main Training Run
