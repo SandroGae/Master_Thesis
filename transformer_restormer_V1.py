@@ -31,7 +31,7 @@ DEPTH = 5
 SERIES_LEN = 41
 EMBED_DIM = 48  # Restormer startet meist kleiner, da er Kanäle im Encoder verdoppelt
 BATCH_SIZE = 16 
-INITIAL_LR = 2e-4 # Restormer verträgt etwas mehr als SRDTrans
+INITIAL_LR = 5e-4 # Restormer verträgt etwas mehr als SRDTrans
 EPOCHS = 100
 
 FILES = {
