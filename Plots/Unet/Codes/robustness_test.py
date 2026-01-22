@@ -5,21 +5,23 @@ import numpy as np
 from pathlib import Path
 from matplotlib.lines import Line2D
 
-CSV_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\CSV\robustness_test")
-FIG_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\Figures\robustness_test")
+# Basispfade
+PARENT_CSV_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\CSV")
+FIG_BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\Figures")
 
-FIG_DIR.mkdir(parents=True, exist_ok=True)
-
-def get_selection(items, prompt):
+def get_selection(items, prompt, multi_select=True):
     print(f"\n{prompt}")
     for i, item in enumerate(items):
         print(f"[{i}] {item}")
     
     while True:
         try:
-            selection = input("\nGib die Nummern ein (getrennt durch Komma): ")
+            selection = input("\nAuswahl (Nummern mit Komma getrennt): ")
             indices = [int(x.strip()) for x in selection.split(",")]
             if all(0 <= i < len(items) for i in indices):
+                if not multi_select and len(indices) > 1:
+                    print("Bitte nur eine Nummer wählen.")
+                    continue
                 return [items[i] for i in indices]
             else:
                 print(f"Zahlen zwischen 0 und {len(items)-1} wählen.")
@@ -27,98 +29,84 @@ def get_selection(items, prompt):
             print("Ungültige Eingabe.")
 
 def main():
+    # 1. Ordner-Auswahl
     try:
-        all_files = sorted([f.name for f in CSV_DIR.glob("*.csv")])
-    except OSError:
-        return
+        subdirs = sorted([d.name for d in PARENT_CSV_DIR.iterdir() if d.is_dir()])
+    except OSError: return
 
-    if not all_files:
-        return
-
-    selected_files = get_selection(all_files, "Welche CSV-Dateien möchtest du plotten?")
-
-    try:
-        sample_df = pd.read_csv(CSV_DIR / selected_files[0])
-        all_metrics = [c for c in sample_df.columns if c not in ['epoch', 'lr', 'Unnamed: 0']]
-    except Exception:
-        return
+    if not subdirs: return
+    selected_folder = get_selection(subdirs, "Welchen Ordner möchtest du öffnen?", multi_select=False)[0]
     
-    selected_metrics = get_selection(all_metrics, "Welche Metriken sollen geplottet werden?")
+    current_csv_dir = PARENT_CSV_DIR / selected_folder
+    current_fig_dir = FIG_BASE_DIR / selected_folder
+    current_fig_dir.mkdir(parents=True, exist_ok=True)
 
+    # 2. Datei-Auswahl
+    all_files = sorted([f.name for f in current_csv_dir.glob("*.csv")])
+    if not all_files: return
+    selected_files = get_selection(all_files, f"Welche Dateien aus '{selected_folder}' plotten?")
+
+    # 3. Metriken-Auswahl
+    sample_df = pd.read_csv(current_csv_dir / selected_files[0])
+    all_metrics = [c for c in sample_df.columns if c not in ['epoch', 'lr', 'Unnamed: 0']]
+    selected_metrics = get_selection(all_metrics, "Welche Metriken?")
+
+    # 4. Plotting
     for metric in selected_metrics:
-        fig, ax = plt.subplots(figsize=(10, 7)) # Etwas höher für die zweite Legende
+        fig, ax = plt.subplots(figsize=(10, 7))
         
-        min_values = []
-        labels_min = []
-        
-        # Dateinamen-Logik für Speichernamen
-        types = []
-        names_lower = [f.lower() for f in selected_files]
-        if any("cross_val" in n for n in names_lower): types.append("cross_validation")
-        if any("no_augmentation" in n for n in names_lower): types.append("no_augmentation")
-        if any("random_seed" in n for n in names_lower): types.append("random_seeds")
-        type_str = "_".join(set(types)) if types else "comparison"
-        interp_suffix = "_interpolated" if any("interpolated" in n for n in names_lower) else ""
+        val_list = []
+        labels_val = []
+        is_error = any(m in metric.lower() for m in ["loss", "mae", "mse"])
 
-        # Plotten der Kurven
         for file in selected_files:
             try:
-                df = pd.read_csv(CSV_DIR / file)
-                label = file.replace(".csv", "")
+                df = pd.read_csv(current_csv_dir / file)
+                label = file.replace(".csv", "").replace("log_", "")
                 x_data = df['epoch'] if 'epoch' in df.columns else df.index
                 y_data = df[metric]
                 
                 ax.plot(x_data, y_data, label=label, linewidth=1.5, alpha=0.8)
                 
-                # Minimum für diesen Run speichern
-                current_min = y_data.min()
-                min_values.append(current_min)
-                labels_min.append(f"Min ({label}): {current_min:.4f}")
-                
-            except Exception as e:
-                print(f"Fehler bei {file}: {e}")
-                continue
+                # Statistik-Wert sammeln
+                extrema = y_data.min() if is_error else y_data.max()
+                val_list.append(extrema)
+                prefix = "Min" if is_error else "Max"
+                labels_val.append(f"{prefix} ({label}): {extrema:.4f}")
+            except Exception as e: print(f"Fehler bei {file}: {e}")
 
-        # Erste Legende (Kurven)
-        leg1 = ax.legend(loc='upper right', fontsize='small', framealpha=0.8)
-        ax.add_artist(leg1) # Damit die zweite Legende die erste nicht löscht
+        # --- LEGENDE WIEDER INNEN (WIE VORHER) ---
+        # 1. Kurven-Legende (Oben Rechts)
+        leg1 = ax.legend(loc='upper right', fontsize='x-small', framealpha=0.8)
+        ax.add_artist(leg1)
 
-        # Statistik berechnen
-        avg_min = np.mean(min_values)
-        std_min = np.std(min_values)
-        
-        # Texte für die zweite Legende erstellen
-        stats_labels = labels_min + [f"Avg Min: {avg_min:.4f} ± {std_min:.4f}"]
-        # Leere Handles für die Statistik-Legende (keine Linien)
+        # 2. Statistik-Legende (Darunter positioniert)
+        avg_val = np.mean(val_list)
+        std_val = np.std(val_list)
+        stats_labels = labels_val + ["---", f"Avg {prefix}: {avg_val:.4f} ± {std_val:.4f}"]
         empty_handles = [Line2D([0], [0], color='none') for _ in stats_labels]
 
-        # Zweite Legende (Statistik)
-        # bbox_to_anchor positioniert die Legende. (1, 0.7) rückt sie unter die erste.
         ax.legend(empty_handles, stats_labels, 
                   loc='upper right', 
-                  bbox_to_anchor=(1.0, 0.75), 
-                  fontsize='small', 
-                  title="Statistics (Minima)",
+                  bbox_to_anchor=(1.0, 0.8), # Schiebt die Statistik unter die erste Legende
+                  fontsize='x-small', 
+                  title=f"Statistics ({prefix}ima)",
+                  title_fontsize='small',
                   framealpha=0.8,
-                  handlelength=0, # Versteckt den Platzhalter für die Linie
+                  handlelength=0, 
                   handletextpad=0)
 
-        ax.set_title(f"Robustness Test: {metric}", fontsize=14)
-        ax.set_xlabel("Epoch", fontsize=12)
-        ax.set_ylabel(metric, fontsize=12)
+        ax.set_title(f"Comparison: {metric}\nFolder: {selected_folder}", fontsize=12)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(metric)
         ax.grid(True, linestyle='--', alpha=0.6)
         plt.tight_layout()
 
-        save_name = f"{type_str}{interp_suffix}_{metric}.png"
-        save_path = FIG_DIR / save_name
-        
-        try:
-            plt.savefig(save_path, dpi=300)
-            print(f"Gespeichert: {save_name}")
-        except OSError:
-            pass
-        finally:
-            plt.close()
+        # Speichern
+        save_name = f"comparison_{metric}.png"
+        plt.savefig(current_fig_dir / save_name, dpi=300)
+        print(f"Gespeichert: {save_name}")
+        plt.close()
 
 if __name__ == "__main__":
     main()
