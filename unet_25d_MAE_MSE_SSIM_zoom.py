@@ -29,10 +29,8 @@ SERIES_LEN = 41
 BASEFILTERS = 64
 BATCH_SIZE = 8
 EPOCHS = 100
-ALPHA_LIST = [0.0]
-BETA_LIST = [1.0]
-#ALPHA_LIST = [0.085, 0.170, 0.250, 0.330, 0.415]
-#BETA_LIST  = [0.000, 0.085, 0.170, 0.250, 0.330]
+ALPHA_LIST = [0.085, 0.170, 0.250, 0.330, 0.415]
+BETA_LIST  = [0.000, 0.085, 0.170, 0.250, 0.330]
 
 # Diese 6 Punkte sind bereits im 7x7 Grid
 SKIP_POINTS = [
@@ -169,7 +167,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 def lr_warmup_scheduler(epoch, lr):
-    warmup_epochs = 10
+    warmup_epochs = 3
     base_lr = 5e-4
     if epoch < warmup_epochs:
         # Linearer Anstieg
