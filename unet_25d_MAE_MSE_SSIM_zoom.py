@@ -271,6 +271,7 @@ for alpha_val in ALPHA_LIST:
         BASE_NAME = "unet_25d_TripleLoss_ZOOM"
         RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
         RUN_NAME = f"{BASE_NAME}_a{a_r}_b{b_r}_bf{BASEFILTERS}_D{DEPTH}_{RUN_ID}"
+        CKPT_FOLDER = "checkpoints_unet"
         
         TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
         TB_RUN_DIR = TB_ROOT / RUN_NAME
@@ -288,7 +289,7 @@ for alpha_val in ALPHA_LIST:
         current_callbacks = [
             tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
             tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
-            make_epoch_ckpt_callback(RUN_NAME),
+            make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER),
             tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"log_{RUN_NAME}.csv")),
             *tb_callbacks(TB_RUN_DIR)
         ]
@@ -311,7 +312,7 @@ for alpha_val in ALPHA_LIST:
             }
         )
 
-        finalize_run(model, history, RUN_NAME, meta)
+        finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
         
         # Speicher freigeben
         tf.keras.backend.clear_session()
