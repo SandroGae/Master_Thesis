@@ -29,10 +29,24 @@ SERIES_LEN = 41
 BASEFILTERS = 64
 BATCH_SIZE = 8
 EPOCHS = 100
-ALPHA_LIST = [0.0]
-BETA_LIST = [1.0]
-# ALPHA_LIST = np.linspace(0.0, 1.0, 7)
-# BETA_LIST  = np.linspace(0.0, 1.0, 7)
+# Wir erzeugen das exakte Array wie im Original-Code
+GRID_VALS = np.linspace(0.0, 1.0, 7)
+# Index-Mapping: 0=0.0, 1=0.166..., 2=0.333..., 3=0.5, 4=0.666..., 5=0.833..., 6=1.0
+
+# Deine Liste übersetzt in Indizes [alpha_idx, beta_idx]
+RESCUE_INDICES = [
+    (0, 1), # 0.0, 0.17
+    (3, 0), # 0.5, 0.0
+    (3, 1), # 0.5, 0.17
+    (3, 2), # 0.5, 0.33
+    (1, 3), # 0.17, 0.5
+    (1, 1), # 0.17, 0.17
+    (2, 0), # 0.33, 0.0
+    (2, 4), # 0.33, 0.67
+    (4, 4), # 0.67, 0.67
+    (5, 1), # 0.83, 0.17
+    (5, 4)  # 0.83, 0.67
+]
 CKPT_FOLDER = "checkpoints_unet"
 
 # Simples unet in 2.5D
@@ -252,68 +266,69 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 # TRAINING SWEEP
-for alpha_val in ALPHA_LIST:
-    for beta_val in BETA_LIST: # Verschachtelte Schleife für Beta
+for a_idx, b_idx in RESCUE_INDICES:
+    # Hier ziehen wir die EXAKTEN Werte aus dem linspace-Array
+    alpha_val = GRID_VALS[a_idx]
+    beta_val  = GRID_VALS[b_idx]
+    
+    # Runden NUR für den Namen/Pfad (2 Stellen)
+    a_r = round(float(alpha_val), 2)
+    b_r = round(float(beta_val), 2)
+
+    BASE_NAME = "unet_25d_TripleLoss_RESCUE"
+    RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
+    RUN_NAME = f"{BASE_NAME}_a{a_r}_b{b_r}_bf{BASEFILTERS}_D{DEPTH}_{RUN_ID}"
         
-        # Werte runden für saubere Pfadnamen
-        a_r = round(float(alpha_val), 2)
-        b_r = round(float(beta_val), 2)
+    TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
+    TB_RUN_DIR = TB_ROOT / RUN_NAME
+    TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
-        BASE_NAME = "unet_25d_TripleLoss"
-        RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
-        # RUN_NAME enthält jetzt beide Parameter
-        RUN_NAME = f"{BASE_NAME}_a{a_r}_b{b_r}_bf{BASEFILTERS}_D{DEPTH}_{RUN_ID}"
-        
-        TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
-        TB_RUN_DIR = TB_ROOT / RUN_NAME
-        TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"\n" + "="*60)
+    print(f"STARTE TRAINING: Alpha={a_r}, Beta={b_r}")
+    print(f"Run-Name: {RUN_NAME}")
+    print("="*60 + "\n")
 
-        print(f"\n" + "="*60)
-        print(f"STARTE TRAINING: Alpha={a_r}, Beta={b_r}")
-        print(f"Run-Name: {RUN_NAME}")
-        print("="*60 + "\n")
+    # Modell & Optimizer in jeder Runde neu instanziieren
+    model = unet_2d_stacked()
+    optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0)
+    
+    current_callbacks = [
+        tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
+        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
+        make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER),
+        tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"log_{RUN_NAME}.csv")),
+        *tb_callbacks(TB_RUN_DIR)
+    ]
 
-        # Modell & Optimizer in jeder Runde neu instanziieren
-        model = unet_2d_stacked()
-        optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-        
-        current_callbacks = [
-            tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
-            tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
-            make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER),
-            tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"log_{RUN_NAME}.csv")),
-            *tb_callbacks(TB_RUN_DIR)
-        ]
+    # Compilieren mit beiden Parametern
+    model.compile(optimizer=optimizer, 
+                loss=get_triple_loss(alpha=a_r, beta=b_r), 
+                metrics=[mae_center, mse_center, psnr_center, ssim_center])
 
-        # Compilieren mit beiden Parametern
-        model.compile(optimizer=optimizer, 
-                      loss=get_triple_loss(alpha=a_r, beta=b_r), 
-                      metrics=[mae_center, mse_center, psnr_center, ssim_center])
+    history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, 
+                        callbacks=current_callbacks, verbose=2)
 
-        history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, 
-                            callbacks=current_callbacks, verbose=2)
+    # Meta-Daten mit allen Gewichtungsinformationen
+    w_ssim = a_r
+    w_mse  = (1.0 - a_r) * b_r
+    w_mae  = (1.0 - a_r) * (1.0 - b_r)
+    
+    meta = make_meta_dict(
+        script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=EPOCHS, 
+        optimizer=optimizer, learning_rate=5e-4, input_shape=(192, 240, DEPTH),
+        extra={
+            "alpha": a_r, "beta": b_r,
+            "w_ssim": round(w_ssim, 4), "w_mse": round(w_mse, 4), "w_mae": round(w_mae, 4),
+            "loss": f"triple_loss(a={a_r}, b={b_r})"
+        }
+    )
 
-        # Meta-Daten mit allen Gewichtungsinformationen
-        w_ssim = a_r
-        w_mse  = (1.0 - a_r) * b_r
-        w_mae  = (1.0 - a_r) * (1.0 - b_r)
-        
-        meta = make_meta_dict(
-            script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=EPOCHS, 
-            optimizer=optimizer, learning_rate=5e-4, input_shape=(192, 240, DEPTH),
-            extra={
-                "alpha": a_r, "beta": b_r,
-                "w_ssim": round(w_ssim, 4), "w_mse": round(w_mse, 4), "w_mae": round(w_mae, 4),
-                "loss": f"triple_loss(a={a_r}, b={b_r})"
-            }
-        )
-
-        finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
-        
-        # --- SPEICHER-HYGIENE (WICHTIG!) ---
-        # Leert den RAM und VRAM, damit die GPU nicht nach 5 Läufen voll ist
-        tf.keras.backend.clear_session()
-        import gc
-        gc.collect()
+    finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
+    
+    # --- SPEICHER-HYGIENE (WICHTIG!) ---
+    # Leert den RAM und VRAM, damit die GPU nicht nach 5 Läufen voll ist
+    tf.keras.backend.clear_session()
+    import gc
+    gc.collect()
 
 print("\n--- Das 7x7 Grid (49 Runs) wurde erfolgreich abgearbeitet! ---")
