@@ -29,8 +29,10 @@ SERIES_LEN = 41
 BASEFILTERS = 64
 BATCH_SIZE = 8
 EPOCHS = 100
-ALPHA_LIST = np.linspace(0.0, 1.0, 7)
-BETA_LIST  = np.linspace(0.0, 1.0, 7)
+ALPHA_LIST = [0.0]
+BETA_LIST = [1.0]
+# ALPHA_LIST = np.linspace(0.0, 1.0, 7)
+# BETA_LIST  = np.linspace(0.0, 1.0, 7)
 
 # Simples unet in 2.5D
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
@@ -160,7 +162,7 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 def lr_warmup_scheduler(epoch, lr):
-    warmup_epochs = 3
+    warmup_epochs = 10
     base_lr = 5e-4
     if epoch < warmup_epochs:
         # Linearer Anstieg
