@@ -291,10 +291,18 @@ for a_idx, b_idx in RESCUE_INDICES:
     # Modell & Optimizer in jeder Runde neu instanziieren
     model = unet_2d_stacked()
     optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0)
+
+    # Lokale Funktion zum Prüfen des Crashs
+    def check_crash(epoch, logs):
+        psnr = logs.get('val_psnr_center')
+        if psnr is not None and psnr < 20.0:
+            print(f"\n[CRASH DETECTED] PSNR ({psnr:.2f}) ist abgestürzt. Stoppe Training.")
+            model.stop_training = True
     
     current_callbacks = [
         tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
+        tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
         make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER),
         tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"log_{RUN_NAME}.csv")),
         *tb_callbacks(TB_RUN_DIR)
