@@ -10,13 +10,10 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-# Deine Helper-Skripte
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
-# -----------------------------
 # Reproduzierbarkeit
-# -----------------------------
 SEED = 42
 os.environ["PYTHONHASHSEED"] = str(SEED)
 random.seed(SEED)
@@ -24,14 +21,12 @@ np.random.seed(SEED)
 tf.random.set_seed(SEED)
 tf.config.experimental.enable_op_determinism()
 
-# -----------------------------
 # Parameter
-# -----------------------------
 DEPTH = 5
 SERIES_LEN = 41
-EMBED_DIM = 64 # Restormer startet meist kleiner, da er Kanäle im Encoder verdoppelt
+EMBED_DIM = 64
 BATCH_SIZE = 16 
-INITIAL_LR = 5e-4 # Changed from 2e-4 to 5e-4
+INITIAL_LR = 5e-4
 EPOCHS = 100
 
 FILES = {
@@ -42,10 +37,8 @@ FILES = {
 TB_ROOT = Path.home() / "data" / "tblogs_transformer"
 CKPT_FOLDER = "checkpoints_transformer"
 
-# -----------------------------
-# Restormer Komponenten (Funktional)
-# -----------------------------
 
+# Restormer Komponenten
 def MDTA(x, filters, num_heads):
     """ Multi-Dconv Head Transposed Attention """
     b, h, w, c = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
@@ -109,10 +102,8 @@ def restormer_block(x, filters, num_heads):
     x = GDFN(x, filters)
     return x
 
-# -----------------------------
-# Restormer Modellaufbau (U-Net Shape)
-# -----------------------------
 
+# Restormer Modellaufbau (U-Net Shape)
 def build_restormer(input_shape=(192, 240, 5), embed_dim=64):
     inputs = layers.Input(shape=input_shape)
     
@@ -165,9 +156,8 @@ def build_restormer(input_shape=(192, 240, 5), embed_dim=64):
     
     return models.Model(inputs, final, name="Restormer_XRD_HighComplex")
 
-# -----------------------------
-# Warmup & Data Functions (Identisch zu V3)
-# -----------------------------
+
+# Warmup und Data Functions
 def lr_warmup_scheduler(epoch, lr):
     warmup_epochs = 5
     if epoch < warmup_epochs:
@@ -240,9 +230,9 @@ def ssim_center(y_true, y_pred):
     y_true, y_pred = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
 
-# -----------------------------
+
+
 # MAIN RUN
-# -----------------------------
 print("Lade Daten...")
 X_train, y_train = load_split(FILES["training"])
 X_val, y_val = load_split(FILES["validation"])

@@ -16,8 +16,23 @@ def get_selection(items, prompt, multi_select=True):
     
     while True:
         try:
-            selection = input("\nAuswahl (Nummern mit Komma getrennt): ")
-            indices = [int(x.strip()) for x in selection.split(",")]
+            selection = input("\nAuswahl (z.B. '0,2,5-10' oder '1-23'): ")
+            parts = selection.split(",")
+            indices = []
+            
+            for part in parts:
+                part = part.strip()
+                if "-" in part:
+                    # Verarbeitet Spannen wie 1-23
+                    start, end = part.split("-")
+                    indices.extend(range(int(start), int(end) + 1))
+                else:
+                    # Verarbeitet einzelne Zahlen
+                    indices.append(int(part))
+            
+            # Duplikate entfernen und sortieren
+            indices = sorted(list(set(indices)))
+
             if all(0 <= i < len(items) for i in indices):
                 if not multi_select and len(indices) > 1:
                     print("Bitte nur eine Nummer wählen.")
@@ -26,7 +41,7 @@ def get_selection(items, prompt, multi_select=True):
             else:
                 print(f"Zahlen zwischen 0 und {len(items)-1} wählen.")
         except ValueError:
-            print("Ungültige Eingabe.")
+            print("Ungültige Eingabe. Bitte Format wie '1,2,5' oder '1-5' verwenden.")
 
 def main():
     # 1. Ordner-Auswahl
@@ -75,12 +90,10 @@ def main():
                 labels_val.append(f"{prefix} ({label}): {extrema:.4f}")
             except Exception as e: print(f"Fehler bei {file}: {e}")
 
-        # --- LEGENDE WIEDER INNEN (WIE VORHER) ---
-        # 1. Kurven-Legende (Oben Rechts)
+        # --- LEGENDE ---
         leg1 = ax.legend(loc='upper right', fontsize='x-small', framealpha=0.8)
         ax.add_artist(leg1)
 
-        # 2. Statistik-Legende (Darunter positioniert)
         avg_val = np.mean(val_list)
         std_val = np.std(val_list)
         stats_labels = labels_val + ["---", f"Avg {prefix}: {avg_val:.4f} ± {std_val:.4f}"]
@@ -88,7 +101,7 @@ def main():
 
         ax.legend(empty_handles, stats_labels, 
                   loc='upper right', 
-                  bbox_to_anchor=(1.0, 0.8), # Schiebt die Statistik unter die erste Legende
+                  bbox_to_anchor=(1.0, 0.8), 
                   fontsize='x-small', 
                   title=f"Statistics ({prefix}ima)",
                   title_fontsize='small',
