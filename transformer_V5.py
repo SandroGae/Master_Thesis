@@ -89,39 +89,41 @@ def build_srdtrans_v4_1(input_shape=(192, 240, 5), embed_dim=96):
     inputs = layers.Input(shape=input_shape, name="input")
     h, w, d = input_shape
 
-    # 1. Temporal Attention Phase
+    # 1. Temporal Attention Phase (Fix: attn_dim=100 wegen Teilbarkeit durch d=5)
     x = layers.Conv2D(embed_dim, kernel_size=3, padding="same")(inputs)
-    attn_dim = 96 # Sync mit embed_dim für Effizienz
-    xt = layers.Dense(attn_dim)(x)
-    xt = layers.Reshape((h * w, d, attn_dim // d))(xt)
-    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, d, attn_dim // d)))(xt)
+    attn_dim_temp = 100 
+    xt = layers.Dense(attn_dim_temp)(x)
+    xt = layers.Reshape((h * w, d, attn_dim_temp // d))(xt)
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, d, attn_dim_temp // d)))(xt)
+    
     res_t = xt
     xt = layers.LayerNormalization(epsilon=1e-6)(xt)
     xt = layers.MultiHeadAttention(num_heads=4, key_dim=8)(xt, xt)
     xt = layers.Add()([res_t, xt])
-    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, h, w, attn_dim)))(xt)
+    
+    xt = layers.Lambda(lambda t: tf.reshape(t, (-1, h, w, attn_dim_temp)))(xt)
     x = layers.Dense(embed_dim)(xt)
 
     # 2. Encoder Hierarchie
-    # Ebene 1 (192x240) - 2 Blöcke
+    # Ebene 1 (192x240)
     x1 = sw_block(x, embed_dim, heads=4, window_size=8, shift=0)
     x1 = sw_block(x1, embed_dim, heads=4, window_size=8, shift=4)
     
-    # Ebene 2 (96x120) - Erhöht auf 4 Blöcke (+2 gegenüber V4)
+    # Ebene 2 (96x120) - Erhöht auf 4 Blöcke
     p2 = layers.Conv2D(embed_dim * 2, kernel_size=3, strides=2, padding="same")(x1)
     x2 = sw_block(p2, embed_dim * 2, heads=8, window_size=8, shift=0)
     x2 = sw_block(x2, embed_dim * 2, heads=8, window_size=8, shift=4)
     x2 = sw_block(x2, embed_dim * 2, heads=8, window_size=8, shift=0)
     x2 = sw_block(x2, embed_dim * 2, heads=8, window_size=8, shift=4)
     
-    # Ebene 3 (Bottleneck: 48x60) - Erhöht auf 4 Blöcke (+2 gegenüber V4)
+    # Ebene 3 (Bottleneck: 48x60) - Erhöht auf 4 Blöcke
     p3 = layers.Conv2D(embed_dim * 4, kernel_size=3, strides=2, padding="same")(x2)
     x3 = sw_block(p3, embed_dim * 4, heads=16, window_size=4, shift=0)
     x3 = sw_block(x3, embed_dim * 4, heads=16, window_size=4, shift=2)
     x3 = sw_block(x3, embed_dim * 4, heads=16, window_size=4, shift=0)
     x3 = sw_block(x3, embed_dim * 4, heads=16, window_size=4, shift=2)
 
-    # 3. Decoder Hierarchie (Skip Connections)
+    # 3. Decoder Hierarchie
     u2 = layers.Conv2DTranspose(embed_dim * 2, kernel_size=2, strides=2, padding="same")(x3)
     u2 = layers.Concatenate()([u2, x2]) 
     u2 = layers.Conv2D(embed_dim * 2, kernel_size=1)(u2) 
