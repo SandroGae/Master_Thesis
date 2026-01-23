@@ -33,6 +33,7 @@ ALPHA_LIST = [0.0]
 BETA_LIST = [1.0]
 # ALPHA_LIST = np.linspace(0.0, 1.0, 7)
 # BETA_LIST  = np.linspace(0.0, 1.0, 7)
+CKPT_FOLDER = "checkpoints_unet"
 
 # Simples unet in 2.5D
 POOL_HW = (1, 2, 2)  # (D, H, W) --> Kein Pooling über depth
@@ -279,7 +280,7 @@ for alpha_val in ALPHA_LIST:
         current_callbacks = [
             tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
             tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
-            make_epoch_ckpt_callback(RUN_NAME),
+            make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER),
             tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"log_{RUN_NAME}.csv")),
             *tb_callbacks(TB_RUN_DIR)
         ]
@@ -307,7 +308,7 @@ for alpha_val in ALPHA_LIST:
             }
         )
 
-        finalize_run(model, history, RUN_NAME, meta)
+        finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
         
         # --- SPEICHER-HYGIENE (WICHTIG!) ---
         # Leert den RAM und VRAM, damit die GPU nicht nach 5 Läufen voll ist
