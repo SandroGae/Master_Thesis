@@ -26,7 +26,7 @@ tf.config.experimental.enable_op_determinism()
 DEPTH = 5
 SERIES_LEN = 41
 BASEFILTERS = 64
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 EPOCHS = 200 # Maximale Laufzeit
 PATIENCE = 20 # Early Stopping nach 20 Epochen ohne Verbesserung
 CKPT_FOLDER = "checkpoints_unet"
