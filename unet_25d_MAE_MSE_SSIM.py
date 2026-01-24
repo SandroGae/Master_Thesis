@@ -28,7 +28,7 @@ DEPTH = 5
 SERIES_LEN = 41
 BASEFILTERS = 64
 BATCH_SIZE = 16
-EPOCHS = 100
+EPOCHS = 200
 # Wir erzeugen das exakte Array wie im Original-Code
 GRID_VALS = np.linspace(0.0, 1.0, 7)
 # Index-Mapping: 0=0.0, 1=0.166..., 2=0.333..., 3=0.5, 4=0.666..., 5=0.833..., 6=1.0
