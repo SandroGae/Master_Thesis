@@ -38,7 +38,7 @@ BETA_LIST = np.linspace(0.0, 1.0, 14)
 # --- LEARNING RATE WARMUP ---
 def lr_warmup_scheduler(epoch, lr):
     warmup_epochs = 3
-    base_lr = 3e-4 # Smaller for better convergence
+    base_lr = 5e-4 # Smaller for better convergence
     if epoch < warmup_epochs:
         return base_lr * (epoch + 1) / warmup_epochs
     return lr
@@ -168,7 +168,7 @@ for b_idx, beta_val in enumerate(BETA_LIST):
     print(f"\nRUN {b_idx+1}/14 | Alpha={a_r} | Beta={b_r}\n" + "="*40)
 
     model = unet_2d_stacked()
-    optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4, amsgrad=True, clipnorm=1.0)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0)
     
     def check_crash(epoch, logs):
         if logs.get('val_psnr_center', 30) < 20.0: model.stop_training = True
@@ -176,7 +176,7 @@ for b_idx, beta_val in enumerate(BETA_LIST):
     # Callbacks inkl. Early Stopping
     callbacks = [
         tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
+        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
         tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
         # --- NEU: Early Stopping ---
         tf.keras.callbacks.EarlyStopping(
@@ -198,7 +198,7 @@ for b_idx, beta_val in enumerate(BETA_LIST):
     
     # Da finalize_run hier außerhalb von model.fit steht, wird es 
     # IMMER ausgeführt, egal ob fit regulär fertig wurde oder abgebrochen ist.
-    meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, 3e-4, (192, 240, 5), 
+    meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
                           extra={"alpha": a_r, "beta": b_r, "type": "DeepScan_CentralLine"})
     finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
     
