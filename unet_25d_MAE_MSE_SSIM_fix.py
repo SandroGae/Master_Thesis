@@ -284,7 +284,7 @@ for a_idx, b_idx in RESCUE_INDICES:
 
     # Modell & Optimizer in jeder Runde neu instanziieren
     model = unet_2d_stacked()
-    optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4, amsgrad=True, clipnorm=1.0)
 
     # Lokale Funktion zum Prüfen des Crashs
     def check_crash(epoch, logs):
@@ -317,7 +317,7 @@ for a_idx, b_idx in RESCUE_INDICES:
     
     meta = make_meta_dict(
         script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=EPOCHS, 
-        optimizer=optimizer, learning_rate=5e-4, input_shape=(192, 240, DEPTH),
+        optimizer=optimizer, learning_rate=3e-4, input_shape=(192, 240, DEPTH),
         extra={
             "alpha": a_r, "beta": b_r,
             "w_ssim": round(w_ssim, 4), "w_mse": round(w_mse, 4), "w_mae": round(w_mae, 4),
