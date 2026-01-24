@@ -15,7 +15,7 @@ from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, m
 from tb_utils import make_run_dir, tb_callbacks
 
 # Reproduzierbatkeit
-SEED = 43
+SEED = 42
 os.environ['PYTHONHASHSEED'] = str(SEED)
 random.seed(SEED)
 np.random.seed(SEED)
@@ -27,7 +27,7 @@ tf.config.experimental.enable_op_determinism()
 DEPTH = 5
 SERIES_LEN = 41
 BASEFILTERS = 64
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 EPOCHS = 100
 # Wir erzeugen das exakte Array wie im Original-Code
 GRID_VALS = np.linspace(0.0, 1.0, 7)
@@ -35,7 +35,8 @@ GRID_VALS = np.linspace(0.0, 1.0, 7)
 
 # Deine Liste übersetzt in Indizes [alpha_idx, beta_idx]
 RESCUE_INDICES = [
-    (5, 1), # 0.83, 0.17
+    (5, 4), # 0.83, 0.67
+    (5, 5), # 0.83, 0.83
 ]
 CKPT_FOLDER = "checkpoints_unet"
 
@@ -167,8 +168,8 @@ def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: fl
 
 
 def lr_warmup_scheduler(epoch, lr):
-    warmup_epochs = 10
-    base_lr = 5e-4
+    warmup_epochs = 3
+    base_lr = 3e-4
     if epoch < warmup_epochs:
         # Linearer Anstieg
         return base_lr * (epoch + 1) / warmup_epochs
