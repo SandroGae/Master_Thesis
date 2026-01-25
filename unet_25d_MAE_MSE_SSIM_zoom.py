@@ -26,7 +26,7 @@ tf.config.experimental.enable_op_determinism()
 DEPTH = 5
 SERIES_LEN = 41
 BASEFILTERS = 64
-BATCH_SIZE = 8
+BATCH_SIZE = 8 # ERSTER RUN MIT 16 ZWEITER RUN MIT 8
 EPOCHS = 200 # Maximale Laufzeit
 PATIENCE = 20 # Early Stopping nach 20 Epochen ohne Verbesserung
 CKPT_FOLDER = "checkpoints_unet"
@@ -38,7 +38,7 @@ BETA_LIST = np.linspace(0.0, 1.0, 14)
 # --- LEARNING RATE WARMUP ---
 def lr_warmup_scheduler(epoch, lr):
     warmup_epochs = 3
-    base_lr = 5e-4 # Smaller for better convergence
+    base_lr = 5e-4
     if epoch < warmup_epochs:
         return base_lr * (epoch + 1) / warmup_epochs
     return lr
