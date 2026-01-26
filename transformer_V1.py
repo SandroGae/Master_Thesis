@@ -86,11 +86,16 @@ def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
 def temporal_transformer_layer(x, seq_len, dim, num_heads):
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
-    # Learnable Positional Encoding
-    pos_embed = tf.Variable(tf.zeros((1, seq_len, dim)), trainable=True)
+    
+    # FIX: Positional Encoding ohne tf.Variable Warnung
+    # Wir nutzen ein Embedding-Layer, um trainierbare Positionen zu erhalten
+    pos_indices = tf.range(seq_len)[tf.newaxis, :]
+    pos_embed = layers.Embedding(seq_len, dim)(pos_indices)
     x = x + pos_embed
+    
     x = layers.MultiHeadAttention(num_heads=num_heads, key_dim=dim // num_heads)(x, x)
     x = layers.Add()([res, x])
+    
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = layers.Dense(dim * 4, activation='gelu')(x)
@@ -109,16 +114,15 @@ def build_srdtrans(input_shape=(5, 192, 240, 1), f_maps=[16, 32, 64], window_siz
         x = layers.LeakyReLU(0.1)(x)
         x = layers.Conv3D(filters, 3, padding='same')(x)
         x = layers.LeakyReLU(0.1)(x)
-        encoder_features.insert(0, x)
+        encoder_features.insert(0, x) # Speichert 5, dann 3, dann 2 Slices
         x = layers.Conv3D(filters, (3,3,3), strides=(2,1,1), padding='same')(x)
 
     # 2. STB (Transformer Core)
     curr_t, curr_c = x.shape[1], x.shape[-1]
-    # Time Analysis
     x = tf.transpose(x, (0, 2, 3, 1, 4))
     x = tf.reshape(x, (-1, curr_t, curr_c))
     x = temporal_transformer_layer(x, curr_t, curr_c, 8)
-    # Space Analysis (Swin)
+    
     x = tf.reshape(x, (-1, h, w, curr_t, curr_c))
     x = tf.transpose(x, (0, 3, 1, 2, 4))
     x = tf.reshape(x, (-1, h * w, curr_c))
@@ -128,7 +132,15 @@ def build_srdtrans(input_shape=(5, 192, 240, 1), f_maps=[16, 32, 64], window_siz
 
     # 3. Temporal Excitation (Decoder)
     for i, filters in enumerate(f_maps[::-1]):
+        # Upsampling verdoppelt T (1->2, 2->4, 4->8)
         x = layers.Conv3DTranspose(filters, (4,3,3), strides=(2,1,1), padding='same')(x)
+        
+        # FIX: SHAPE MATCHING (Temporal Cropping)
+        # Wenn x mehr Slices hat als das gespeicherte Feature, schneiden wir den Rest ab
+        target_t = encoder_features[i].shape[1]
+        if x.shape[1] != target_t:
+            x = layers.Lambda(lambda t: t[:, :target_t, :, :, :])(x)
+        
         x = layers.Add()([x, encoder_features[i]])
         x = layers.Conv3D(filters // 2, 3, padding='same')(x)
         x = layers.LeakyReLU(0.1)(x)
@@ -136,7 +148,7 @@ def build_srdtrans(input_shape=(5, 192, 240, 1), f_maps=[16, 32, 64], window_siz
         x = layers.LeakyReLU(0.1)(x)
 
     outputs = layers.Conv3D(1, 3, padding='same', activation='sigmoid')(x)
-    outputs = outputs[:, input_shape[0] // 2, :, :, :] # Center Slice Output
+    outputs = outputs[:, input_shape[0] // 2, :, :, :] 
     return models.Model(inputs, outputs, name="SRDTrans_Paper_Exact")
 
 # --- DATA UTILS ---
