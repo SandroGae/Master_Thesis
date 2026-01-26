@@ -34,7 +34,7 @@ FFN_EXPANSION = 2.66
 NUM_HEADS = [1, 2, 4, 8]  # Heads pro Level
 NUM_BLOCKS = [4, 6, 6, 8] # Transformer Blöcke pro Level
 
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 INITIAL_LR = 3e-4 # Paper startet mit 3e-4
 EPOCHS = 100 # Anpassbar
 
@@ -396,7 +396,7 @@ model = build_restormer(input_shape=(192, 240, DEPTH), out_channels=1)
 optimizer = tf.keras.optimizers.Adam(learning_rate=INITIAL_LR, amsgrad=True)
 model.compile(optimizer=optimizer, loss=mae_ssim_2d, metrics=[mae_center, mse_center, psnr_center, ssim_center])
 
-model.summary()
+#model.summary()
 
 print(f"Training beginnt: {RUN_NAME}")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
