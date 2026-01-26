@@ -83,9 +83,9 @@ def plot_heatmaps(df, folder_name):
     contours = plt.contour(xi, yi, zi, levels=15, colors='white', alpha=0.3)
     plt.clabel(contours, inline=True, fontsize=9, fmt='%.2f')
 
-    plt.title(f'Success Score Landscape (MAE+MSE+SSIM)\nFolder: {folder_name}', fontsize=16, pad=20)
-    plt.xlabel('Alpha (SSIM Weight)', fontsize=14)
-    plt.ylabel('Beta (MSE vs MAE Weight)', fontsize=14)
+    plt.title(f'Success Score Heatmap', fontsize=16, pad=20)
+    plt.xlabel('Alpha (SSIM)', fontsize=14)
+    plt.ylabel('Beta (MSE/MAE)', fontsize=14)
     
     plt.tight_layout()
     plt.savefig(target_dir / "success_score_2d.png", dpi=300)
@@ -107,7 +107,7 @@ def plot_heatmaps(df, folder_name):
     ax.set_zlabel('Success Score', fontsize=12)
     ax.view_init(elev=25, azim=250)
     
-    plt.title(f'3D Success Topology: {folder_name}', fontsize=16)
+    plt.title(f'3D Success Topology', fontsize=16)
     plt.savefig(target_dir / "success_score_3d.png", dpi=300)
     print(f"Ergebnisse in {target_dir} gespeichert.")
     plt.show()

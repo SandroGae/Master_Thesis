@@ -1,15 +1,16 @@
+#!/usr/bin/env python3
+
 import pandas as pd
 import numpy as np
 from pathlib import Path
 
 # --- KONFIGURATION ---
-# Wir zielen jetzt direkt auf den Unterordner mit allen CSVs
 BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\CSV\csv_triple_loss") 
 
 def evaluate_all_runs(base_path):
     all_results = []
 
-    # Suche alle CSV Dateien rekursiv innerhalb von 'csv_triple_loss'
+    # Suche alle CSV Dateien rekursiv
     csv_files = list(base_path.glob("**/log_*.csv"))
     
     if not csv_files:
@@ -20,14 +21,12 @@ def evaluate_all_runs(base_path):
         try:
             df = pd.read_csv(csv_path)
             
-            # 1. Finde die Zeile mit dem NIEDRIGSTEN val_loss (Best-Point)
             if 'val_loss' not in df.columns:
                 continue
                 
             best_idx = df['val_loss'].idxmin()
             best_row = df.loc[best_idx]
             
-            # Daten extrahieren
             run_name = csv_path.stem.replace("log_", "")
             all_results.append({
                 'run_name': run_name,
@@ -35,22 +34,20 @@ def evaluate_all_runs(base_path):
                 'val_loss': best_row['val_loss'],
                 'mae': best_row['val_mae_center'],
                 'mse': best_row['val_mse_center'],
-                'ssim': best_row['val_ssim_center'],
-                'psnr': best_row['val_psnr_center']
+                'ssim': best_row['val_ssim_center']
             })
         except Exception as e:
             print(f"Fehler beim Lesen von {csv_path.name}: {e}")
 
-    # In DataFrame umwandeln
     results_df = pd.DataFrame(all_results)
 
-    # 2. NORMALISIERUNG (NCS Berechnung)
+    # 2. NORMALISIERUNG (NCS Berechnung) - Bleibt mathematisch identisch
     def normalize(series, reverse=False):
         s_min, s_max = series.min(), series.max()
         if s_max == s_min: return series * 0 + 1.0
-        if reverse: # Kleiner ist besser (MAE, MSE)
+        if reverse: 
             return (s_max - series) / (s_max - s_min)
-        else: # Größer ist besser (SSIM)
+        else: 
             return (series - s_min) / (s_max - s_min)
 
     results_df['n_mae']  = normalize(results_df['mae'], reverse=True)
@@ -66,22 +63,27 @@ def evaluate_all_runs(base_path):
     # 4. OUTPUT IN TXT DATEI
     output_file = base_path / "evaluation_summary.txt"
     with open(output_file, "w") as f:
-        f.write("="*120 + "\n")
+        f.write("="*125 + "\n")
         f.write(f"MASTER THESIS EVALUATION - FOLDER: {base_path.name}\n")
-        f.write(f"Ranked by Normalized Composite Score (NCS) at Min Val_Loss point\n")
-        f.write("="*120 + "\n\n")
+        f.write(f"Ranked by NCS | Scaling in Table: MSE*100, MAE*10\n")
+        f.write("="*125 + "\n\n")
         
-        header = f"{'Rank':<5} {'Run Name':<60} {'Score':<8} {'PSNR':<8} {'SSIM':<8} {'MAE':<10} {'Epoch':<5}\n"
+        # Header angepasst: PSNR raus, MSE*100 rein, MAE*10 Label
+        header = f"{'Rank':<5} {'Run Name':<60} {'Score':<8} {'MSE*100':<10} {'SSIM':<8} {'MAE*10':<10} {'Epoch':<5}\n"
         f.write(header)
         f.write("-" * len(header) + "\n")
 
         for i, row in results_df.iterrows():
+            # Hier findet die Skalierung NUR für die Text-Ausgabe statt
+            display_mse = row['mse'] * 100
+            display_mae = row['mae'] * 10
+            
             line = (f"{i+1:<5} {row['run_name'][:58]:<60} {row['success_score']:8.4f} "
-                    f"{row['psnr']:8.2f} {row['ssim']:8.4f} {row['mae']:10.6f} {int(row['best_epoch']):<5}\n")
+                    f"{display_mse:10.6f} {row['ssim']:8.4f} {display_mae:10.6f} {int(row['best_epoch']):<5}\n")
             f.write(line)
 
-    print(f"Evaluation abgeschlossen! {len(results_df)} Runs im Ordner '{base_path.name}' analysiert.")
-    print(f"Zusammenfassung gespeichert in: {output_file}")
+    print(f"Evaluation abgeschlossen! {len(results_df)} Runs analysiert.")
+    print(f"Zusammenfassung (MSE*100 / MAE*10) gespeichert in: {output_file}")
 
 if __name__ == "__main__":
     evaluate_all_runs(BASE_DIR)
