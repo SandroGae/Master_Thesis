@@ -38,28 +38,47 @@ FILES = {
 TB_ROOT = Path.home() / "data" / "tblogs_transformer"
 CKPT_FOLDER = "checkpoints_transformer"
 
-# --- SRDTRANS ARCHITEKTUR (EXAKT PAPER, REIN FUNKTIONAL) ---
+# --- SRDTRANS ARCHITEKTUR-BLÖCKE (FIXED) ---
 
 def window_partition(x, window_size):
-    _, h, w, c = x.shape
-    x = tf.reshape(x, (-1, h // window_size, window_size, w // window_size, window_size, c))
+    """ Teilt das Bild in lokale Fenster auf (mit dynamischer Batch-Größe). """
+    s = tf.shape(x)
+    b, h, w, c = s[0], s[1], s[2], s[3]
+    x = tf.reshape(x, (b, h // window_size, window_size, w // window_size, window_size, c))
     x = tf.transpose(x, (0, 1, 3, 2, 4, 5))
     return tf.reshape(x, (-1, window_size, window_size, c))
 
 def window_reverse(windows, window_size, h, w):
-    x = tf.reshape(windows, (-1, h // window_size, w // window_size, window_size, window_size, windows.shape[-1]))
+    """ Fügt Fenster wieder zum Bild zusammen (mit dynamischer Batch-Größe). """
+    # Berechne Batchgröße dynamisch aus den Windows
+    total_windows = tf.shape(windows)[0]
+    b = total_windows // ((h // window_size) * (w // window_size))
+    x = tf.reshape(windows, (b, h // window_size, w // window_size, window_size, window_size, -1))
     x = tf.transpose(x, (0, 1, 3, 2, 4, 5))
-    return tf.reshape(x, (-1, h, w, windows.shape[-1]))
+    return tf.reshape(x, (b, h, w, -1))
 
 def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
+    """ Swin-Block mit Padding-Fix für ungerade Bildgrößen. """
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = tf.reshape(x, (-1, h, w, dim))
+
+    # 1. Padding auf das nächste Vielfache von window_size
+    pad_h = (window_size - h % window_size) % window_size
+    pad_w = (window_size - w % window_size) % window_size
+    x = tf.pad(x, [[0, 0], [0, pad_h], [0, pad_w], [0, 0]])
+    
+    h_pad, w_pad = h + pad_h, w + pad_w
+
+    # 2. Cyclic Shift
     if shift_size > 0:
         x = tf.roll(x, shift=(-shift_size, -shift_size), axis=(1, 2))
+
+    # 3. Partitioning & W-MSA
     x_windows = window_partition(x, window_size)
     x_windows = tf.reshape(x_windows, (-1, window_size * window_size, dim))
     
+    # W-MSA (Inlined für Stabilität)
     head_dim = dim // num_heads
     qkv = layers.Dense(dim * 3)(x_windows)
     qkv = tf.reshape(qkv, (-1, window_size * window_size, 3, num_heads, head_dim))
@@ -70,12 +89,20 @@ def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
     x_attn = tf.reshape(tf.transpose(tf.matmul(attn, v), (0, 2, 1, 3)), (-1, window_size * window_size, dim))
     x_attn = layers.Dense(dim)(x_attn)
 
+    # 4. Reverse & Un-Shift
     x = tf.reshape(x_attn, (-1, window_size, window_size, dim))
-    x = window_reverse(x, window_size, h, w)
+    x = window_reverse(x, window_size, h_pad, w_pad)
+
     if shift_size > 0:
         x = tf.roll(x, shift=(shift_size, shift_size), axis=(1, 2))
+
+    # 5. Padding wieder entfernen
+    x = x[:, :h, :w, :]
+    
     x = tf.reshape(x, (-1, h * w, dim))
     x = layers.Add()([res, x])
+
+    # FFN
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = layers.Dense(dim * 4, activation='gelu')(x)
