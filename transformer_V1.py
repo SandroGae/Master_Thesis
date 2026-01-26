@@ -27,7 +27,8 @@ DEPTH = 5
 SERIES_LEN = 41
 EMBED_DIM = 64 
 BATCH_SIZE = 8
-INITIAL_LR = 1e-4
+# Dein Ziel-LR nach dem Warmup
+INITIAL_LR = 5e-4 
 EPOCHS = 100
 
 FILES = {
@@ -38,10 +39,16 @@ FILES = {
 TB_ROOT = Path.home() / "data" / "tblogs_transformer"
 CKPT_FOLDER = "checkpoints_transformer"
 
-# --- SRDTRANS ARCHITEKTUR-BLÖCKE (FIXED) ---
+# --- NEU: WARMUP SCHEDULER ---
+def lr_warmup_scheduler(epoch, lr):
+    """ Steigert die LR über 10 Epochen linear auf INITIAL_LR """
+    warmup_epochs = 10
+    if epoch < warmup_epochs:
+        return INITIAL_LR * (epoch + 1) / warmup_epochs
+    return lr
 
+# --- SRDTRANS ARCHITEKTUR-BLÖCKE --- (Code unverändert gelassen)
 def window_partition(x, window_size):
-    """ Teilt das Bild in lokale Fenster auf (mit dynamischer Batch-Größe). """
     s = tf.shape(x)
     b, h, w, c = s[0], s[1], s[2], s[3]
     x = tf.reshape(x, (b, h // window_size, window_size, w // window_size, window_size, c))
@@ -49,8 +56,6 @@ def window_partition(x, window_size):
     return tf.reshape(x, (-1, window_size, window_size, c))
 
 def window_reverse(windows, window_size, h, w):
-    """ Fügt Fenster wieder zum Bild zusammen (mit dynamischer Batch-Größe). """
-    # Berechne Batchgröße dynamisch aus den Windows
     total_windows = tf.shape(windows)[0]
     b = total_windows // ((h // window_size) * (w // window_size))
     x = tf.reshape(windows, (b, h // window_size, w // window_size, window_size, window_size, -1))
@@ -58,27 +63,17 @@ def window_reverse(windows, window_size, h, w):
     return tf.reshape(x, (b, h, w, -1))
 
 def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
-    """ Swin-Block mit Padding-Fix für ungerade Bildgrößen. """
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = tf.reshape(x, (-1, h, w, dim))
-
-    # 1. Padding auf das nächste Vielfache von window_size
     pad_h = (window_size - h % window_size) % window_size
     pad_w = (window_size - w % window_size) % window_size
     x = tf.pad(x, [[0, 0], [0, pad_h], [0, pad_w], [0, 0]])
-    
     h_pad, w_pad = h + pad_h, w + pad_w
-
-    # 2. Cyclic Shift
     if shift_size > 0:
         x = tf.roll(x, shift=(-shift_size, -shift_size), axis=(1, 2))
-
-    # 3. Partitioning & W-MSA
     x_windows = window_partition(x, window_size)
     x_windows = tf.reshape(x_windows, (-1, window_size * window_size, dim))
-    
-    # W-MSA (Inlined für Stabilität)
     head_dim = dim // num_heads
     qkv = layers.Dense(dim * 3)(x_windows)
     qkv = tf.reshape(qkv, (-1, window_size * window_size, 3, num_heads, head_dim))
@@ -88,21 +83,13 @@ def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
     attn = tf.nn.softmax(attn, axis=-1)
     x_attn = tf.reshape(tf.transpose(tf.matmul(attn, v), (0, 2, 1, 3)), (-1, window_size * window_size, dim))
     x_attn = layers.Dense(dim)(x_attn)
-
-    # 4. Reverse & Un-Shift
     x = tf.reshape(x_attn, (-1, window_size, window_size, dim))
     x = window_reverse(x, window_size, h_pad, w_pad)
-
     if shift_size > 0:
         x = tf.roll(x, shift=(shift_size, shift_size), axis=(1, 2))
-
-    # 5. Padding wieder entfernen
     x = x[:, :h, :w, :]
-    
     x = tf.reshape(x, (-1, h * w, dim))
     x = layers.Add()([res, x])
-
-    # FFN
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = layers.Dense(dim * 4, activation='gelu')(x)
@@ -112,7 +99,6 @@ def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
 def temporal_transformer_layer(x, seq_len, dim, num_heads):
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
-    # Fix: Embedding für trainierbares Positional Encoding nutzen (entfernt Warnung)
     pos_indices = tf.range(seq_len)[tf.newaxis, :]
     pos_embed = layers.Embedding(seq_len, dim)(pos_indices)
     x = x + pos_embed
@@ -129,8 +115,6 @@ def build_srdtrans(input_shape=(5, 192, 240, 1), f_maps=[16, 32, 64], window_siz
     x = inputs
     h, w = input_shape[1], input_shape[2]
     encoder_features = []
-
-    # 1. Temporal Squeeze (Encoder)
     for filters in f_maps:
         x = layers.Conv3D(filters // 2, 3, padding='same')(x)
         x = layers.LeakyReLU(0.1)(x)
@@ -138,35 +122,26 @@ def build_srdtrans(input_shape=(5, 192, 240, 1), f_maps=[16, 32, 64], window_siz
         x = layers.LeakyReLU(0.1)(x)
         encoder_features.insert(0, x)
         x = layers.Conv3D(filters, (3,3,3), strides=(2,1,1), padding='same')(x)
-
-    # 2. STB (Transformer Core)
     curr_t, curr_c = x.shape[1], x.shape[-1]
     x = tf.transpose(x, (0, 2, 3, 1, 4))
     x = tf.reshape(x, (-1, curr_t, curr_c))
     x = temporal_transformer_layer(x, curr_t, curr_c, 8)
-    
     x = tf.reshape(x, (-1, h, w, curr_t, curr_c))
     x = tf.transpose(x, (0, 3, 1, 2, 4))
     x = tf.reshape(x, (-1, h * w, curr_c))
     x = spatio_transformer_block(x, h, w, curr_c, 8, window_size, 0)
     x = spatio_transformer_block(x, h, w, curr_c, 8, window_size, window_size // 2)
     x = tf.reshape(x, (-1, curr_t, h, w, curr_c))
-
-    # 3. Temporal Excitation (Decoder)
     for i, filters in enumerate(f_maps[::-1]):
         x = layers.Conv3DTranspose(filters, (4,3,3), strides=(2,1,1), padding='same')(x)
-        
-        # FIX: Temporal Cropping für ungerade Tiefen (Löst ValueError bei Add)
         target_t = encoder_features[i].shape[1]
         if x.shape[1] != target_t:
             x = layers.Lambda(lambda t, target=target_t: t[:, :target, :, :, :])(x)
-            
         x = layers.Add()([x, encoder_features[i]])
         x = layers.Conv3D(filters // 2, 3, padding='same')(x)
         x = layers.LeakyReLU(0.1)(x)
         x = layers.Conv3D(filters, 3, padding='same')(x)
         x = layers.LeakyReLU(0.1)(x)
-
     outputs = layers.Conv3D(1, 3, padding='same', activation='sigmoid')(x)
     outputs = outputs[:, input_shape[0] // 2, :, :, :] 
     return models.Model(inputs, outputs, name="SRDTrans_Paper_Exact")
@@ -253,9 +228,14 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val.astype('float32'), y_val.ast
           .map(augment_and_normalize_3d_per_slice(10000, 10001, 0), num_parallel_calls=-1)
           .map(prepare_input_3d, num_parallel_calls=-1).cache().batch(BATCH_SIZE).prefetch(-1))
 
-# Callbacks & Compile
+# --- ANGEPASSTE CALLBACKS ---
 callbacks = [
+    # Warmup Scheduler
+    tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
+    # Reduzierung nach Warmup, wenn val_loss stagniert (patience=10)
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=2),
+    # Early Stopping nach 25 Epochen ohne Verbesserung
+    tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=25, restore_best_weights=True, verbose=1),
     make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER),
     tf.keras.callbacks.CSVLogger(str(Path.home() / "data" / CKPT_FOLDER / f"{RUN_NAME}.csv")),
     *tb_callbacks(TB_RUN_DIR)
@@ -269,7 +249,7 @@ print(f"Training beginnt: {RUN_NAME}")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
 
 meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, INITIAL_LR, (DEPTH, 192, 240, 1), 
-                      extra={"model": "SRDTrans_Exact_Final", "depth": DEPTH})
+                      extra={"model": "SRDTrans_Exact_Warmup", "depth": DEPTH})
 
 finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
 print("Training beendet.")
