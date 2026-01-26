@@ -15,7 +15,7 @@ from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, m
 from tb_utils import make_run_dir, tb_callbacks
 
 # --- REPRODUZIERBARKEIT ---
-SEED = 43
+SEED = 44
 os.environ['PYTHONHASHSEED'] = str(SEED)
 random.seed(SEED)
 np.random.seed(SEED)
