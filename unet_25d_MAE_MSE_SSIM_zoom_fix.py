@@ -35,7 +35,7 @@ CKPT_FOLDER = "checkpoints_unet"
 # Der mittlere Wert zwischen 1/6 und 2/6 ist exakt 0.25
 ALPHA_FIX = 0.25 
 # Spezifische Punkte
-BETA_LIST = [8/13]
+BETA_LIST = [8/12]
 
 # --- LEARNING RATE WARMUP ---
 def lr_warmup_scheduler(epoch, lr):
