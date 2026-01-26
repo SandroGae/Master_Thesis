@@ -8,15 +8,13 @@ from pathlib import Path
 import h5py
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers, models
+from tensorflow.keras import layers, models, backend as K
 
-# Deine Helper-Skripte
+# Deine Custom-Module (wie im Original)
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
-# -----------------------------
-# Reproduzierbarkeit
-# -----------------------------
+# REPRODUZIERBARKEIT
 SEED = 42
 os.environ["PYTHONHASHSEED"] = str(SEED)
 random.seed(SEED)
@@ -24,140 +22,281 @@ np.random.seed(SEED)
 tf.random.set_seed(SEED)
 tf.config.experimental.enable_op_determinism()
 
-# -----------------------------
-# Parameter
-# -----------------------------
+# PARAMETER (Angepasst an Restormer Paper Konfiguration)
 DEPTH = 5
 SERIES_LEN = 41
-EMBED_DIM = 48  # Restormer startet meist kleiner, da er Kanäle im Encoder verdoppelt
-BATCH_SIZE = 16 
-INITIAL_LR = 5e-4 # Restormer verträgt etwas mehr als SRDTrans
-EPOCHS = 100
+
+# Paper Settings:
+# Level 1 Kanäle: 48
+# Expansion Factor GDFN: 2.66
+EMBED_DIM = 48 
+FFN_EXPANSION = 2.66
+NUM_HEADS = [1, 2, 4, 8]  # Heads pro Level
+NUM_BLOCKS = [4, 6, 6, 8] # Transformer Blöcke pro Level
+
+BATCH_SIZE = 8
+INITIAL_LR = 3e-4 # Paper startet mit 3e-4
+EPOCHS = 100 # Anpassbar
 
 FILES = {
     "training": "/home/sgaell/data/original_data/training_data.hdf5",
     "validation": "/home/sgaell/data/original_data/validation_data.hdf5",
 }
 
-TB_ROOT = Path.home() / "data" / "tblogs_transformer"
-CKPT_FOLDER = "checkpoints_transformer"
+TB_ROOT = Path.home() / "data" / "tblogs_restormer"
+CKPT_FOLDER = "checkpoints_restormer"
+
 
 # -----------------------------
-# Restormer Komponenten (Funktional)
+# ARCHITEKTUR KOMPONENTEN (FUNKTIONAL)
 # -----------------------------
 
-def MDTA(x, filters, num_heads):
-    """ Multi-Dconv Head Transposed Attention """
-    b, h, w, c = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
-    res = x
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
+def apply_bias_free_layernorm(x):
+    """
+    Paper Section 3.1: "We use bias-free convolutional layers... From a layer normalized tensor..."
+    Implementation: Standard LayerNorm aber center=False (kein Bias/Beta).
+    """
+    return layers.LayerNormalization(epsilon=1e-6, center=False, scale=True)(x)
+
+def mdta_block(x, dim, num_heads):
+    """
+    Multi-Dconv Head Transposed Attention (MDTA)
+    Berechnet Attention über Kanäle statt Spatial (Linear Complexity).
+    """
+    input_tensor = x
     
-    # 1x1 Conv für Pixel-Mix + 3x3 Depthwise Conv für lokalen Kontext
-    qkv = layers.Conv2D(filters * 3, kernel_size=1, use_bias=False)(x)
+    # 1. Norm
+    x = apply_bias_free_layernorm(x)
+    
+    # 2. 1x1 Conv -> 3x3 Depthwise (Context aggregation)
+    # Q, K, V Projektion
+    qkv = layers.Conv2D(dim * 3, kernel_size=1, use_bias=False)(x)
     qkv = layers.DepthwiseConv2D(kernel_size=3, padding='same', use_bias=False)(qkv)
     
+    # Split in Q, K, V
     q, k, v = tf.split(qkv, num_or_size_splits=3, axis=-1)
     
-    # Reshape für Transposed Attention (Attention über Kanäle C)
-    # Shape: (Batch, Heads, C/Heads, H*W)
-    q = tf.reshape(q, (b, h * w, num_heads, filters // num_heads))
-    k = tf.reshape(k, (b, h * w, num_heads, filters // num_heads))
-    v = tf.reshape(v, (b, h * w, num_heads, filters // num_heads))
+    # Reshaping für Transposed Attention
+    # Ziel: (Batch, Heads, Channels/Head, HW) für Covariance Berechnung
+    # Shapes: (B, H, W, C) -> (B, H*W, Heads, C_head) -> Transpose
     
-    q = tf.transpose(q, (0, 2, 3, 1))
-    k = tf.transpose(k, (0, 2, 1, 3))
-    v = tf.transpose(v, (0, 2, 3, 1))
+    # Wir nutzen hier Einstein Summation oder Reshape/Permute Operationen
+    batch_size = tf.shape(q)[0]
+    h_dim = tf.shape(q)[1]
+    w_dim = tf.shape(q)[2]
+    head_dim = dim // num_heads
     
-    # Transposed Attention Map: (C x C)
-    # Das ist der Clou: Die Komplexität ist linear zur Bildgröße!
+    # Reshape zu (B, Heads, HW, C_head)
+    # Erst flatten spatial: (B, HW, Heads, C_head)
+    q = layers.Reshape((-1, num_heads, head_dim))(q)
+    k = layers.Reshape((-1, num_heads, head_dim))(k)
+    v = layers.Reshape((-1, num_heads, head_dim))(v)
+    
+    # Permute zu (B, Heads, C_head, HW) für Q und K
+    # Paper Eq(1): Attention = Softmax(K * Q / alpha)
+    # Hier implementiert als Dot-Product über HW Dimension
+    q = layers.Permute((2, 3, 1))(q) # (B, Heads, C_head, HW)
+    k = layers.Permute((2, 3, 1))(k) # (B, Heads, C_head, HW)
+    v = layers.Permute((2, 1, 3))(v) # (B, Heads, HW, C_head) - V bleibt "spatial first" für Multiplikation
+    
+    # Normalize (Stabilisierung, implizit im Paper oft gemacht oder L2 vor Dot)
     q = tf.math.l2_normalize(q, axis=-1)
-    k = tf.math.l2_normalize(k, axis=-2)
+    k = tf.math.l2_normalize(k, axis=-1)
     
-    attn = tf.matmul(q, k)
-    attn = tf.nn.softmax(attn, axis=-1)
+    # Transposed Attention Map (Cross-Covariance)
+    # (C_head, HW) * (HW, C_head)^T -> (C_head, C_head)
+    # Hier: q @ k^T (über die letzte Dimension HW)
+    attn = tf.matmul(q, k, transpose_b=True) # (B, Heads, C_head, C_head)
     
-    out = tf.matmul(attn, v)
-    out = tf.transpose(out, (0, 3, 1, 2))
-    out = tf.reshape(out, (b, h, w, filters))
+    # Scaling (Learnable Temperature alpha im Paper). 
+    # Ohne Klassen nutzen wir hier ein festes Scaling (typisch sqrt(dim)), 
+    # da 'learnable scalar' in functional API ohne Custom Layer hacky ist.
+    attn = attn * tf.math.rsqrt(tf.cast(head_dim, tf.float32))
     
-    out = layers.Conv2D(filters, kernel_size=1, use_bias=False)(out)
-    return layers.Add()([res, out])
+    attn = layers.Softmax(axis=-1)(attn)
+    
+    # Attention auf V anwenden
+    # (HW, C_head) * (C_head, C_head) -> (HW, C_head)
+    # Hier: v @ attn^T
+    out = tf.matmul(v, attn, transpose_b=True) # (B, Heads, HW, C_head)
+    
+    # Reshape zurück zu (B, H, W, C)
+    out = layers.Permute((2, 1, 3))(out) # (B, HW, Heads, C_head)
+    out = layers.Reshape((h_dim, w_dim, dim))(out)
+    
+    # Output Projection
+    out = layers.Conv2D(dim, kernel_size=1, use_bias=False)(out)
+    
+    # Residual Connection
+    return layers.Add()([input_tensor, out])
 
-def GDFN(x, filters, expansion_factor=2.66):
-    """ Gated-Dconv Feed-Forward Network """
-    res = x
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
+def gdfn_block(x, dim, expansion_factor):
+    """
+    Gated-Dconv Feed-Forward Network (GDFN)
+    Kontrolliert den Informationsfluss mittels Gating.
+    """
+    input_tensor = x
+    hidden_dim = int(dim * expansion_factor)
     
-    # Kanäle aufblähen
-    inner_filters = int(filters * expansion_factor)
+    # 1. Norm
+    x = apply_bias_free_layernorm(x)
     
-    # Zwei Pfade für das Gating
-    x = layers.Conv2D(inner_filters * 2, kernel_size=1, use_bias=False)(x)
+    # 2. 1x1 Conv (Expansion)
+    x = layers.Conv2D(hidden_dim * 2, kernel_size=1, use_bias=False)(x)
+    
+    # 3. 3x3 Depthwise Conv
     x = layers.DepthwiseConv2D(kernel_size=3, padding='same', use_bias=False)(x)
     
-    path1, path2 = tf.split(x, num_or_size_splits=2, axis=-1)
+    # 4. Gating Mechanism
+    # Split in zwei Pfade
+    x1, x2 = tf.split(x, num_or_size_splits=2, axis=-1)
     
-    # Gating: Elementweise Multiplikation (Einer mit Aktivierung)
-    x = layers.Activation('gelu')(path1) * path2
+    # Gating: phi(x1) * x2, wobei phi = GELU
+    x1 = layers.Activation('gelu')(x1)
+    x = layers.Multiply()([x1, x2])
     
-    # Zurück auf Ursprungskanäle
-    x = layers.Conv2D(filters, kernel_size=1, use_bias=False)(x)
-    return layers.Add()([res, x])
+    # 5. 1x1 Conv (Projection back)
+    x = layers.Conv2D(dim, kernel_size=1, use_bias=False)(x)
+    
+    # Residual Connection
+    return layers.Add()([input_tensor, x])
 
-def restormer_block(x, filters, num_heads):
-    x = MDTA(x, filters, num_heads)
-    x = GDFN(x, filters)
+def transformer_block(x, dim, num_heads, expansion_factor):
+    """ Kombiniert MDTA und GDFN """
+    x = mdta_block(x, dim, num_heads)
+    x = gdfn_block(x, dim, expansion_factor)
     return x
 
-# -----------------------------
-# Restormer Modellaufbau (U-Net Shape)
-# -----------------------------
+def pixel_unshuffle(x, block_size=2):
+    """ Downsampling via space_to_depth """
+    return tf.nn.space_to_depth(x, block_size=block_size)
 
-def build_restormer(input_shape=(192, 240, 5), embed_dim=48):
+def pixel_shuffle(x, block_size=2):
+    """ Upsampling via depth_to_space """
+    return tf.nn.depth_to_space(x, block_size=block_size)
+
+def downsample_block(x, dim):
+    """ Paper: Pixel-unshuffle downsampling """
+    # Da PixelUnshuffle Channel x4 nimmt, Restormer aber nur x2 will,
+    # muss man aufpassen. Im offiziellen Code swz30: 
+    # PixelUnshuffle macht H/2, W/2, 4C.
+    # Dann 1x1 Conv um auf 2C zu reduzieren.
+    # ABER Paper sagt: "Input image ... convolution ... low-level feature embeddings"
+    # Hier: Space-to-Depth -> dann Channel Anpassung.
+    x = layers.Lambda(pixel_unshuffle, arguments={'block_size': 2})(x)
+    # PixelUnshuffle vervierfacht Kanäle. Wir wollen aber Verdopplung (dim -> 2*dim).
+    # Aktuell hat x: 4*dim Kanäle. Ziel: 2*dim.
+    x = layers.Conv2D(dim * 2, kernel_size=1, use_bias=False)(x)
+    return x
+
+def upsample_block(x, dim):
+    """ Paper: Pixel-shuffle upsampling """
+    # Input hat dim Kanäle. Ziel ist dim/2 Spatial x2.
+    # Conv auf 2*Ziel-Dim (also dim) -> PixelShuffle -> dim/2
+    
+    # Schritt 1: Conv expansion auf 2 * output_dim (was hier 'dim' // 2 ist * 4 für shuffle? Nein.)
+    # PixelShuffle(r=2) erwartet C*r^2 Kanäle um C auszugeben.
+    # Wir wollen Output Channel = dim // 2. Also Input für Shuffle muss (dim//2)*4 = 2*dim sein.
+    
+    x = layers.Conv2D(dim * 2, kernel_size=1, use_bias=False)(x)
+    x = layers.Lambda(pixel_shuffle, arguments={'block_size': 2})(x)
+    return x
+
+
+def build_restormer(input_shape=(192, 240, 5), out_channels=1):
+    """
+    Erstellt das Restormer Modell exakt nach Paper-Architektur.
+    """
     inputs = layers.Input(shape=input_shape)
     
-    # 1. Initial Embedding
-    x = layers.Conv2D(embed_dim, kernel_size=3, padding='same')(inputs)
+    # 1. Initial Convolution
+    # "Restormer first applies a convolution to obtain low-level feature embeddings F0"
+    x = layers.Conv2D(EMBED_DIM, kernel_size=3, padding='same', use_bias=False)(inputs)
     
-    # --- ENCODER ---
+    encoder_feats = []
+    
+    # ENCODER (4 Levels)
     # Level 1
-    x1 = restormer_block(x, embed_dim, num_heads=1)
-    # Downsample
-    x2_in = layers.Conv2D(embed_dim * 2, kernel_size=3, strides=2, padding='same')(x1)
+    for _ in range(NUM_BLOCKS[0]):
+        x = transformer_block(x, EMBED_DIM, NUM_HEADS[0], FFN_EXPANSION)
+    encoder_feats.append(x)
     
-    # Level 2
-    x2 = restormer_block(x2_in, embed_dim * 2, num_heads=2)
-    # Downsample
-    x3_in = layers.Conv2D(embed_dim * 4, kernel_size=3, strides=2, padding='same')(x2)
+    # Level 2 (Downsample -> Transformer)
+    x = downsample_block(x, EMBED_DIM) # Dim: 48 -> 96
+    for _ in range(NUM_BLOCKS[1]):
+        x = transformer_block(x, EMBED_DIM * 2, NUM_HEADS[1], FFN_EXPANSION)
+    encoder_feats.append(x)
     
-    # Level 3 (Bottleneck)
-    x3 = restormer_block(x3_in, embed_dim * 4, num_heads=4)
+    # Level 3
+    x = downsample_block(x, EMBED_DIM * 2) # Dim: 96 -> 192
+    for _ in range(NUM_BLOCKS[2]):
+        x = transformer_block(x, EMBED_DIM * 4, NUM_HEADS[2], FFN_EXPANSION)
+    encoder_feats.append(x)
     
-    # --- DECODER ---
-    # Upsample + Skip 1
-    u2 = layers.Conv2DTranspose(embed_dim * 2, kernel_size=2, strides=2, padding='same')(x3)
-    u2 = layers.Concatenate()([u2, x2])
-    u2 = layers.Conv2D(embed_dim * 2, kernel_size=1)(u2) # Channel fix nach Concat
-    u2 = restormer_block(u2, embed_dim * 2, num_heads=2)
+    # Level 4 (Bottleneck)
+    x = downsample_block(x, EMBED_DIM * 4) # Dim: 192 -> 384
+    for _ in range(NUM_BLOCKS[3]):
+        x = transformer_block(x, EMBED_DIM * 8, NUM_HEADS[3], FFN_EXPANSION)
     
-    # Upsample + Skip 2
-    u1 = layers.Conv2DTranspose(embed_dim, kernel_size=2, strides=2, padding='same')(u2)
-    u1 = layers.Concatenate()([u1, x1])
-    u1 = layers.Conv2D(embed_dim, kernel_size=1)(u1)
-    u1 = restormer_block(u1, embed_dim, num_heads=1)
+    # DECODER (Symmetrisch)
+    # Decoder Level 3 (Upsample -> Concat -> Reduce -> Transformer)
+    x = upsample_block(x, EMBED_DIM * 8) # Output Channels: 192
     
-    # Output Refinement
-    out = layers.Conv2D(embed_dim, kernel_size=3, padding='same')(u1)
-    out = layers.Activation('relu')(out)
-    final = layers.Conv2D(1, kernel_size=3, padding='same', activation='sigmoid')(out)
+    # Skip Connection
+    skip = encoder_feats.pop() # Level 3 Skip
+    x = layers.Concatenate()([x, skip])
     
-    return models.Model(inputs, final, name="Restormer_XRD")
+    # Channel Reduction by half
+    x = layers.Conv2D(EMBED_DIM * 4, kernel_size=1, use_bias=False)(x)
+    
+    for _ in range(NUM_BLOCKS[2]):
+        x = transformer_block(x, EMBED_DIM * 4, NUM_HEADS[2], FFN_EXPANSION)
+        
+    # Decoder Level 2
+    x = upsample_block(x, EMBED_DIM * 4) # Output Channels: 96
+    skip = encoder_feats.pop()
+    x = layers.Concatenate()([x, skip])
+    x = layers.Conv2D(EMBED_DIM * 2, kernel_size=1, use_bias=False)(x)
+    
+    for _ in range(NUM_BLOCKS[1]):
+        x = transformer_block(x, EMBED_DIM * 2, NUM_HEADS[1], FFN_EXPANSION)
+        
+    # Decoder Level 1
+    x = upsample_block(x, EMBED_DIM * 2) # Output Channels: 48
+    skip = encoder_feats.pop()
+    x = layers.Concatenate()([x, skip])
+    
+    # Paper Section 4.5 Table 8: "To aggregate encoder features with decoder at level-1, we do NOT employ 1x1 convolution"
+    # Also KEINE Reduktion hier!
+    
+    for _ in range(NUM_BLOCKS[0]):
+        x = transformer_block(x, EMBED_DIM * 2, NUM_HEADS[0], FFN_EXPANSION) # Channels sind hier 2xEMBED_DIM wegen Concat
+        
+    # REFINEMENT STAGE
+    # "Refinement stage operating at high spatial resolution"
+    for _ in range(4): # 4 Blocks im Refinement laut Paper Implementation Details
+        x = transformer_block(x, EMBED_DIM * 2, NUM_HEADS[0], FFN_EXPANSION)
+        
+    # OUTPUT
+    # "Finally, a convolution layer is applied... to generate residual image R"
+    residual = layers.Conv2D(out_channels, kernel_size=3, padding='same', use_bias=False)(x)
+    
+    # Add Degraded Image (Residual Learning)
+    # Da Input 5 Layer (2.5D) ist, nehmen wir den mittleren Slice als Basis
+    center_idx = input_shape[-1] // 2
+    input_center = inputs[:, :, :, center_idx:center_idx+1]
+    
+    out = layers.Add()([input_center, residual])
+    
+    # Optional: Activation wenn du [0,1] erzwingen willst (Paper nutzt oft linearen Output für Residuals)
+    out = layers.Activation('sigmoid')(out)
+    
+    return models.Model(inputs, out, name="Restormer_Exact_Functional")
 
-# -----------------------------
-# Warmup & Data Functions (Identisch zu V3)
-# -----------------------------
+
+# WARMUP & DATA LOADING
 def lr_warmup_scheduler(epoch, lr):
-    warmup_epochs = 5
+    warmup_epochs = 10
     if epoch < warmup_epochs:
         return INITIAL_LR * (epoch + 1) / warmup_epochs
     return lr
@@ -204,7 +343,7 @@ def prepare_restormer_input(x, y):
     y_center = y[tf.shape(y)[0] // 2]
     return x, y_center
 
-# Metriken & Loss (identisch zu UNet/V3)
+# Metriken
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -228,9 +367,9 @@ def ssim_center(y_true, y_pred):
     y_true, y_pred = tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
 
-# -----------------------------
-# MAIN RUN
-# -----------------------------
+
+
+# MAIN
 print("Lade Daten...")
 X_train, y_train = load_split(FILES["training"])
 X_val, y_val = load_split(FILES["validation"])
@@ -241,9 +380,9 @@ X_val, y_val = make_sliding_windows(X_val, y_val, SERIES_LEN, DEPTH)
 X_train, y_train = X_train.astype(np.float32), y_train.astype(np.float32)
 X_val, y_val = X_val.astype(np.float32), y_val.astype(np.float32)
 
-BASE_NAME = "Restormer_XRD"
+BASE_NAME = "Restormer_Exact"
 RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
-RUN_NAME = f"{BASE_NAME}__BS{BATCH_SIZE}__seed{SEED}__emb{EMBED_DIM}__lossMAE_SSIM__{RUN_ID}"
+RUN_NAME = f"{BASE_NAME}__BS{BATCH_SIZE}__emb{EMBED_DIM}__{RUN_ID}"
 
 TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -270,9 +409,16 @@ callbacks = [
     *tb_callbacks(TB_RUN_DIR),
 ]
 
-model = build_restormer(embed_dim=EMBED_DIM)
+# Build Model
+model = build_restormer(input_shape=(192, 240, DEPTH), out_channels=1)
+
+# Optimizer & Compile
+# Paper nutzt AdamW. In Keras oft "Adam" mit weight decay ausreichend oder tfa.optimizers.AdamW
+# Hier Standard Adam wie in deinem Code, aber mit Paper-LR
 optimizer = tf.keras.optimizers.Adam(learning_rate=INITIAL_LR, amsgrad=True)
 model.compile(optimizer=optimizer, loss=mae_ssim_2d, metrics=[mae_center, mse_center, psnr_center, ssim_center])
+
+model.summary()
 
 print(f"Training beginnt: {RUN_NAME}")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
@@ -280,7 +426,7 @@ history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=c
 meta = make_meta_dict(
     script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=EPOCHS, 
     optimizer=optimizer, learning_rate=INITIAL_LR, input_shape=(192, 240, DEPTH),
-    extra={"loss": "mae_ssim(alpha=0.6)", "model": "Restormer_XRD_Nature_Style"}
+    extra={"model": "Restormer_Exact_Paper_Impl"}
 )
 
 finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
