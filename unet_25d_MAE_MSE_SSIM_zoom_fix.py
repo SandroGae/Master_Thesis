@@ -15,7 +15,7 @@ from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, m
 from tb_utils import make_run_dir, tb_callbacks
 
 # --- REPRODUZIERBARKEIT ---
-SEED = 42
+SEED = 43
 os.environ['PYTHONHASHSEED'] = str(SEED)
 random.seed(SEED)
 np.random.seed(SEED)
@@ -34,8 +34,8 @@ CKPT_FOLDER = "checkpoints_unet"
 # --- INDIVIDUELLE PUNKTE AUSWÄHLEN ---
 # Der mittlere Wert zwischen 1/6 und 2/6 ist exakt 0.25
 ALPHA_FIX = 0.25 
-# Beta von 0 bis 1 verteilt auf genau 13 Punkte
-BETA_LIST = np.linspace(0.0, 1.0, 13)
+# Spezifische Punkte
+BETA_LIST = [0.0, 1/13]
 
 # --- LEARNING RATE WARMUP ---
 def lr_warmup_scheduler(epoch, lr):
