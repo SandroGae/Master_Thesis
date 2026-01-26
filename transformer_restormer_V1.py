@@ -59,75 +59,53 @@ def apply_bias_free_layernorm(x):
     return layers.LayerNormalization(epsilon=1e-6, center=False, scale=True)(x)
 
 def mdta_block(x, dim, num_heads):
-    """
-    Multi-Dconv Head Transposed Attention (MDTA)
-    Berechnet Attention über Kanäle statt Spatial (Linear Complexity).
-    """
     input_tensor = x
-    
-    # 1. Norm
     x = apply_bias_free_layernorm(x)
     
-    # 2. 1x1 Conv -> 3x3 Depthwise (Context aggregation)
-    # Q, K, V Projektion
+    # QKV Projektion
     qkv = layers.Conv2D(dim * 3, kernel_size=1, use_bias=False)(x)
     qkv = layers.DepthwiseConv2D(kernel_size=3, padding='same', use_bias=False)(qkv)
-    
-    # Split in Q, K, V
     q, k, v = tf.split(qkv, num_or_size_splits=3, axis=-1)
     
-    # Reshaping für Transposed Attention
-    # Ziel: (Batch, Heads, Channels/Head, HW) für Covariance Berechnung
-    # Shapes: (B, H, W, C) -> (B, H*W, Heads, C_head) -> Transpose
-    
-    # Wir nutzen hier Einstein Summation oder Reshape/Permute Operationen
-    batch_size = tf.shape(q)[0]
-    h_dim = tf.shape(q)[1]
-    w_dim = tf.shape(q)[2]
+    # Statische Shapes extrahieren
+    # Da dein Input-Shape fest ist (192, 240, 5), nutzen wir x.shape
+    _, h, w, c = x.shape
     head_dim = dim // num_heads
+
+    # Reshaping für Transposed Attention mit tf.reshape (funktioniert besser in Lambda)
+    def transpose_attention(tensors):
+        q_in, k_in, v_in = tensors
+        b_dynamic = tf.shape(q_in)[0]
+        
+        # Flatten spatial: (B, HW, Heads, C_head)
+        q_f = tf.reshape(q_in, (b_dynamic, -1, num_heads, head_dim))
+        k_f = tf.reshape(k_in, (b_dynamic, -1, num_heads, head_dim))
+        v_f = tf.reshape(v_in, (b_dynamic, -1, num_heads, head_dim))
+        
+        # Permute für Cross-Covariance: (B, Heads, C_head, HW)
+        q_f = tf.transpose(q_f, (0, 2, 3, 1))
+        k_f = tf.transpose(k_f, (0, 2, 3, 1))
+        v_f = tf.transpose(v_f, (0, 2, 1, 3)) # (B, Heads, HW, C_head)
+        
+        # L2 Norm
+        q_f = tf.math.l2_normalize(q_f, axis=-1)
+        k_f = tf.math.l2_normalize(k_f, axis=-1)
+        
+        # Matmul: (B, Heads, C_head, C_head)
+        attn = tf.matmul(q_f, k_f, transpose_b=True)
+        attn = tf.nn.softmax(attn, axis=-1)
+        
+        # Output: (B, Heads, HW, C_head)
+        out = tf.matmul(v_f, attn, transpose_b=True)
+        
+        # Zurück zu (B, H, W, C)
+        out = tf.transpose(out, (0, 2, 1, 3)) # (B, HW, Heads, C_head)
+        return tf.reshape(out, (b_dynamic, h, w, dim))
+
+    # Alles in einen Lambda-Layer packen, um Keras-Symbolik-Fehler zu vermeiden
+    out = layers.Lambda(transpose_attention)([q, k, v])
     
-    # Reshape zu (B, Heads, HW, C_head)
-    # Erst flatten spatial: (B, HW, Heads, C_head)
-    q = layers.Reshape((-1, num_heads, head_dim))(q)
-    k = layers.Reshape((-1, num_heads, head_dim))(k)
-    v = layers.Reshape((-1, num_heads, head_dim))(v)
-    
-    # Permute zu (B, Heads, C_head, HW) für Q und K
-    # Paper Eq(1): Attention = Softmax(K * Q / alpha)
-    # Hier implementiert als Dot-Product über HW Dimension
-    q = layers.Permute((2, 3, 1))(q) # (B, Heads, C_head, HW)
-    k = layers.Permute((2, 3, 1))(k) # (B, Heads, C_head, HW)
-    v = layers.Permute((2, 1, 3))(v) # (B, Heads, HW, C_head) - V bleibt "spatial first" für Multiplikation
-    
-    # Normalize (Stabilisierung, implizit im Paper oft gemacht oder L2 vor Dot)
-    q = tf.math.l2_normalize(q, axis=-1)
-    k = tf.math.l2_normalize(k, axis=-1)
-    
-    # Transposed Attention Map (Cross-Covariance)
-    # (C_head, HW) * (HW, C_head)^T -> (C_head, C_head)
-    # Hier: q @ k^T (über die letzte Dimension HW)
-    attn = tf.matmul(q, k, transpose_b=True) # (B, Heads, C_head, C_head)
-    
-    # Scaling (Learnable Temperature alpha im Paper). 
-    # Ohne Klassen nutzen wir hier ein festes Scaling (typisch sqrt(dim)), 
-    # da 'learnable scalar' in functional API ohne Custom Layer hacky ist.
-    attn = attn * tf.math.rsqrt(tf.cast(head_dim, tf.float32))
-    
-    attn = layers.Softmax(axis=-1)(attn)
-    
-    # Attention auf V anwenden
-    # (HW, C_head) * (C_head, C_head) -> (HW, C_head)
-    # Hier: v @ attn^T
-    out = tf.matmul(v, attn, transpose_b=True) # (B, Heads, HW, C_head)
-    
-    # Reshape zurück zu (B, H, W, C)
-    out = layers.Permute((2, 1, 3))(out) # (B, HW, Heads, C_head)
-    out = layers.Reshape((h_dim, w_dim, dim))(out)
-    
-    # Output Projection
     out = layers.Conv2D(dim, kernel_size=1, use_bias=False)(out)
-    
-    # Residual Connection
     return layers.Add()([input_tensor, out])
 
 def gdfn_block(x, dim, expansion_factor):
