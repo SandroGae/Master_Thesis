@@ -32,9 +32,10 @@ PATIENCE = 25
 CKPT_FOLDER = "checkpoints_unet"
 
 # --- INDIVIDUELLE PUNKTE AUSWÄHLEN ---
-ALPHA_FIX = 1.5 / 7
-# Hier kannst du jetzt explizit die Beta-Werte eintragen, die du laufen lassen willst
-BETA_LIST = [1/13] 
+# Der mittlere Wert zwischen 1/6 und 2/6 ist exakt 0.25
+ALPHA_FIX = 0.25 
+# Beta von 0 bis 1 verteilt auf genau 13 Punkte
+BETA_LIST = np.linspace(0.0, 1.0, 13)
 
 # --- LEARNING RATE WARMUP ---
 def lr_warmup_scheduler(epoch, lr):
