@@ -25,7 +25,7 @@ tf.config.experimental.enable_op_determinism()
 # --- PARAMETER ---
 DEPTH = 5
 SERIES_LEN = 41
-EMBED_DIM = 64 # Start-Filter für das Paper-Modell
+EMBED_DIM = 64 
 BATCH_SIZE = 8
 INITIAL_LR = 1e-4
 EPOCHS = 100
@@ -60,7 +60,6 @@ def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
     x_windows = window_partition(x, window_size)
     x_windows = tf.reshape(x_windows, (-1, window_size * window_size, dim))
     
-    # W-MSA
     head_dim = dim // num_heads
     qkv = layers.Dense(dim * 3)(x_windows)
     qkv = tf.reshape(qkv, (-1, window_size * window_size, 3, num_heads, head_dim))
@@ -86,16 +85,12 @@ def spatio_transformer_block(x, h, w, dim, num_heads, window_size, shift_size):
 def temporal_transformer_layer(x, seq_len, dim, num_heads):
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
-    
-    # FIX: Positional Encoding ohne tf.Variable Warnung
-    # Wir nutzen ein Embedding-Layer, um trainierbare Positionen zu erhalten
+    # Fix: Embedding für trainierbares Positional Encoding nutzen (entfernt Warnung)
     pos_indices = tf.range(seq_len)[tf.newaxis, :]
     pos_embed = layers.Embedding(seq_len, dim)(pos_indices)
     x = x + pos_embed
-    
     x = layers.MultiHeadAttention(num_heads=num_heads, key_dim=dim // num_heads)(x, x)
     x = layers.Add()([res, x])
-    
     res = x
     x = layers.LayerNormalization(epsilon=1e-6)(x)
     x = layers.Dense(dim * 4, activation='gelu')(x)
@@ -114,7 +109,7 @@ def build_srdtrans(input_shape=(5, 192, 240, 1), f_maps=[16, 32, 64], window_siz
         x = layers.LeakyReLU(0.1)(x)
         x = layers.Conv3D(filters, 3, padding='same')(x)
         x = layers.LeakyReLU(0.1)(x)
-        encoder_features.insert(0, x) # Speichert 5, dann 3, dann 2 Slices
+        encoder_features.insert(0, x)
         x = layers.Conv3D(filters, (3,3,3), strides=(2,1,1), padding='same')(x)
 
     # 2. STB (Transformer Core)
@@ -132,15 +127,13 @@ def build_srdtrans(input_shape=(5, 192, 240, 1), f_maps=[16, 32, 64], window_siz
 
     # 3. Temporal Excitation (Decoder)
     for i, filters in enumerate(f_maps[::-1]):
-        # Upsampling verdoppelt T (1->2, 2->4, 4->8)
         x = layers.Conv3DTranspose(filters, (4,3,3), strides=(2,1,1), padding='same')(x)
         
-        # FIX: SHAPE MATCHING (Temporal Cropping)
-        # Wenn x mehr Slices hat als das gespeicherte Feature, schneiden wir den Rest ab
+        # FIX: Temporal Cropping für ungerade Tiefen (Löst ValueError bei Add)
         target_t = encoder_features[i].shape[1]
         if x.shape[1] != target_t:
-            x = layers.Lambda(lambda t: t[:, :target_t, :, :, :])(x)
-        
+            x = layers.Lambda(lambda t, target=target_t: t[:, :target, :, :, :])(x)
+            
         x = layers.Add()([x, encoder_features[i]])
         x = layers.Conv3D(filters // 2, 3, padding='same')(x)
         x = layers.LeakyReLU(0.1)(x)
@@ -187,7 +180,7 @@ def prepare_input_3d(x, y):
     y_center = y[tf.shape(y)[0] // 2]
     return x, y_center
 
-# --- LOSS & METRICS ---
+# --- LOSS & METRIKEN ---
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
@@ -220,7 +213,7 @@ X_train, y_train = make_sliding_windows(X_train_raw, y_train_raw, SERIES_LEN, DE
 X_val, y_val = make_sliding_windows(X_val_raw, y_val_raw, SERIES_LEN, DEPTH)
 
 RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
-RUN_NAME = f"SRDTrans_Exact__seed{SEED}__emb{EMBED_DIM}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
+RUN_NAME = f"SRDTrans_Exact__seed{SEED}__emb64__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -249,7 +242,7 @@ print(f"Training beginnt: {RUN_NAME}")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
 
 meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, INITIAL_LR, (DEPTH, 192, 240, 1), 
-                      extra={"model": "SRDTrans_Nature_Exact_Functional", "depth": DEPTH})
+                      extra={"model": "SRDTrans_Exact_Final", "depth": DEPTH})
 
 finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
 print("Training beendet.")
