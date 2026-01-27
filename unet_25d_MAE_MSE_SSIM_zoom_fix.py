@@ -114,14 +114,31 @@ def prepare_25d_input(x, y):
     y_center = y[tf.shape(y)[0] // 2]
     return x, y_center
 
-# --- LOSS & METRICS --- (Bleibt identisch)
-def get_triple_loss(a, b):
-    def loss(yt, yp):
-        yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
-        mae = tf.reduce_mean(tf.abs(yt - yp))
-        mse = tf.reduce_mean(tf.square(yt - yp))
-        ssim_l = 1.0 - tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
-        return (a * ssim_l) + ((1.0 - a) * b * mse) + ((1.0 - a) * (1.0 - b) * mae)
+# LOSS
+def get_triple_loss(alpha, beta):
+    """
+    alpha: Gewichtung für SSIM vs. Pixel-Losses (MSE/MAE)
+    beta:  Interne Gewichtung der Pixel-Losses (MSE vs. MAE)
+    """
+    def loss(y_true, y_pred):
+        # Typ-Sicherheit gewährleisten
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
+
+        # Einzel-Metriken berechnen
+        mae_loss  = tf.reduce_mean(tf.abs(y_true - y_pred))
+        mse_loss  = tf.reduce_mean(tf.square(y_true - y_pred))
+        ssim_val  = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+        ssim_loss = 1.0 - ssim_val
+
+        # Kaskadierte Gewichtung
+        w_ssim = alpha
+        w_mse  = (1.0 - alpha) * beta
+        w_mae  = (1.0 - alpha) * (1.0 - beta)
+
+        # Gewichtete Summe zurückgeben
+        return (w_ssim * ssim_loss) + (w_mse * mse_loss) + (w_mae * mae_loss)
+    
     return loss
 
 def mae_center(yt, yp):

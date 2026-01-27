@@ -73,24 +73,29 @@ def plot_combined_heatmaps(df, output_name):
     target_dir = FIG_BASE_DIR / output_name
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Grid für die Interpolation
-    xi = np.linspace(df['alpha'].min(), df['alpha'].max(), 250)
-    yi = np.linspace(df['beta'].min(), df['beta'].max(), 250)
+    # Grid für die Interpolation (Bereich 0-1 oder basierend auf Daten)
+    # Nutze 0 bis 1, falls das dein definierter Parameterraum ist
+    xi = np.linspace(0, 1, 200) 
+    yi = np.linspace(0, 1, 200)
     xi, yi = np.meshgrid(xi, yi)
     
     # Interpolation (Cubic für glatte Kurven)
     zi = griddata((df['alpha'], df['beta']), df['score'], (xi, yi), method='cubic')
 
-    # --- 2D HEATMAP ---
+    # --- 2D HEATMAP (FIXED: Added Contours) ---
     plt.figure(figsize=(12, 9))
     cp = plt.contourf(xi, yi, zi, levels=60, cmap=CHOSEN_CMAP)
     cbar = plt.colorbar(cp)
     cbar.set_label('Normalized Composite Score (NCS)', fontsize=14, labelpad=15)
 
-    # Die Punkte einzeichnen (Unterscheidung der Quelle durch Farbe/Symbol optional möglich)
-    plt.scatter(df['alpha'], df['beta'], c='white', s=35, edgecolors='black', alpha=0.7, label='Runs')
+    # Weiße Höhenlinien hinzufügen (wie im Original)
+    contours = plt.contour(xi, yi, zi, levels=15, colors='white', alpha=0.3)
+    plt.clabel(contours, inline=True, fontsize=9, fmt='%.2f')
+
+    # Die Punkte einzeichnen
+    plt.scatter(df['alpha'], df['beta'], c='white', s=40, edgecolors='black', alpha=0.8, label='Runs')
     
-    plt.title(f'Combined Evaluation (TripleLoss + DeepScan)', fontsize=16, pad=20)
+    plt.title(f'Combined Success Score Heatmap', fontsize=16, pad=20)
     plt.xlabel('Alpha (SSIM Weight)', fontsize=14)
     plt.ylabel('Beta (MSE/MAE Weight)', fontsize=14)
     
@@ -98,30 +103,35 @@ def plot_combined_heatmaps(df, output_name):
     plt.savefig(target_dir / "combined_ncs_heatmap_2d.png", dpi=300)
     plt.close()
 
-    # --- 3D TOPOLOGY ---
+    # --- 3D TOPOLOGY (FIXED: Rotation & Style) ---
     fig = plt.figure(figsize=(14, 10))
     ax = fig.add_subplot(111, projection='3d')
     ls = LightSource(azdeg=315, altdeg=45)
     
+    # zi gegen NaNs absichern
     zi_clean = np.nan_to_num(zi, nan=np.nanmin(zi))
     rgb = ls.shade(zi_clean, cmap=plt.get_cmap(CHOSEN_CMAP), vert_exag=0.1, blend_mode='soft')
     
     surf = ax.plot_surface(xi, yi, zi_clean, facecolors=rgb, linewidth=0, antialiased=True, shade=False)
     
-    ax.set_xlabel('Alpha', fontsize=12)
-    ax.set_ylabel('Beta', fontsize=12)
+    # Achsen-Beschriftung analog zum Original
+    ax.set_xlabel('Alpha (SSIM)', fontsize=12)
+    ax.set_ylabel('Beta (MSE/MAE)', fontsize=12)
     ax.set_zlabel('Success Score', fontsize=12)
-    ax.view_init(elev=30, azim=235)
+    
+    # FIX: Rotation exakt wie im ersten Skript
+    ax.view_init(elev=25, azim=250) 
     
     plt.title('3D Success Topology (Combined Data)', fontsize=16)
     plt.savefig(target_dir / "combined_ncs_topology_3d.png", dpi=300)
-    print(f"Plots wurden unter {target_dir} gespeichert.")
+    
+    print(f"Kombinierte Plots wurden unter {target_dir} gespeichert.")
     plt.show()
-
+    
 if __name__ == "__main__":
     df_all = extract_combined_scores(PARENT_CSV_DIR, TARGET_FOLDERS)
     
     if not df_all.empty:
-        plot_combined_heatmaps(df_all, "Combined_Analysis")
+        plot_combined_heatmaps(df_all, "triple_loss")
     else:
         print("Keine Daten zum Plotten gefunden.")

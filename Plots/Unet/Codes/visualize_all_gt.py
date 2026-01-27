@@ -7,81 +7,52 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from moviepy.editor import ImageSequenceClip
+from tqdm import tqdm
 
 # =====================================================
-# Pfade
+# Konfiguration
 # =====================================================
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 DATA_DIR = ROOT_DIR / "original_data"
-IMAGES_ROOT_DIR = ROOT_DIR / "Plots" / "Unet" / "Images"
+# Zielordner für das Video
+IMAGES_ROOT_DIR = ROOT_DIR / "Plots" / "Unet" / "Movies"
 
 H5_FILES = [
-    DATA_DIR / "training_data.hdf5",
-    DATA_DIR / "validation_data.hdf5",
-    DATA_DIR / "test_data.hdf5",
+    DATA_DIR / "test_data.hdf5"
 ]
 
-CLIP = False
-SERIES_LEN = 41   # Laenge einer Serie
-FPS = 3           # Bildwiederholrate der Videos
+# Deine spezifische Auswahl an Serien (1-basiert)
+SERIES_LIST = [5, 11, 12, 13, 15, 16, 21, 22, 29, 50]
 
-# wir wollen jetzt JEDE Slice visualisieren: 0,1,2,...,40
-SLICE_OFFSETS = np.arange(0, SERIES_LEN, 1)
-
+SERIES_LEN = 41
+FPS = 5  # Etwas schnellerer Flow für 410 Bilder
 
 # =====================================================
-# Daten-Hilfsfunktionen
+# Hilfsfunktionen
 # =====================================================
 def load_high_count_only(h5_path: Path):
-    """
-    Laedt NUR die high_count-Daten aus einer HDF5-Datei und formatiert sie:
-    (H, W, N) -> (N, H, W, 1)
-    """
     with h5py.File(h5_path, "r") as f:
-        high_count = f["high_count/data"][:]  # (H, W, N)
-
-    high_count = np.moveaxis(high_count, -1, 0)   # (N, H, W)
-    high_count = high_count[..., np.newaxis]      # (N, H, W, 1)
-
+        high_count = f["high_count/data"][:] 
+    high_count = np.moveaxis(high_count, -1, 0)
+    high_count = high_count[..., np.newaxis]
     return high_count.astype(np.float32)
 
-
-def normalize_slices_like_validation(slices, scale=10000.0, do_clip=CLIP):
-    """
-    Normierung analog zur Validation-Normierung, aber ohne Volumen:
-    - clip >= 0
-    - pro Slice durch Summe ueber (H,W,C) teilen
-    - mit 'scale' multiplizieren
-    slices: (N, H, W, 1)
-    """
+def normalize_slices_like_validation(slices, scale=10000.0):
     data = np.maximum(slices, 0.0).astype(np.float32)
     sums = np.sum(data, axis=(1, 2, 3), keepdims=True) + 1e-12
-    data = data / sums
-    data = data * scale
-    if do_clip:
-        data = np.clip(data, 0.0, 1.0)
-    return data
+    return (data / sums) * scale
 
-
-# =====================================================
-# Visualisierung (nur fuer Ground Truth)
-# =====================================================
 def normalized_image(image):
-    # Gewuenschte Perzentile (2, 92)
-    vmin, vmax = np.percentile(image, [2, 92])
+    # Geändert auf 2 und 98 Perzentil für den Clip
+    vmin, vmax = np.percentile(image, [2, 98])
     if vmax - vmin < 1e-12:
-        return image  # quasi konstant
-    return (image - vmin) / (vmax - vmin)
-
+        return np.zeros_like(image)
+    return np.clip((image - vmin) / (vmax - vmin), 0, 1)
 
 def make_frame(image_norm, title):
-    """
-    Erzeugt einen einzelnen Frame (RGB-Array) mit Matplotlib,
-    ohne auf die Platte zu schreiben.
-    """
-    fig, ax = plt.subplots(1, 1, figsize=(6, 6), dpi=200)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 6), dpi=150)
     ax.imshow(image_norm, cmap="gray_r", vmin=0.0, vmax=1.0)
-    ax.set_title(title, fontsize=12)
+    ax.set_title(title, fontsize=12, fontweight='bold')
     ax.axis("off")
     fig.tight_layout()
 
@@ -93,67 +64,65 @@ def make_frame(image_norm, title):
     plt.close(fig)
     return frame
 
+# =====================================================
+# Hauptprozess
+# =====================================================
+def create_video_for_selection(h5_path: Path):
+    print(f"\nGeneriere Video für {len(SERIES_LIST)} ausgewählte Serien aus: {h5_path.name}")
+    split_name = h5_path.stem 
 
-def create_video_for_file(h5_path: Path):
-    """
-    Fuer eine HDF5-Datei:
-      - high_count laden
-      - wie Validation normieren
-      - ALLE Bilder (Slices) visualisieren
-      - pro Datei genau ein Video mit nur Ground Truth erzeugen
-    Im Video: Titel "<split_name> - Serie X, Bild Y" pro Frame.
-    """
-    print(f"Verarbeite Datei: {h5_path}")
-    split_name = h5_path.stem  # z.B. "training_data"
-
-    gt_slices = load_high_count_only(h5_path)           # (N, H, W, 1)
-    gt_slices_norm = normalize_slices_like_validation(gt_slices, scale=10000.0)
-
-    N, H, W, C = gt_slices_norm.shape
-    assert N % SERIES_LEN == 0, f"N={N} nicht durch SERIES_LEN={SERIES_LEN} teilbar"
-    n_series = N // SERIES_LEN
+    # Daten laden
+    gt_slices = load_high_count_only(h5_path)
+    gt_slices_norm = normalize_slices_like_validation(gt_slices)
 
     frames = []
+    
+    # Progress Bar für die Gesamtzahl der Bilder (10 Serien * 41 Bilder)
+    total_expected = len(SERIES_LIST) * SERIES_LEN
+    pbar = tqdm(total=total_expected, desc="Rendering Frames")
 
-    for series_idx in range(n_series):
-        base = series_idx * SERIES_LEN
-
-        for offset in SLICE_OFFSETS:
+    for s_idx in SERIES_LIST:
+        # Umwandlung von 1-basiertem SERIES_LIST in 0-basierten Index für das Array
+        base = (s_idx - 1) * SERIES_LEN
+        
+        for offset in range(SERIES_LEN):
             global_idx = base + offset
-
+            
+            # Sicherheitscheck für Indexgrenzen
+            if global_idx >= gt_slices_norm.shape[0]:
+                continue
+                
             img = gt_slices_norm[global_idx, :, :, 0]
             img_disp = normalized_image(img)
 
-            series_num = series_idx + 1
-            img_num = offset + 1
-
-            title = f"{split_name} - Serie {series_num}, Bild {img_num}"
+            # Beschriftung 1-basiert
+            title = f"{split_name} | Serie {s_idx} | Bild {offset + 1}"
+            
             frame = make_frame(img_disp, title)
             frames.append(frame)
+            pbar.update(1)
 
-    out_dir = IMAGES_ROOT_DIR / "videos"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{split_name}_groundtruth_{FPS}fps.mp4"
+    pbar.close()
 
+    if not frames:
+        print("Fehler: Keine Bilder generiert.")
+        return
+
+    # Export
+    IMAGES_ROOT_DIR.mkdir(parents=True, exist_ok=True)
+    out_file = IMAGES_ROOT_DIR / f"{split_name}_Selection_GT_2-98perc.mp4"
+
+    print(f"Schreibe Video-Datei...")
     clip = ImageSequenceClip(frames, fps=FPS)
-    clip.write_videofile(str(out_file), fps=FPS)
-    print(f"Video gespeichert: {out_file}")
+    clip.write_videofile(str(out_file), fps=FPS, codec="libx264")
+    print(f"\nErfolgreich erstellt: {out_file}")
 
-
-# =====================================================
-# Hauptfunktion
-# =====================================================
 def main():
-    print(f"ROOT_DIR:        {ROOT_DIR}")
-    print(f"Images-Ordner:   {IMAGES_ROOT_DIR}")
-    print(f"HDF5-Dateien:    {H5_FILES}")
-    print(f"FPS:             {FPS}")
-
     for h5_path in H5_FILES:
-        create_video_for_file(h5_path)
-
-    print("Fertig.")
-
+        if h5_path.exists():
+            create_video_for_selection(h5_path)
+        else:
+            print(f"Datei nicht gefunden: {h5_path}")
 
 if __name__ == "__main__":
     main()
