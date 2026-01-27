@@ -226,7 +226,7 @@ idx_v = np.arange(len(X_val)); rng.shuffle(idx_v)
 X_val, y_val = X_val[idx_v].astype(np.float32), y_val[idx_v].astype(np.float32)
 
 RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
-RUN_NAME = f"transformer_V4_1__BS{BATCH_SIZE}__emb{EMBED_DIM}__{RUN_ID}"
+RUN_NAME = f"transformer_V5__BS{BATCH_SIZE}__emb{EMBED_DIM}__{RUN_ID}"
 
 # Verzeichnisse
 TB_RUN_DIR = TB_ROOT / RUN_NAME
@@ -263,7 +263,7 @@ history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=c
 meta = make_meta_dict(
     script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=EPOCHS, 
     optimizer=optimizer, learning_rate=INITIAL_LR, input_shape=(192, 240, DEPTH),
-    extra={"loss": "mae_ssim(alpha=0.6)", "model": "SRDTrans_V4_1_MediumHeavy"}
+    extra={"loss": "mae_ssim(alpha=0.6)", "model": "SRDTrans_V5_MediumHeavy"}
 )
 
 finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)

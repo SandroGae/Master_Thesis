@@ -42,18 +42,17 @@ CKPT_FOLDER = "checkpoints_transformer"
 def MDTA(x, filters, num_heads):
     """ Multi-Dconv Head Transposed Attention """
     b, h, w, c = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
-    res = x
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
+    res = x # Originalsignal speichern für Residual Connection
+    x = layers.LayerNormalization(epsilon=1e-6)(x) # Normalisiere Features pro Pixel
     
     # 1x1 Conv für Pixel-Mix + 3x3 Depthwise Conv für lokalen Kontext
-    qkv = layers.Conv2D(filters * 3, kernel_size=1, use_bias=False)(x)
-    qkv = layers.DepthwiseConv2D(kernel_size=3, padding='same', use_bias=False)(qkv)
+    qkv = layers.Conv2D(filters * 3, kernel_size=(1,1), use_bias=False)(x) # (B,H,W,C) --> (B,H,W,3C)
+    qkv = layers.DepthwiseConv2D(kernel_size=(3,3), padding='same', use_bias=False)(qkv)
     
-    q, k, v = tf.split(qkv, num_or_size_splits=3, axis=-1)
+    q, k, v = tf.split(qkv, num_or_size_splits=3, axis=-1) # Wir splitten (B,H,W,3C) in 3 Tensoren: q,k,v (B,H,W,C)
     
-    # Reshape für Transposed Attention (Attention über Kanäle C)
-    # Shape: (Batch, Heads, C/Heads, H*W)
-    q = tf.reshape(q, (b, h * w, num_heads, filters // num_heads))
+    # Reshape für Transposed Attention
+    q = tf.reshape(q, (b, h * w, num_heads, filters // num_heads)) #(B,H,W,C) --> (B, H*W, num_heads, d)            d = channels/num_heads
     k = tf.reshape(k, (b, h * w, num_heads, filters // num_heads))
     v = tf.reshape(v, (b, h * w, num_heads, filters // num_heads))
     
@@ -61,41 +60,37 @@ def MDTA(x, filters, num_heads):
     k = tf.transpose(k, (0, 2, 1, 3))
     v = tf.transpose(v, (0, 2, 3, 1))
     
-    # Transposed Attention Map: (C x C)
-    # Das ist der Clou: Die Komplexität ist linear zur Bildgröße!
-    q = tf.math.l2_normalize(q, axis=-1)
-    k = tf.math.l2_normalize(k, axis=-2)
+    q = tf.math.l2_normalize(q, axis=-1) # q∈(B,heads,d,N) wo N=H*W
+    k = tf.math.l2_normalize(k, axis=-2) # k∈(B,heads,N,d)
     
-    attn = tf.matmul(q, k)
-    attn = tf.nn.softmax(attn, axis=-1)
+    attn = tf.matmul(q, k) # q*k=(d×H⋅W)*(H⋅W×d) ergibt eine (d×d) matrix
+    attn = tf.nn.softmax(attn, axis=-1) # Softmax über letzte Dimension (d) --> gewichtete linearkombination der Kanäle
     
-    out = tf.matmul(attn, v)
-    out = tf.transpose(out, (0, 3, 1, 2))
-    out = tf.reshape(out, (b, h, w, filters))
+    out = tf.matmul(attn, v) # Matrix mult. pro Batch und head: attn:(d×d) * v:(d×N) --> out:(d×N)
+    out = tf.transpose(out, (0, 3, 1, 2)) # (B,heads,d,N) --> (B,N,heads,d)
+    out = tf.reshape(out, (b, h, w, filters)) # (B,N,heads,d) --> (B,H,W,filters)
     
-    out = layers.Conv2D(filters, kernel_size=1, use_bias=False)(out)
+    out = layers.Conv2D(filters, kernel_size=(1,1), use_bias=False)(out) # Mixt features aus verschiednen heads
     return layers.Add()([res, out])
 
 def GDFN(x, filters, expansion_factor=2.66):
     """ Gated-Dconv Feed-Forward Network """
-    res = x
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
+    res = x # Originalsignal speichern für Residual Connection
+    x = layers.LayerNormalization(epsilon=1e-6)(x) # Normalisiere Features pro Pixel
     
-    # Kanäle aufblähen
-    inner_filters = int(filters * expansion_factor)
+    inner_filters = int(filters * expansion_factor) # Anzahl Filter von 64 --> 170
     
-    # Zwei Pfade für das Gating
-    x = layers.Conv2D(inner_filters * 2, kernel_size=1, use_bias=False)(x)
-    x = layers.DepthwiseConv2D(kernel_size=3, padding='same', use_bias=False)(x)
+    x = layers.Conv2D(inner_filters * 2, kernel_size=(1,1), use_bias=False)(x) # (B,H,W,filters) --> (B,H,W,inner_filters*2)
+    x = layers.DepthwiseConv2D(kernel_size=(3,3), padding='same', use_bias=False)(x)
     
-    path1, path2 = tf.split(x, num_or_size_splits=2, axis=-1)
-    
-    # Gating: Elementweise Multiplikation (Einer mit Aktivierung)
+    path1, path2 = tf.split(x, num_or_size_splits=2, axis=-1) # (B,H,W,inner_filters*2) --> 2x (B,H,W,inner_filters)
+
+    # Elementweise Multiplikation
     x = layers.Activation('gelu')(path1) * path2
     
     # Zurück auf Ursprungskanäle
-    x = layers.Conv2D(filters, kernel_size=1, use_bias=False)(x)
-    return layers.Add()([res, x])
+    x = layers.Conv2D(filters, kernel_size=(1,1), use_bias=False)(x) # (B,H,W,inner_filters) --> (B,H,W,filters)
+    return layers.Add()([res, x]) # Origialsigal addieren
 
 def restormer_block(x, filters, num_heads):
     x = MDTA(x, filters, num_heads)
@@ -104,55 +99,56 @@ def restormer_block(x, filters, num_heads):
 
 
 # Restormer Modellaufbau (U-Net Shape)
+# Restormer Modellaufbau (U-Net Shape)
 def build_restormer(input_shape=(192, 240, 5), embed_dim=64):
     inputs = layers.Input(shape=input_shape)
     
-    # 1. Initial Embedding
-    x = layers.Conv2D(embed_dim, kernel_size=3, padding='same')(inputs)
+    # Initiales embedding (erste convolution)
+    x = layers.Conv2D(embed_dim, kernel_size=(3, 3), padding='same')(inputs) #(B,192,240,5) -> (B,192,240,64)
     
-    # --- ENCODER (Hierarchie wie im UNet) ---
-    # Level 1 (192x240)
-    x1 = restormer_block(x, embed_dim, num_heads=1)
-    x1 = restormer_block(x1, embed_dim, num_heads=1)
+    # Encoder
+    # Level 1
+    x1 = restormer_block(x, embed_dim, num_heads=1)     #(B,192,240,64) -> (B,192,240,64)
+    x1 = restormer_block(x1, embed_dim, num_heads=1)    #(B,192,240,64) -> (B,192,240,64)
     
-    # Level 2 (96x120)
-    x2_in = layers.Conv2D(embed_dim * 2, kernel_size=3, strides=2, padding='same')(x1)
-    x2 = restormer_block(x2_in, embed_dim * 2, num_heads=2)
-    x2 = restormer_block(x2, embed_dim * 2, num_heads=2)
-    
-    # Level 3 (48x60)
-    x3_in = layers.Conv2D(embed_dim * 4, kernel_size=3, strides=2, padding='same')(x2)
-    x3 = restormer_block(x3_in, embed_dim * 4, num_heads=4)
-    x3 = restormer_block(x3, embed_dim * 4, num_heads=4)
-    
-    # Level 4 - Bottleneck (24x30)
-    x4_in = layers.Conv2D(embed_dim * 8, kernel_size=3, strides=2, padding='same')(x3)
-    x4 = restormer_block(x4_in, embed_dim * 8, num_heads=8)
-    x4 = restormer_block(x4, embed_dim * 8, num_heads=8)
+    # Level 2
+    x2_in = layers.Conv2D(embed_dim * 2, kernel_size=(3,3), strides=2, padding='same')(x1) #(B,192,240,64) -> (B,96,120,128)
+    x2 = restormer_block(x2_in, embed_dim * 2, num_heads=2) #(B,96,120,128) -> (B,96,120,128)
+    x2 = restormer_block(x2, embed_dim * 2, num_heads=2)    #(B,96,120,128) -> (B,96,120,128)
 
-    # --- DECODER ---
+    # Level 3
+    x3_in = layers.Conv2D(embed_dim * 4, kernel_size=(3,3), strides=2, padding='same')(x2) #(B,96,120,128) -> (B,48,60,256)
+    x3 = restormer_block(x3_in, embed_dim * 4, num_heads=4) #(B,48,60,256) -> (B,48,60,256)
+    x3 = restormer_block(x3, embed_dim * 4, num_heads=4)    #(B,48,60,256) -> (B,48,60,256)
+
+    # Level 4 - Bottleneck
+    x4_in = layers.Conv2D(embed_dim * 8, kernel_size=(3,3), strides=2, padding='same')(x3) #(B,48,60,256) -> (B,24,30,512)
+    x4 = restormer_block(x4_in, embed_dim * 8, num_heads=8) #(B,24,30,512) -> (B,24,30,512)
+    x4 = restormer_block(x4, embed_dim * 8, num_heads=8)    #(B,24,30,512) -> (B,24,30,512)
+
+    # DECODER
     # Upsample 3
-    u3 = layers.Conv2DTranspose(embed_dim * 4, kernel_size=2, strides=2, padding='same')(x4)
-    u3 = layers.Concatenate()([u3, x3])
-    u3 = layers.Conv2D(embed_dim * 4, kernel_size=1)(u3)
-    u3 = restormer_block(u3, embed_dim * 4, num_heads=4)
+    u3 = layers.Conv2DTranspose(embed_dim * 4, kernel_size=(2,2), strides=2, padding='same')(x4) #(B,24,30,512) -> (B,48,60,256)
+    u3 = layers.Concatenate()([u3, x3])                      #(B,48,60,256)+(B,48,60,256) -> (B,48,60,512)
+    u3 = layers.Conv2D(embed_dim * 4, kernel_size=(1,1))(u3) #(B,48,60,512) -> (B,48,60,256)
+    u3 = restormer_block(u3, embed_dim * 4, num_heads=4)     #(B,48,60,256) -> (B,48,60,256)
     
     # Upsample 2
-    u2 = layers.Conv2DTranspose(embed_dim * 2, kernel_size=2, strides=2, padding='same')(u3)
-    u2 = layers.Concatenate()([u2, x2])
-    u2 = layers.Conv2D(embed_dim * 2, kernel_size=1)(u2)
-    u2 = restormer_block(u2, embed_dim * 2, num_heads=2)
+    u2 = layers.Conv2DTranspose(embed_dim * 2, kernel_size=(2,2), strides=2, padding='same')(u3) #(B,48,60,256) -> (B,96,120,128)
+    u2 = layers.Concatenate()([u2, x2])                      #(B,96,120,128)+(B,96,120,128) -> (B,96,120,256)
+    u2 = layers.Conv2D(embed_dim * 2, kernel_size=(1,1))(u2) #(B,96,120,256) -> (B,96,120,128)
+    u2 = restormer_block(u2, embed_dim * 2, num_heads=2)     #(B,96,120,128) -> (B,96,120,128)
     
     # Upsample 1
-    u1 = layers.Conv2DTranspose(embed_dim, kernel_size=2, strides=2, padding='same')(u2)
-    u1 = layers.Concatenate()([u1, x1])
-    u1 = layers.Conv2D(embed_dim, kernel_size=1)(u1)
-    u1 = restormer_block(u1, embed_dim, num_heads=1)
+    u1 = layers.Conv2DTranspose(embed_dim, kernel_size=(2,2), strides=2, padding='same')(u2) #(B,96,120,128) -> (B,192,240,64)
+    u1 = layers.Concatenate()([u1, x1])                  #(B,192,240,64)+(B,192,240,64) -> (B,192,240,128)
+    u1 = layers.Conv2D(embed_dim, kernel_size=(1,1))(u1) #(B,192,240,128) -> (B,192,240,64)
+    u1 = restormer_block(u1, embed_dim, num_heads=1)     #(B,192,240,64) -> (B,192,240,64)
     
     # Output Refinement
-    out = layers.Conv2D(embed_dim, kernel_size=3, padding='same')(u1)
+    out = layers.Conv2D(embed_dim, kernel_size=(3,3), padding='same')(u1) #(B,192,240,64) -> (B,192,240,64)
     out = layers.Activation('relu')(out)
-    final = layers.Conv2D(1, kernel_size=3, padding='same', activation='sigmoid')(out)
+    final = layers.Conv2D(1, kernel_size=(3,3), padding='same', activation='sigmoid')(out) #(B,192,240,64) -> (B,192,240,1)
     
     return models.Model(inputs, final, name="Restormer_XRD_HighComplex")
 

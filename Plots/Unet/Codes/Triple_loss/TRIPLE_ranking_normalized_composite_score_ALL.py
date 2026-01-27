@@ -6,7 +6,7 @@ from pathlib import Path
 
 # --- KONFIGURATION ---
 # Wir setzen den Pfad eine Ebene höher auf den "CSV" Ordner
-BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\CSV\csv_triple_loss_deep_scan") 
+BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Plots\Unet\CSV")
 
 def evaluate_all_runs(base_path):
     all_results = []
