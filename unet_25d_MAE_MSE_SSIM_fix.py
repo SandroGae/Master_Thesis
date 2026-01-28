@@ -188,7 +188,7 @@ for a_val in ALPHA_LIST:
                       .map(prepare_25d_input, -1).cache().batch(BATCH_SIZE).prefetch(-1))
 
             model = unet_2d_stacked()
-            optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0, clipvalue=0.1)
+            optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0, clipvalue=0.5)
             
             was_aborted = [False]
             def check_crash(epoch, logs):
