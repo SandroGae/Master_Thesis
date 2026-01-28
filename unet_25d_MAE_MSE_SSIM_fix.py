@@ -70,7 +70,7 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     out = layers.Activation(output_activation, dtype='float32', name="output")(x)
     return models.Model(inputs, out, name="unet_25d_stacked")
 
-# --- METRIKEN MIT CLIPPING ---
+# --- METRIKEN MIT STRENGEM CLIPPING ---
 def mae_center(yt, yp):
     yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
     yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
@@ -101,7 +101,7 @@ def get_triple_loss(alpha, beta):
         return (alpha * (1.0 - ssim_val)) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
     return loss
 
-# --- DATA LOADING UTILS ---
+# --- DATA UTILS ---
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
         low, high = f["low_count/data"][:], f["high_count/data"][:]
@@ -140,7 +140,7 @@ def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
 def prepare_25d_input(x, y):
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
-# --- DATA PREP ---
+# --- DATA LOADING ---
 print("Lade Daten...")
 FILES = {"training": "/home/sgaell/data/original_data/training_data.hdf5", "validation": "/home/sgaell/data/original_data/validation_data.hdf5"}
 X_train_raw, y_train_raw = load_split(FILES["training"])
@@ -184,18 +184,25 @@ for a_val in ALPHA_LIST:
 
             model = unet_2d_stacked()
             optimizer = tf.keras.optimizers.Adam(
-                learning_rate=5e-4, 
-                amsgrad=True, 
-                epsilon=1e-4,         # Überlebenswichtig für Mixed Precision (FP16)
-                global_clipnorm=0.5   # Besser als clipnorm/clipvalue einzeln
+                learning_rate=5e-4, amsgrad=True, 
+                epsilon=1e-4,          # Stabilität für FP16
+                global_clipnorm=0.5    # Schutz vor Gradient-Explosion
             )
             
+            # Crash-Detection Setup
             was_aborted = [False]
+            run_stats = {'best_psnr': 0.0}
+
             def check_crash(epoch, logs):
-                # Training bricht ab wenn PSNR unter 27
-                if logs.get('val_psnr_center', 30) < 27.0:
-                    print(f"\n!!! ABORTING: PSNR {logs.get('val_psnr_center'):.2f} dropped below 27.0")
-                    was_aborted[0] = True; model.stop_training = True
+                current_psnr = logs.get('val_psnr_center', 0)
+                if current_psnr > run_stats['best_psnr']:
+                    run_stats['best_psnr'] = current_psnr
+                
+                # RELATIVER ABBRUCH: Wenn PSNR nach Epoche 10 um > 4 sinkt
+                if epoch > 10:
+                    if current_psnr < (run_stats['best_psnr'] - 4.0) or current_psnr < 15.0:
+                        print(f"\n!!! RELATIVE CRASH: Best {run_stats['best_psnr']:.2f} -> Current {current_psnr:.2f}")
+                        was_aborted[0] = True; model.stop_training = True
 
             TB_DIR = Path.home() / "data" / FOLDER_TB / RUN_NAME
             TB_DIR.mkdir(parents=True, exist_ok=True)
@@ -215,10 +222,9 @@ for a_val in ALPHA_LIST:
 
             history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
 
-            # --- FINALIZE & EVALUATE SUCCESS ---
-            # Wir prüfen den letzten PSNR-Wert in der History als Sicherheit
+            # EVALUATION & RETRY LOGIK
             last_psnr = history.history['val_psnr_center'][-1]
-            failed = was_aborted[0] or last_psnr < 27.0
+            failed = was_aborted[0] or last_psnr < 25.0 # Sicherheits-Untergrenze
             
             final_name = ("fail_" if failed else "") + RUN_NAME
             meta = make_meta_dict(final_name, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
@@ -226,24 +232,21 @@ for a_val in ALPHA_LIST:
             
             finalize_run(model, history, final_name, meta, folder_name=FOLDER_MODELS)
 
-            # CSV Datei verschieben
+            # CSV verschieben
             hist = history.history
             best_idx = np.argmin(hist["val_loss"])
             actual_csv_name = f"{final_name}_loss{hist['loss'][best_idx]:.4f}_val{hist['val_loss'][best_idx]:.4f}.csv"
             if (MODELS_ROOT / actual_csv_name).exists():
                 os.replace(MODELS_ROOT / actual_csv_name, CSV_ROOT / actual_csv_name)
 
-            # --- SEED LOGIK (ROBUST) ---
             if failed:
                 if current_seed == SEED_START:
-                    print(f"\n!!! Versuche Neustart mit SEED {SEED_START + 1} !!!")
+                    print(f"\n!!! RETRYING WITH SEED {SEED_START + 1} !!!")
                     current_seed = SEED_START + 1
-                    # run_finished bleibt False -> while-Loop läuft nochmal
                 else:
-                    print(f"\n!!! Auch mit zweitem Seed fehlgeschlagen. Überspringe Punkt Alpha={a_r}, Beta={b_r}")
+                    print(f"\n!!! GRID POINT FAILED TWICE. Skipping...")
                     run_finished = True
             else:
-                print(f"\n>>> Punkt Alpha={a_r}, Beta={b_r} ERFOLGREICH beendet.")
                 run_finished = True
 
             tf.keras.backend.clear_session(); import gc; gc.collect()
