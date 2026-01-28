@@ -183,7 +183,12 @@ for a_val in ALPHA_LIST:
                       .map(prepare_25d_input, -1).cache().batch(BATCH_SIZE).prefetch(-1))
 
             model = unet_2d_stacked()
-            optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0, clipvalue=0.1)
+            optimizer = tf.keras.optimizers.Adam(
+                learning_rate=5e-4, 
+                amsgrad=True, 
+                epsilon=1e-4,         # Überlebenswichtig für Mixed Precision (FP16)
+                global_clipnorm=0.5   # Besser als clipnorm/clipvalue einzeln
+            )
             
             was_aborted = [False]
             def check_crash(epoch, logs):
