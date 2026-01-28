@@ -30,13 +30,10 @@ PATIENCE = 25
 
 # --- ORDNER-SETUP ---
 PROJECT_TIMESTAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
-
-# Hauptordner-Namen
 FOLDER_MODELS = f"Rerun_triple_loss_MODELS_{PROJECT_TIMESTAMP}"
 FOLDER_CSV    = f"Rerun_triple_loss_CSV_{PROJECT_TIMESTAMP}"
 FOLDER_TB     = f"tblogs_rerun_triple_loss_{PROJECT_TIMESTAMP}"
 
-# Pfade erstellen
 MODELS_ROOT = Path.home() / "data" / FOLDER_MODELS
 CSV_ROOT    = Path.home() / "data" / FOLDER_CSV
 MODELS_ROOT.mkdir(parents=True, exist_ok=True)
@@ -46,7 +43,7 @@ CSV_ROOT.mkdir(parents=True, exist_ok=True)
 ALPHA_LIST = np.linspace(0.0, 1.0, 7)
 BETA_LIST  = np.linspace(0.0, 1.0, 7)
 
-# --- ARCHITEKTUR (FP32 Output für Mixed Precision) ---
+# --- ARCHITEKTUR ---
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
     for _ in range(4):
@@ -69,23 +66,11 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     u2 = layers.Concatenate()([u2, c2])               ; c7 = conv_block_2d(u2, base_filters * 2)
     u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])               ; c8 = conv_block_2d(u1, base_filters)
-    
-    # Letzter Layer in float32 für numerische Stabilität (Mixed Precision)
     x = layers.Conv2D(1, (1, 1), padding="same", name="conv_final")(c8)
     out = layers.Activation(output_activation, dtype='float32', name="output")(x)
     return models.Model(inputs, out, name="unet_25d_stacked")
 
-# --- HILFSFUNKTIONEN (SSIM/PSNR/DATA) ---
-# --- LOSS & METRICS ---
-def get_triple_loss(alpha, beta):
-    def loss(y_true, y_pred):
-        y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
-        mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-        mse = tf.reduce_mean(tf.square(y_true - y_pred))
-        ssim_val = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-        return (alpha * (1.0 - ssim_val)) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
-    return loss
-
+# --- METRIKEN MIT CLIPPING ---
 def mae_center(yt, yp):
     yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
     yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
@@ -107,6 +92,16 @@ def ssim_center(yt, yp):
     yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
 
+def get_triple_loss(alpha, beta):
+    def loss(y_true, y_pred):
+        y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
+        mae = tf.reduce_mean(tf.abs(y_true - y_pred))
+        mse = tf.reduce_mean(tf.square(y_true - y_pred))
+        ssim_val = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+        return (alpha * (1.0 - ssim_val)) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
+    return loss
+
+# --- DATA LOADING UTILS ---
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
         low, high = f["low_count/data"][:], f["high_count/data"][:]
@@ -188,11 +183,13 @@ for a_val in ALPHA_LIST:
                       .map(prepare_25d_input, -1).cache().batch(BATCH_SIZE).prefetch(-1))
 
             model = unet_2d_stacked()
-            optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0, clipvalue=0.5)
+            optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0, clipvalue=0.1)
             
             was_aborted = [False]
             def check_crash(epoch, logs):
-                if logs.get('val_psnr_center', 30) < 26.0:
+                # Training bricht ab wenn PSNR unter 27
+                if logs.get('val_psnr_center', 30) < 27.0:
+                    print(f"\n!!! ABORTING: PSNR {logs.get('val_psnr_center'):.2f} dropped below 27.0")
                     was_aborted[0] = True; model.stop_training = True
 
             TB_DIR = Path.home() / "data" / FOLDER_TB / RUN_NAME
@@ -203,7 +200,6 @@ for a_val in ALPHA_LIST:
                 tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
                 tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
                 tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=PATIENCE, restore_best_weights=True),
-                # CSV wird temporär im Models-Ordner abgelegt, damit finalize_run sie findet
                 tf.keras.callbacks.CSVLogger(str(MODELS_ROOT / f"{RUN_NAME}.csv")),
                 make_epoch_ckpt_callback(RUN_NAME, folder_name=FOLDER_MODELS),
                 *tb_callbacks(TB_DIR)
@@ -214,28 +210,36 @@ for a_val in ALPHA_LIST:
 
             history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
 
-            # --- FINALIZE & MOVE ---
-            final_name = ("fail_" if was_aborted[0] else "") + RUN_NAME
+            # --- FINALIZE & EVALUATE SUCCESS ---
+            # Wir prüfen den letzten PSNR-Wert in der History als Sicherheit
+            last_psnr = history.history['val_psnr_center'][-1]
+            failed = was_aborted[0] or last_psnr < 27.0
             
+            final_name = ("fail_" if failed else "") + RUN_NAME
             meta = make_meta_dict(final_name, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
-                                  extra={"alpha": a_r, "beta": b_r, "seed": current_seed, "aborted": was_aborted[0]})
+                                  extra={"alpha": a_r, "beta": b_r, "seed": current_seed, "aborted": failed})
             
-            # 1. Finalize (Renames .keras, .json und .csv innerhalb von MODELS_ROOT)
-            final_keras_path = finalize_run(model, history, final_name, meta, folder_name=FOLDER_MODELS)
+            finalize_run(model, history, final_name, meta, folder_name=FOLDER_MODELS)
 
-            # 2. CSV Datei identifizieren und in den CSV-Ordner verschieben
-            # Name in finalize_run: f"{final_name}_loss{best_trn:.4f}_val{best_val:.4f}.csv"
+            # CSV Datei verschieben
             hist = history.history
             best_idx = np.argmin(hist["val_loss"])
             actual_csv_name = f"{final_name}_loss{hist['loss'][best_idx]:.4f}_val{hist['val_loss'][best_idx]:.4f}.csv"
-            
             if (MODELS_ROOT / actual_csv_name).exists():
                 os.replace(MODELS_ROOT / actual_csv_name, CSV_ROOT / actual_csv_name)
 
-            if was_aborted[0]:
-                if current_seed == 43: current_seed = 44
-                else: run_finished = True
-            else: run_finished = True
+            # --- SEED LOGIK (ROBUST) ---
+            if failed:
+                if current_seed == SEED_START:
+                    print(f"\n!!! Versuche Neustart mit SEED {SEED_START + 1} !!!")
+                    current_seed = SEED_START + 1
+                    # run_finished bleibt False -> while-Loop läuft nochmal
+                else:
+                    print(f"\n!!! Auch mit zweitem Seed fehlgeschlagen. Überspringe Punkt Alpha={a_r}, Beta={b_r}")
+                    run_finished = True
+            else:
+                print(f"\n>>> Punkt Alpha={a_r}, Beta={b_r} ERFOLGREICH beendet.")
+                run_finished = True
 
             tf.keras.backend.clear_session(); import gc; gc.collect()
 
