@@ -18,7 +18,7 @@ from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, m
 from tb_utils import make_run_dir, tb_callbacks
 
 # --- REPRODUZIERBARKEIT ---
-SEED_START = 43
+SEED_START = 42
 
 # --- PARAMETER ---
 DEPTH = 5
@@ -76,6 +76,7 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     return models.Model(inputs, out, name="unet_25d_stacked")
 
 # --- HILFSFUNKTIONEN (SSIM/PSNR/DATA) ---
+# --- LOSS & METRICS ---
 def get_triple_loss(alpha, beta):
     def loss(y_true, y_pred):
         y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
@@ -85,13 +86,26 @@ def get_triple_loss(alpha, beta):
         return (alpha * (1.0 - ssim_val)) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
     return loss
 
+def mae_center(yt, yp):
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    return tf.reduce_mean(tf.abs(yt - yp))
+
+def mse_center(yt, yp):
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    return tf.reduce_mean(tf.square(yt - yp))
+
 def psnr_center(yt, yp):
-    mse = tf.reduce_mean(tf.square(tf.cast(yt, tf.float32) - tf.cast(yp, tf.float32)), axis=(1,2,3))
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
-def mae_center(yt, yp): return tf.reduce_mean(tf.abs(yt - yp))
-def mse_center(yt, yp): return tf.reduce_mean(tf.square(yt - yp))
-def ssim_center(yt, yp): return tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
+def ssim_center(yt, yp):
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    return tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
 
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
