@@ -35,7 +35,7 @@ MODELS = {
     "Rang_10": "Rang_10_unet_25d_DeepScan_a0.25_b0.1667_bf64_D5_20260126-094704_loss0.0461_val0.0468.keras",
 }
 
-SERIES_LIST = [5, 11, 12, 13, 15, 16, 21, 22, 29, 50]
+SERIES_LIST = [35] # Serien auswählen
 SERIES_LEN = 41
 
 

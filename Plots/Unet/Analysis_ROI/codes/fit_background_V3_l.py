@@ -26,17 +26,18 @@ MODELS = {
     "Rang_10": "Rang_10_unet_25d_DeepScan_a0.25_b0.1667_bf64_D5_20260126-094704_loss0.0461_val0.0468.keras",
 }
 
+# Hier kannst du nun für jedes Bild (Serie) die Y-Limits der unteren beiden Zeilen anpassen
 SERIES_CONFIG = {
-    5:  {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "fit_window": (140, 240)},
-    11: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (100, 119), "bg_gap": 5, "vis_p": (0.5, 98.0), "fit_window": (43, 143)},
-    12: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "fit_window": (20, 120)},
-    13: {"slice_idx": 1,  "roi_x": (0, 240), "roi_y": (98, 113),  "bg_gap": 5, "vis_p": (0.5, 95.0), "fit_window": (6, 106)},
-    15: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "fit_window": (98, 198)},
-    16: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "fit_window": (76, 176)},
-    21: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (101, 118), "bg_gap": 5, "vis_p": (0.5, 99.5), "fit_window": (140, 240)},
-    22: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "fit_window": (134, 234)},
-    29: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "fit_window": (20, 120)},
-    50: {"slice_idx": 13, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "fit_window": (52, 152)},
+    5:  {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "fit_window": (140, 240), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5)},
+    11: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (100, 119), "bg_gap": 5, "vis_p": (0.5, 98.0), "fit_window": (43, 143),  "y_lim_raw": (3.0, 8.0), "y_lim_sbr": (-0.1, 0.5)},
+    12: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "fit_window": (24, 124),  "y_lim_raw": (2.5, 4.5), "y_lim_sbr": (-0.1, 0.5)},
+    15: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "fit_window": (98, 198),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5)},
+    16: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "fit_window": (76, 176),  "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5)},
+    21: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (101, 118), "bg_gap": 5, "vis_p": (0.5, 99.5), "fit_window": (140, 240), "y_lim_raw": (3.0, 5.5), "y_lim_sbr": (-0.1, 0.5)},
+    22: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "fit_window": (134, 234), "y_lim_raw": (2.5, 6.5), "y_lim_sbr": (-0.1, 0.5)},
+    29: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 3, "vis_p": (0.5, 99.0), "fit_window": (20, 120),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5)},
+    35: {"slice_idx": 24, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "fit_window": (64, 164),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5)},
+    50: {"slice_idx": 13, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 10, "vis_p": (0.5, 98.5), "fit_window": (52, 152), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5)},
 }
 
 FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
@@ -56,22 +57,15 @@ def vis_norm(image, p_low=0.5, p_high=99.5):
 
 def perform_gaussian_fit(x, y, y_err, fit_window):
     mask = (x >= fit_window[0]) & (x <= fit_window[1])
-    x_fit, y_fit = x[mask], y[mask]
-    sigma_fit = y_err[mask] if y_err is not None else None
-
-    if len(y_fit) < 5 or (np.max(y_fit) - np.min(y_fit)) < 0.05:
+    x_f, y_f = x[mask], y[mask]
+    if len(y_f) < 3: 
         return None, None, None
-
-    window_width = fit_window[1] - fit_window[0]
-    p0 = [np.max(y_fit) - np.median(y_fit), x_fit[np.argmax(y_fit)], window_width * 0.15]
-    bounds = ([0, fit_window[0], 0.5], [np.inf, fit_window[1], window_width * 0.4])
-
+    p0 = [np.max(y_f) - np.median(y_f), x_f[np.argmax(y_f)], 5.0]
+    bounds = ([0, fit_window[0], 0.5], [np.inf, fit_window[1], 15.0])
     try:
-        popt, pcov = curve_fit(gaussian, x_fit, y_fit, p0=p0, sigma=sigma_fit, absolute_sigma=True, bounds=bounds, maxfev=5000)
+        popt, pcov = curve_fit(gaussian, x_f, y_f, p0=p0, sigma=y_err[mask], 
+                               absolute_sigma=True, bounds=bounds, maxfev=10000)
         perr = np.sqrt(np.diag(pcov))
-        residuals = y_fit - gaussian(x_fit, *popt)
-        if perr[0] > 0.5*popt[0] or perr[2] > 0.5*popt[2] or popt[0] < 3.0*np.std(residuals) or perr[1] > popt[2]:
-            return None, None, None
         return gaussian(x, *popt), popt, perr
     except:
         return None, None, None
@@ -127,7 +121,11 @@ def process_combination(rank_name, s_id, cfg):
         rel_err_bg = (px_std * np.sqrt(bg_slice.shape[0]) * scale) / np.abs(np.where(prof_bg==0, 1e-9, prof_bg))
         sbr_err = np.abs(sbr) * np.sqrt(rel_err_net**2 + rel_err_bg**2)
 
-        fit_y, par, perr = perform_gaussian_fit(x_axis, sbr, sbr_err, cfg["fit_window"])
+        # --- GEÄNDERT: Low Count (i=0) wird nie gefittet ---
+        fit_y, par, perr = (None, None, None)
+        if i > 0:
+            fit_y, par, perr = perform_gaussian_fit(x_axis, sbr, sbr_err, cfg["fit_window"])
+            
         results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
 
     # --- PLOTTING (Schönes Layout) ---
@@ -146,17 +144,17 @@ def process_combination(rank_name, s_id, cfg):
         ax.add_patch(patches.Rectangle((cfg["fit_window"][0], roi_y[0]), fit_w, roi_h, lw=0, fc='green', alpha=0.2))
         ax.axis('off')
 
-        # 2. Raw Intensitäten
+        # 2. Raw Intensitäten (GEÄNDERT: Explizites y_lim_raw aus Config)
         ax2 = axes[1, i]
         ax2.plot(x_axis, results[i]['sig'], color='blue', alpha=0.7, label='Raw Sum')
         ax2.plot(x_axis, results[i]['bg'], color='red', alpha=0.7, label='Background Sum')
         ax2.axvspan(cfg["fit_window"][0], cfg["fit_window"][1], color='green', alpha=0.15, label='_Fit Region')
         ax2.grid(True, alpha=0.3)
-        ax2.set_ylim(1.5, 6)
+        ax2.set_ylim(cfg.get("y_lim_raw", (1.5, 6))) 
         if i==0: ax2.set_ylabel("Counts")
         if i==1: ax2.legend(loc='upper right', fontsize=8)
 
-        # 3. SRBR + Gaussian Fit
+        # 3. SRBR + Gaussian Fit (GEÄNDERT: Explizites y_lim_sbr aus Config)
         ax3 = axes[2, i]
         ax3.errorbar(x_axis, results[i]['sbr'], yerr=results[i]['err'], fmt='.', markersize=5, color='black', alpha=0.6, label='SRBR')
         ax3.axhline(0, color='gray', ls=':', alpha=0.5)
@@ -165,7 +163,8 @@ def process_combination(rank_name, s_id, cfg):
             l = (f"Gauss (Peak={p[1]:.1f}±{e[1]:.1f}, "
                  f"σ={p[2]:.2f}±{e[2]:.2f}, Max={np.max(results[i]['fit']):.2f})")
             ax3.plot(x_axis, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
-        ax3.set_xlim(cfg["fit_window"]); ax3.set_ylim(-0.1, 0.5)
+        ax3.set_xlim(cfg["fit_window"])
+        ax3.set_ylim(cfg.get("y_lim_sbr", (-0.1, 0.5)))
         ax3.set_xlabel("Pixel X")
         ax3.grid(True, alpha=0.3); ax3.legend(loc='upper right', fontsize=7)
 
@@ -181,23 +180,11 @@ def process_combination(rank_name, s_id, cfg):
 def main():
     matplotlib.use("Agg")
     for rank_name, model_file in MODELS.items():
-        print(f"\nProcessing {rank_name}...")
-        print(f"{'Serie':<6} | {'Low Count':<18} | {'Prediction':<18} | {'Ground Truth':<18}")
-        print("-" * 70)
-        
         for s_id in sorted(SERIES_CONFIG.keys()):
             cfg = SERIES_CONFIG[s_id]
             process_combination(rank_name, s_id, cfg)
             
-            # Checksumme berechnen für Terminal-Output
-            path = IN_DIR / f"Pred_{rank_name}_D5_S{s_id}_FullSeries.npz"
-            if path.exists():
-                d = np.load(path)
-                si = cfg["slice_idx"]
-                s_lc, s_pr, s_gt = np.sum(d['lc'][si]), np.sum(d['pred'][si]), np.sum(d['gt'][si])
-                print(f"{s_id:<6} | {s_lc:<18.4f} | {s_pr:<18.4f} | {s_gt:<18.4f}")
-
-    print("\nFertig! Alle L-Plots und Checksummen erstellt.")
+    print("\nFertig! Alle L-Plots erstellt.")
 
 if __name__ == "__main__":
     main()

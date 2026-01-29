@@ -16,7 +16,7 @@ SERIES_LEN = 41
 BG_BOX_H = 10 # Höhe der Hintergrund-Streifen
 
 # Deine 10 Ziel-Paare
-VIS_PAIRS = [(5, 15), (11, 20), (12, 18), (13, 1), (15, 19), (16, 17), (21, 19), (22, 17), (29, 25), (50, 13)]
+VIS_PAIRS = [(35, 24), (5, 15), (11, 20), (12, 18), (15, 19), (16, 17), (21, 19), (22, 17), (29, 25), (50, 13)]
 
 def vis_scaling(image, p_low, p_high):
     v_l, v_h = np.percentile(image, [p_low, p_high])
