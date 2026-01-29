@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+from tensorflow.keras import mixed_precision
+policy = mixed_precision.Policy('mixed_float16')
+mixed_precision.set_global_policy(policy)
 
 import os
 import random
@@ -15,12 +18,7 @@ from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, m
 from tb_utils import make_run_dir, tb_callbacks
 
 # --- REPRODUZIERBARKEIT ---
-SEED = 45
-os.environ['PYTHONHASHSEED'] = str(SEED)
-random.seed(SEED)
-np.random.seed(SEED)
-tf.random.set_seed(SEED)
-tf.config.experimental.enable_op_determinism()
+SEED_START = 42
 
 # --- PARAMETER ---
 DEPTH = 5
@@ -29,23 +27,25 @@ BASEFILTERS = 64
 BATCH_SIZE = 8 
 EPOCHS = 200 
 PATIENCE = 25
-CKPT_FOLDER = "checkpoints_unet"
 
-# --- INDIVIDUELLE PUNKTE AUSWÄHLEN ---
-# Der mittlere Wert zwischen 1/6 und 2/6 ist exakt 0.25
-ALPHA_FIX = 0.25 
-# Spezifische Punkte
-BETA_LIST = [1/12]
+# --- ORDNER-SETUP ---
+PROJECT_TIMESTAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
+FOLDER_MODELS = f"Rerun_triple_loss_MODELS_{PROJECT_TIMESTAMP}"
+FOLDER_CSV    = f"Rerun_triple_loss_CSV_{PROJECT_TIMESTAMP}"
+FOLDER_TB     = f"tblogs_rerun_triple_loss_{PROJECT_TIMESTAMP}"
 
-# --- LEARNING RATE WARMUP ---
-def lr_warmup_scheduler(epoch, lr):
-    warmup_epochs = 10
-    base_lr = 5e-4 
-    if epoch < warmup_epochs:
-        return base_lr * (epoch + 1) / warmup_epochs
-    return lr
+MODELS_ROOT = Path.home() / "data" / FOLDER_MODELS
+CSV_ROOT    = Path.home() / "data" / FOLDER_CSV
+MODELS_ROOT.mkdir(parents=True, exist_ok=True)
+CSV_ROOT.mkdir(parents=True, exist_ok=True)
 
-# --- ARCHITEKTUR --- (Bleibt identisch)
+# --- GRID SCAN SETUP ---
+# Fixes Alpha genau in der Mitte von 1/6 (0.1666) und 2/6 (0.3333) -> 0.25
+ALPHA_LIST = [0.25]
+# 13 Punkte von 0.0 bis 1.0 (gleichmäßig verteilt)
+BETA_LIST  = np.linspace(0.0, 1.0, 13)
+
+# --- ARCHITEKTUR ---
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
     for _ in range(4):
@@ -68,10 +68,42 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     u2 = layers.Concatenate()([u2, c2])               ; c7 = conv_block_2d(u2, base_filters * 2)
     u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1])               ; c8 = conv_block_2d(u1, base_filters)
-    out = layers.Conv2D(1, (1, 1), activation=output_activation, name="output")(c8)
+    x = layers.Conv2D(1, (1, 1), padding="same", name="conv_final")(c8)
+    out = layers.Activation(output_activation, dtype='float32', name="output")(x)
     return models.Model(inputs, out, name="unet_25d_stacked")
 
-# --- DATA UTILS --- (Bleibt identisch)
+# --- METRIKEN MIT STRENGEM CLIPPING ---
+def mae_center(yt, yp):
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    return tf.reduce_mean(tf.abs(yt - yp))
+
+def mse_center(yt, yp):
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    return tf.reduce_mean(tf.square(yt - yp))
+
+def psnr_center(yt, yp):
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
+    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
+
+def ssim_center(yt, yp):
+    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
+    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    return tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
+
+def get_triple_loss(alpha, beta):
+    def loss(y_true, y_pred):
+        y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
+        mae = tf.reduce_mean(tf.abs(y_true - y_pred))
+        mse = tf.reduce_mean(tf.square(y_true - y_pred))
+        ssim_val = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+        return (alpha * (1.0 - ssim_val)) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
+    return loss
+
+# --- DATA UTILS ---
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
         low, high = f["low_count/data"][:], f["high_count/data"][:]
@@ -79,14 +111,14 @@ def load_split(h5_path):
     return low[:, :, :, np.newaxis], high[:, :, :, np.newaxis]
 
 def make_sliding_windows(X, y, series_len, depth):
-    N, H, W, C = X.shape
+    N = X.shape[0]
     n_series = N // series_len
-    n_vols_per_series = series_len - depth + 1
+    n_vols = series_len - depth + 1
     X_v, y_v = [], []
     for i in range(n_series):
         start = i * series_len
         bx, by = X[start:start+series_len], y[start:start+series_len]
-        for s in range(n_vols_per_series):
+        for s in range(n_vols):
             X_v.append(bx[s:s+depth]); y_v.append(by[s:s+depth])
     return np.stack(X_v), np.stack(y_v)
 
@@ -101,130 +133,124 @@ def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
         flip = tf.random.uniform([], 0, 1) < p
         x = tf.cond(flip, lambda: tf.reverse(x, [2]), lambda: x)
         y = tf.cond(flip, lambda: tf.reverse(y, [2]), lambda: y)
-        x, y = tf.nn.relu(x), tf.nn.relu(y)
-        sum_x = tf.reduce_sum(x, [1,2,3], keepdims=True) + 1e-12
-        sum_y = tf.reduce_sum(y, [1,2,3], keepdims=True) + 1e-12
-        x, y = x/sum_x, y/sum_y
+        sum_x = tf.reduce_sum(tf.nn.relu(x), [1,2,3], keepdims=True) + 1e-12
+        sum_y = tf.reduce_sum(tf.nn.relu(y), [1,2,3], keepdims=True) + 1e-12
         scale = tf.random.uniform([], scale_min, scale_max)
-        return x*scale, y*scale
+        return (x/sum_x)*scale, (y/sum_y)*scale
     return map_vol
 
 def prepare_25d_input(x, y):
-    x = tf.transpose(tf.squeeze(x, -1), [1, 2, 0])
-    y_center = y[tf.shape(y)[0] // 2]
-    return x, y_center
+    return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
-# LOSS
-def get_triple_loss(alpha, beta):
-    """
-    alpha: Gewichtung für SSIM vs. Pixel-Losses (MSE/MAE)
-    beta:  Interne Gewichtung der Pixel-Losses (MSE vs. MAE)
-    """
-    def loss(y_true, y_pred):
-        # Typ-Sicherheit gewährleisten
-        y_true = tf.cast(y_true, tf.float32)
-        y_pred = tf.cast(y_pred, tf.float32)
-
-        # Einzel-Metriken berechnen
-        mae_loss  = tf.reduce_mean(tf.abs(y_true - y_pred))
-        mse_loss  = tf.reduce_mean(tf.square(y_true - y_pred))
-        ssim_val  = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-        ssim_loss = 1.0 - ssim_val
-
-        # Kaskadierte Gewichtung
-        w_ssim = alpha
-        w_mse  = (1.0 - alpha) * beta
-        w_mae  = (1.0 - alpha) * (1.0 - beta)
-
-        # Gewichtete Summe zurückgeben
-        return (w_ssim * ssim_loss) + (w_mse * mse_loss) + (w_mae * mae_loss)
-    
-    return loss
-
-def mae_center(yt, yp):
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
-    return tf.reduce_mean(tf.abs(yt - yp))
-
-def mse_center(yt, yp):
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
-    return tf.reduce_mean(tf.math.squared_difference(yt, yp))
-
-def psnr_center(yt, yp):
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
-    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
-    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
-
-def ssim_center(yt, yp):
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
-    return tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
-
-# --- DATA PREP ---
+# --- DATA LOADING ---
 print("Lade Daten...")
 FILES = {"training": "/home/sgaell/data/original_data/training_data.hdf5", "validation": "/home/sgaell/data/original_data/validation_data.hdf5"}
-X_train, y_train = load_split(FILES["training"])
-X_val, y_val = load_split(FILES["validation"])
-X_train, y_train = make_sliding_windows(X_train, y_train, 41, 5)
-X_val, y_val = make_sliding_windows(X_val, y_val, 41, 5)
-X_train, y_train = shuffle_initial(X_train, y_train, SEED)
-X_val, y_val = shuffle_initial(X_val, y_val, SEED)
+X_train_raw, y_train_raw = load_split(FILES["training"])
+X_val_raw, y_val_raw = load_split(FILES["validation"])
+X_train_win, y_train_win = make_sliding_windows(X_train_raw, y_train_raw, 41, 5)
+X_val_win, y_val_win = make_sliding_windows(X_val_raw, y_val_raw, 41, 5)
 
-train_ds = (tf.data.Dataset.from_tensor_slices((X_train.astype('float32'), y_train.astype('float32')))
-            .shuffle(len(X_train), seed=SEED)
-            .map(augment_and_normalize_3d_per_slice(5000, 15000, 0.5), num_parallel_calls=-1)
-            .map(prepare_25d_input, num_parallel_calls=-1).batch(BATCH_SIZE).prefetch(-1))
+# --- GLOBAL TRAINING CONTROL ---
+for a_val in ALPHA_LIST:
+    a_r = round(float(a_val), 4)
+    for b_val in BETA_LIST:
+        b_r = round(float(b_val), 4)
 
-val_ds = (tf.data.Dataset.from_tensor_slices((X_val.astype('float32'), y_val.astype('float32')))
-          .map(augment_and_normalize_3d_per_slice(10000, 10001, 0), num_parallel_calls=-1)
-          .map(prepare_25d_input, num_parallel_calls=-1).cache().batch(BATCH_SIZE).prefetch(-1))
+        if a_r == 1.0 and b_r > 0.0:
+            print(f">>> SKIPPING REDUNDANT RUN: Alpha={a_r}, Beta={b_r}")
+            continue
 
-# --- TRAINING LOOP ---
-for b_idx, beta_val in enumerate(BETA_LIST):
-    # Zeitstempel für diesen spezifischen Run generieren
-    TIMESTAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
-    
-    a_r, b_r = round(float(ALPHA_FIX), 4), round(float(beta_val), 4)
-    
-    # RUN_NAME bekommt den Zeitstempel am Ende
-    RUN_NAME = f"unet_25d_DeepScan_a{a_r}_b{b_r}_bf64_D5_{TIMESTAMP}"
-    
-    TB_DIR = Path.home() / "data" / "tblogs_unet_3d_simple" / RUN_NAME
-    TB_DIR.mkdir(parents=True, exist_ok=True)
+        current_seed = SEED_START
+        run_finished = False
+        
+        while not run_finished:
+            os.environ['PYTHONHASHSEED'] = str(current_seed)
+            random.seed(current_seed); np.random.seed(current_seed); tf.random.set_seed(current_seed)
+            tf.config.experimental.enable_op_determinism()
+            
+            TS_RUN = datetime.now().strftime("%Y%m%d-%H%M%S")
+            RUN_NAME = f"DeepScan_a{a_r}_b{b_r}_seed{current_seed}_{TS_RUN}"
+            print(f"\n>>> START: Alpha={a_r}, Beta={b_r}, Seed={current_seed}")
+            
+            X_t, y_t = shuffle_initial(X_train_win, y_train_win, current_seed)
+            X_v, y_v = shuffle_initial(X_val_win, y_val_win, current_seed)
 
-    print(f"\nRUN {b_idx+1}/{len(BETA_LIST)} | Alpha={a_r} | Beta={b_r} | Time={TIMESTAMP}\n" + "="*40)
+            train_ds = (tf.data.Dataset.from_tensor_slices((X_t.astype('float32'), y_t.astype('float32')))
+                        .shuffle(len(X_t), seed=current_seed)
+                        .map(augment_and_normalize_3d_per_slice(5000, 15000, 0.5), -1)
+                        .map(prepare_25d_input, -1).batch(BATCH_SIZE).prefetch(-1))
 
-    model = unet_2d_stacked()
-    optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, clipnorm=1.0)
-    
-    def check_crash(epoch, logs):
-        if logs.get('val_psnr_center', 30) < 20.0: model.stop_training = True
+            val_ds = (tf.data.Dataset.from_tensor_slices((X_v.astype('float32'), y_v.astype('float32')))
+                      .map(augment_and_normalize_3d_per_slice(10000, 10001, 0), -1)
+                      .map(prepare_25d_input, -1).cache().batch(BATCH_SIZE).prefetch(-1))
 
-    callbacks = [
-        tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
-        tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss', 
-            patience=PATIENCE, 
-            verbose=1, 
-            restore_best_weights=True 
-        ),
-        # CSV Log bekommt ebenfalls den RUN_NAME (inkl. Timestamp)
-        tf.keras.callbacks.CSVLogger(str(TB_DIR / f"log_{RUN_NAME}.csv")),
-        make_epoch_ckpt_callback(RUN_NAME, folder_name=CKPT_FOLDER),
-        *tb_callbacks(TB_DIR)
-    ]
+            model = unet_2d_stacked()
+            optimizer = tf.keras.optimizers.Adam(
+                learning_rate=5e-4, amsgrad=True, 
+                epsilon=1e-4,          # Stabilität für FP16
+                global_clipnorm=0.5    # Schutz vor Gradient-Explosion
+            )
+            
+            # Crash-Detection Setup
+            was_aborted = [False]
+            run_stats = {'best_psnr': 0.0}
 
-    model.compile(optimizer=optimizer, loss=get_triple_loss(a_r, b_r), 
-                  metrics=[mae_center, mse_center, psnr_center, ssim_center])
+            def check_crash(epoch, logs):
+                current_psnr = logs.get('val_psnr_center', 0)
+                if current_psnr > run_stats['best_psnr']:
+                    run_stats['best_psnr'] = current_psnr
+                
+                # RELATIVER ABBRUCH: Wenn PSNR nach Epoche 10 um > 4 sinkt
+                if epoch > 10:
+                    if current_psnr < (run_stats['best_psnr'] - 4.0) or current_psnr < 15.0:
+                        print(f"\n!!! RELATIVE CRASH: Best {run_stats['best_psnr']:.2f} -> Current {current_psnr:.2f}")
+                        was_aborted[0] = True; model.stop_training = True
 
-    history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
-    
-    meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
-                          extra={"alpha": a_r, "beta": b_r, "type": "DeepScan_CentralLine", "timestamp": TIMESTAMP})
-    
-    finalize_run(model, history, RUN_NAME, meta, folder_name=CKPT_FOLDER)
-    
-    tf.keras.backend.clear_session()
-    import gc; gc.collect()
+            TB_DIR = Path.home() / "data" / FOLDER_TB / RUN_NAME
+            TB_DIR.mkdir(parents=True, exist_ok=True)
 
-print("\n--- Deep-Scan erfolgreich beendet ---")
+            callbacks = [
+                tf.keras.callbacks.LearningRateScheduler(lambda e, lr: 5e-4 * (e + 1) / 10 if e < 10 else lr),
+                tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
+                tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
+                tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=PATIENCE, restore_best_weights=True),
+                tf.keras.callbacks.CSVLogger(str(MODELS_ROOT / f"{RUN_NAME}.csv")),
+                make_epoch_ckpt_callback(RUN_NAME, folder_name=FOLDER_MODELS),
+                *tb_callbacks(TB_DIR)
+            ]
+
+            model.compile(optimizer=optimizer, loss=get_triple_loss(a_r, b_r), 
+                          metrics=[mae_center, mse_center, psnr_center, ssim_center])
+
+            history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
+
+            # EVALUATION & RETRY LOGIK
+            last_psnr = history.history['val_psnr_center'][-1]
+            failed = was_aborted[0] or last_psnr < 25.0 # Sicherheits-Untergrenze
+            
+            final_name = ("fail_" if failed else "") + RUN_NAME
+            meta = make_meta_dict(final_name, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
+                                  extra={"alpha": a_r, "beta": b_r, "seed": current_seed, "aborted": failed})
+            
+            finalize_run(model, history, final_name, meta, folder_name=FOLDER_MODELS)
+
+            # CSV verschieben
+            hist = history.history
+            best_idx = np.argmin(hist["val_loss"])
+            actual_csv_name = f"{final_name}_loss{hist['loss'][best_idx]:.4f}_val{hist['val_loss'][best_idx]:.4f}.csv"
+            if (MODELS_ROOT / actual_csv_name).exists():
+                os.replace(MODELS_ROOT / actual_csv_name, CSV_ROOT / actual_csv_name)
+
+            if failed:
+                if current_seed == SEED_START:
+                    print(f"\n!!! RETRYING WITH SEED {SEED_START + 1} !!!")
+                    current_seed = SEED_START + 1
+                else:
+                    print(f"\n!!! GRID POINT FAILED TWICE. Skipping...")
+                    run_finished = True
+            else:
+                run_finished = True
+
+            tf.keras.backend.clear_session(); import gc; gc.collect()
+
+print("\n--- Grid-Scan beendet ---")

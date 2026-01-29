@@ -10,7 +10,7 @@ import matplotlib # Für Backend-Einstellung
 # Pfade & Konfiguration
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 IN_DIR   = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
-OUT_ROOT = ROOT_DIR / "Plots/Unet/Analysis_ROI/Gaussian_fits"
+OUT_ROOT = ROOT_DIR / "Plots/Unet/Analysis_ROI/Gaussian_fits_K_Direction"
 
 MODELS = {
     "Rang_1": "Rang_1_unet_25d_TripleLoss_a0.33_b0.17_bf64_D5_20260121-090819_loss0.0518_val0.0510.keras",
@@ -227,7 +227,7 @@ def main():
             cfg = SERIES_CONFIG[s_id]
             process_combination(rank, s_id, cfg)
             
-    print("Fertig! Alle Plots sind unter Analysis_ROI/Gaussian_fits gespeichert.")
+    print("Fertig! Alle Plots sind unter Analysis_ROI/Gaussian_fits_K_Direction gespeichert.")
 
 if __name__ == "__main__":
     main()
