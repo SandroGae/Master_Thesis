@@ -16,11 +16,11 @@ warnings.filterwarnings("ignore")
 # 1. PFADE & SETUP
 # =====================================================
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-IN_DIR   = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
+IN_DIR   = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw_RERUN"
 OUT_DIR  = ROOT_DIR / "Plots/Unet/Evaluation_RERUN_Results"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Mapping: Rang -> (Alpha, Beta) extrahiert aus deiner finalen Liste
+# Mapping bleibt gleich
 MODEL_MAP = {
     "Rank_1": (0.1667, 0.0),    "Rank_2": (0.25, 0.0),      "Rank_3": (0.1667, 0.1667),
     "Rank_4": (0.25, 0.5),      "Rank_5": (0.25, 0.0833),   "Rank_6": (0.25, 0.3333),
@@ -43,6 +43,9 @@ MODEL_MAP = {
     "Rank_55": (0.0, 0.8333),   "Rank_56": (0.0, 1.0)
 }
 
+# Standard Beta-Stufen für die Replikation
+BETA_STEPS = [0.0, 0.1667, 0.3333, 0.5, 0.6667, 0.8333, 1.0]
+
 SERIES_CONFIG = {
     5:  {"slice_idx": 15, "roi_x": (195, 216), "roi_y": (102, 117), "bg_gap": 5, "fH": (2,38), "fK": (90,130), "fL": (140,240)},
     11: {"slice_idx": 20, "roi_x": (76, 97),   "roi_y": (102, 117), "bg_gap": 5, "fH": (2,38), "fK": (90,130), "fL": (43,143)},
@@ -59,7 +62,7 @@ SERIES_CONFIG = {
 BG_BOX_HEIGHT = 10
 
 # =====================================================
-# 2. BERECHNUNGS-KERN
+# 2. HILFSFUNKTIONEN
 # =====================================================
 def gaussian(x, a, mu, sigma): return a * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
@@ -88,20 +91,21 @@ def get_sigma_bg(img, cfg, d):
     return np.std(bg) if bg.size > 0 else 1e-6
 
 # =====================================================
-# 3. WORKFLOW: METRIKEN BERECHNEN
+# 3. WORKFLOW: METRIKEN BERECHNEN & ALPHA=1 EXPANSION
 # =====================================================
 def collect_all_metrics():
     all_results = []
+    found_files = 0
+    
     for rank_key, (alpha, beta) in MODEL_MAP.items():
-        # Führende Null für Dateinamen sicherstellen (Rank_1 -> Rank_01)
         rank_num = rank_key.split("_")[1]
         formatted_rank = f"Rank_{int(rank_num):02d}"
         
-        print(f"Calculating {formatted_rank} (a={alpha}, b={beta})...")
         for s_id, cfg in SERIES_CONFIG.items():
             path = IN_DIR / f"Pred_{formatted_rank}_D5_S{s_id}_FullSeries.npz"
             if not path.exists(): continue
             
+            found_files += 1
             data = np.load(path)
             for d in ["H", "K", "L"]:
                 if d == "H":
@@ -121,54 +125,92 @@ def collect_all_metrics():
                 if f_g and f_p:
                     all_results.append({
                         'alpha': alpha, 'beta': beta, 'dir': d, 's_id': s_id,
-                        'snr': 20 * np.log10((f_p['a']/s_p)/(f_g['a']/s_g)),
+                        'snr': 20 * np.log10((f_p['a']/s_p)/(f_g['a']/s_g)) if s_p > 0 else 0,
                         'tii': (f_p['a']*f_p['sig'])/(f_g['a']*f_g['sig']),
                         'dmu': abs(f_p['mu'] - f_g['mu']),
                         'mu_g': f_g['mu'], 'mu_p': f_p['mu']
                     })
     
-    if not all_results:
-        print("Error: No data found. Please check IN_DIR and file naming.")
-        return pd.DataFrame()
+    print(f"\nSuche beendet. {found_files} Dateien geladen.")
+    if not all_results: return pd.DataFrame()
 
     df = pd.DataFrame(all_results)
+    
+    # --- NEU: ALPHA = 1.0 LOGIK ---
+    # Wir nehmen Rank 49 (Alpha=1, Beta=0) und duplizieren ihn für alle Beta-Werte
+    print("Applying Alpha=1.0 mathematical equivalence logic...")
+    a1_data = df[df['alpha'] == 1.0].copy()
+    if not a1_data.empty:
+        expanded_a1 = []
+        for b in BETA_STEPS:
+            if b == 0.0: continue # Original Rank 49 ist schon drin
+            temp = a1_data.copy()
+            temp['beta'] = b
+            expanded_a1.append(temp)
+        df = pd.concat([df] + expanded_a1, ignore_index=True)
+
+    # Aggregierung
     agg = df.groupby(['alpha', 'beta', 'dir']).agg({'snr':'mean', 'tii':'mean', 'dmu':'mean'}).reset_index()
     jitter_df = df.groupby(['alpha', 'beta', 'dir']).apply(lambda x: np.std(x['mu_g'])/np.std(x['mu_p']) if np.std(x['mu_p'])>0 else 1.0).reset_index(name='jitter')
     return pd.merge(agg, jitter_df, on=['alpha', 'beta', 'dir'])
 
 # =====================================================
-# 4. PLOTTING: 2D & 3D (unverändert)
+# 4. PLOTTING (Bleibt gleich)
 # =====================================================
-def plot_heatmaps(df):
+def plot_heatmaps(df, subfolder_name):
     if df.empty: return
-    metrics = {'snr': ('SNR Gain [dB]', 'plasma'), 'tii': ('Total Intensity Ratio', 'RdBu_r'), 'dmu': ('Positional Shift [px]', 'magma')}
+    target_dir = OUT_DIR / subfolder_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    metrics = {'snr': ('SNR Gain [dB]', 'plasma'), 
+               'tii': ('Total Intensity Ratio', 'RdBu_r'), 
+               'dmu': ('Positional Shift [px]', 'magma')}
     
     for m_key, (m_title, cmap) in metrics.items():
         for d in ["H", "K", "L"]:
             sub = df[df['dir'] == d]
-            if len(sub) < 4: continue # Cubic interpolation needs enough points
+            if len(sub) < 4: continue 
             
             xi, yi = np.meshgrid(np.linspace(0, 1, 100), np.linspace(0, 1, 100))
+            # Griddata interpoliert jetzt sauber bis alpha=1
             zi = griddata((sub['alpha'], sub['beta']), sub[m_key], (xi, yi), method='cubic')
             zi_clean = np.nan_to_num(zi, nan=np.nanmin(zi))
 
-            # 2D Plot
             plt.figure(figsize=(10, 8))
             plt.contourf(xi, yi, zi, levels=50, cmap=cmap)
-            plt.colorbar(label=m_title); plt.contour(xi, yi, zi, levels=15, colors='white', alpha=0.3)
+            plt.colorbar(label=m_title)
+            plt.contour(xi, yi, zi, levels=15, colors='white', alpha=0.3)
             plt.scatter(sub['alpha'], sub['beta'], c='white', edgecolors='black', s=20)
-            plt.title(f"{m_title} - Direction {d}"); plt.xlabel("Alpha (SSIM)"); plt.ylabel("Beta (MSE/MAE)")
-            plt.savefig(OUT_DIR / f"Heatmap_2D_{m_key}_{d}.png", dpi=300); plt.close()
+            plt.title(f"{m_title} - Direction {d} ({subfolder_name})")
+            plt.xlabel("Alpha (SSIM)")
+            plt.ylabel("Beta (MSE/MAE)")
+            plt.savefig(target_dir / f"Heatmap_2D_{m_key}_{d}.png", dpi=300)
+            plt.close()
 
-            # 3D Plot
-            fig = plt.figure(figsize=(12, 8)); ax = fig.add_subplot(111, projection='3d')
+            fig = plt.figure(figsize=(12, 8))
+            ax = fig.add_subplot(111, projection='3d')
             ls = LightSource(azdeg=315, altdeg=45)
             rgb = ls.shade(zi_clean, cmap=plt.get_cmap(cmap), vert_exag=0.1, blend_mode='soft')
             ax.plot_surface(xi, yi, zi_clean, facecolors=rgb, linewidth=0, antialiased=True, shade=False)
-            ax.view_init(elev=25, azim=250); ax.set_title(f"3D {m_title} - {d}")
-            plt.savefig(OUT_DIR / f"Topology_3D_{m_key}_{d}.png", dpi=300); plt.close()
+            ax.view_init(elev=25, azim=250)
+            ax.set_title(f"3D {m_title} - {d}\n({subfolder_name})")
+            ax.set_xlabel('Alpha')
+            ax.set_ylabel('Beta')
+            plt.savefig(target_dir / f"Topology_3D_{m_key}_{d}.png", dpi=300)
+            plt.close()
 
 if __name__ == "__main__":
+    print("Collecting all metrics...")
     df_final = collect_all_metrics()
-    plot_heatmaps(df_final)
-    print(f"Workflow complete. Plots saved in {OUT_DIR}")
+    
+    if not df_final.empty:
+        print("\n--- Generating plots for ALL runs (with Alpha=1 expansion) ---")
+        plot_heatmaps(df_final, "All_Runs_Full_Rect")
+        
+        print("\n--- Generating plots WITHOUT Alpha=0.25 runs ---")
+        df_filtered = df_final[df_final['alpha'] != 0.25]
+        plot_heatmaps(df_filtered, "Filtered_No_Alpha_025")
+        
+        print(f"\nWorkflow complete. Results in: {OUT_DIR}")
+    else:
+        print("No metrics collected. Check input files.")
