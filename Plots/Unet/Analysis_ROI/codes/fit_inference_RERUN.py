@@ -20,7 +20,7 @@ ROOT_DIR = Path("/home/sgaell/code/Master_Thesis")
 MODEL_DIR = Path("/home/sgaell/data/ALL_MODELS")
 
 # Testdaten liegen im original_data Ordner auf dem Server
-H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
+H5_TEST_PATH = Path("/home/sgaell/data/original_data/test_data.hdf5")
 
 # Output Ordner innerhalb deiner Struktur auf dem Server
 OUT_DIR = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "Predictions_Raw_RERUN"
