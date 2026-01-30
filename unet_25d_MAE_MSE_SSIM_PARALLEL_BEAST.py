@@ -121,9 +121,13 @@ def lr_warmup_scheduler(epoch, lr):
 
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
-        low, high = f["low_count/data"][:], f["high_count/data"][:]
-    low, high = np.moveaxis(low, -1, 0), np.moveaxis(high, -1, 0)
-    return low[:, :, :, np.newaxis], high[:, :, :, np.newaxis]
+        # Hier die Korrektur: .astype('float32') direkt nach dem Slicing [:]
+        low_count = f["low_count/data"][:].astype('float32')
+        high_count = f["high_count/data"][:].astype('float32')
+    
+    low_count = np.moveaxis(low_count, -1, 0)[:, :, :, np.newaxis]
+    high_count = np.moveaxis(high_count, -1, 0)[:, :, :, np.newaxis]
+    return low_count, high_count
 
 def make_sliding_windows(X, y, series_len, depth):
     n_series = X.shape[0] // series_len
