@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-from tensorflow.keras import mixed_precision
-policy = mixed_precision.Policy('mixed_float16')
-mixed_precision.set_global_policy(policy)
-
 import os
 import sys
 import random
@@ -16,14 +12,13 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-# Deine Custom-Module (Stelle sicher, dass diese im PYTHONPATH liegen)
+# Deine Custom-Module
 from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
 from tb_utils import make_run_dir, tb_callbacks
 
 # =====================================================
-# 1. ARGUMENTE & PFAD-SETUP
+# 1. ARGUMENTE & PFAD-SETUP (Parallel-Logik)
 # =====================================================
-# Aufruf via Slurm: python grid_parallel.py START_IDX END_IDX
 if len(sys.argv) < 3:
     print("Fehler: Start- und End-Index müssen übergeben werden!")
     sys.exit(1)
@@ -47,21 +42,19 @@ TB_ROOT = ROOT_DATA / "tblogs_new_rerun"
 for d in [SUCCESS_DIR, FAILED_DIR, TB_ROOT]:
     d.mkdir(parents=True, exist_ok=True)
 
-# Grid Setup: 43 relevante Kombinationen generieren
+# Grid Setup: 43 relevante Kombinationen
 GRID_VALS = np.linspace(0.0, 1.0, 7)
 ALL_COMBOS = []
 for a_val in GRID_VALS:
     for b_val in GRID_VALS:
-        # Redundanz-Check: Wenn alpha=1.0, ist beta irrelevant (nur beta=0.0 machen)
         if round(float(a_val), 4) == 1.0 and round(float(b_val), 4) > 0.0:
             continue
         ALL_COMBOS.append((round(float(a_val), 4), round(float(b_val), 4)))
 
-# Teilmenge für diesen Job extrahieren
 MY_COMBOS = ALL_COMBOS[START_IDX:END_IDX]
 
 # =====================================================
-# 2. ARCHITEKTUR & LOSS & METRIKEN
+# 2. ARCHITEKTUR & LOSS & METRIKEN (Reines Float 32)
 # =====================================================
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
@@ -85,38 +78,35 @@ def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, out
     u2 = layers.Concatenate()([u2, c2]); c7 = conv_block_2d(u2, base_filters * 2)
     u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1]); c8 = conv_block_2d(u1, base_filters)
-    x = layers.Conv2D(1, (1, 1), padding="same", name="conv_final")(c8)
-    out = layers.Activation(output_activation, dtype='float32', name="output")(x)
+    # Output Schicht (Standard Float 32)
+    out = layers.Conv2D(1, (1, 1), activation=output_activation, name="output")(c8)
     return models.Model(inputs, out, name="unet_25d_stacked")
 
 def get_triple_loss(alpha, beta):
     def loss(y_true, y_pred):
-        y_true, y_pred = tf.cast(y_true, tf.float32), tf.cast(y_pred, tf.float32)
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
         mae = tf.reduce_mean(tf.abs(y_true - y_pred))
         mse = tf.reduce_mean(tf.square(y_true - y_pred))
-        ssim_val = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-        return (alpha * (1.0 - ssim_val)) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
+        ssim_loss = 1.0 - tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+        return (alpha * ssim_loss) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
     return loss
 
 def mae_center(yt, yp):
-    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
     return tf.reduce_mean(tf.abs(yt - yp))
 
 def mse_center(yt, yp):
-    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
     return tf.reduce_mean(tf.square(yt - yp))
 
 def psnr_center(yt, yp):
-    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
-    mse = tf.reduce_mean(tf.math.squared_difference(yt, yp), axis=(1,2,3))
+    yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
+    mse = tf.reduce_mean(tf.square(yt - yp), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
 def ssim_center(yt, yp):
-    yt, yp = tf.cast(yt, tf.float32), tf.cast(yp, tf.float32)
-    yt, yp = tf.clip_by_value(yt, 0.0, 1.0), tf.clip_by_value(yp, 0.0, 1.0)
+    yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
     return tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
 
 # =====================================================
@@ -186,8 +176,8 @@ for a_r, b_r in MY_COMBOS:
         tf.config.experimental.enable_op_determinism()
         
         TS_RUN = datetime.now().strftime("%Y%m%d-%H%M%S")
-        RUN_NAME = f"DeepScan_a{a_r}_b{b_r}_seed{current_seed}_{TS_RUN}"
-        print(f"\n>>> STARTE: Alpha={a_r}, Beta={b_r}, Seed={current_seed}")
+        RUN_NAME = f"DeepScan_a{a_r:.4f}_b{b_r:.4f}_seed{current_seed}_{TS_RUN}"
+        print(f"\n>>> START: Alpha={a_r}, Beta={b_r}, Seed={current_seed}")
         
         X_t, y_t = shuffle_initial(X_train_win, y_train_win, current_seed)
         train_ds = (tf.data.Dataset.from_tensor_slices((X_t.astype('float32'), y_t.astype('float32')))
@@ -200,7 +190,7 @@ for a_r, b_r in MY_COMBOS:
                   .map(prepare_25d_input, -1).cache().batch(BATCH_SIZE).prefetch(-1))
 
         model = unet_2d_stacked()
-        optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True, epsilon=1e-4, global_clipnorm=0.5)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
         
         status = {"aborted": False, "best_psnr": -1.0}
         def check_crash(epoch, logs):
@@ -215,15 +205,13 @@ for a_r, b_r in MY_COMBOS:
         callbacks = [
             tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
             tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, verbose=1),
-            tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=PATIENCE, restore_best_weights=True),
+            tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True),
             tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
             tf.keras.callbacks.CSVLogger(temp_csv),
             *tb_callbacks(TB_ROOT / RUN_NAME)
         ]
 
-        model.compile(optimizer=optimizer, loss=get_triple_loss(a_r, b_r), 
-                      metrics=[mae_center, mse_center, psnr_center, ssim_center])
-
+        model.compile(optimizer=optimizer, loss=get_triple_loss(a_r, b_r), metrics=[mae_center, mse_center, psnr_center, ssim_center])
         history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
 
         # EVALUATION & DATEI-LOGIK
@@ -250,4 +238,4 @@ for a_r, b_r in MY_COMBOS:
 
         tf.keras.backend.clear_session(); gc.collect()
 
-print("\n--- Gesamter Teil-Scan beendet ---")
+print("\n--- BEAST MODE SCAN FINISHED ---")
