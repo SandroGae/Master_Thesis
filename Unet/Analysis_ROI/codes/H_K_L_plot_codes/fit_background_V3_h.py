@@ -9,7 +9,7 @@ import matplotlib
 # =====================================================
 # 1. GLOBALER TOGGLE (Hier auswählen!)
 # =====================================================
-USE_RERUN = True  # True für die 56 neuen Modelle, False für die ursprünglichen 10
+MODE = "NEW_RERUN"  # "ORIGINAL", "RERUN", or "NEW_RERUN"
 
 MODELS_ORIGINAL = {
     "Rang_1": "Rang_1_unet_25d_TripleLoss_a0.33_b0.17_bf64_D5_20260121-090819_loss0.0518_val0.0510.keras",
@@ -83,21 +83,72 @@ MODELS_RERUN = {
     "Rank_56": "Rank_56__DeepScan_a0.0_b1.0_seed42_20260128-223731_loss fiber0.1660_val0.1118.keras",
 }
 
+MODELS_NEW_RERUN = {
+    "Rang_01": "Rang_01_DeepScan_a0.1667_b0.0000_seed42_20260131-011255_loss0.0257_val0.0294.keras",
+    "Rang_02": "Rang_02_DeepScan_a0.3333_b0.5000_seed42_20260131-022758_loss0.0839_val0.0717.keras",
+    "Rang_03": "Rang_03_DeepScan_a0.3333_b0.0000_seed42_20260131-021835_loss0.0361_val0.0407.keras",
+    "Rang_04": "Rang_04_DeepScan_a0.3333_b0.3333_seed42_20260131-010926_loss0.0657_val0.0614.keras",
+    "Rang_05": "Rang_05_DeepScan_a0.1667_b0.3333_seed43_20260131-002251_loss0.0582_val0.0554.keras",
+    "Rang_06": "Rang_06_DeepScan_a0.3333_b0.1667_seed42_20260131-000951_loss0.0533_val0.0511.keras",
+    "Rang_07": "Rang_07_DeepScan_a0.1667_b0.5000_seed42_20260131-014158_loss0.0744_val0.0684.keras",
+    "Rang_08": "Rang_08_DeepScan_a0.5000_b0.1667_seed42_20260131-011728_loss0.0574_val0.0601.keras",
+    "Rang_09": "Rang_09_DeepScan_a0.1667_b0.1667_seed42_20260131-030855_loss0.0479_val0.0425.keras",
+    "Rang_10": "Rang_10_DeepScan_a0.5000_b0.0000_seed42_20260131-001704_loss0.0463_val0.0521.keras",
+    "Rang_11": "Rang_11_DeepScan_a0.5000_b0.3333_seed42_20260131-031358_loss0.0683_val0.0678.keras",
+    "Rang_12": "Rang_12_DeepScan_a0.0000_b0.1667_seed42_20260131-021040_loss0.0401_val0.0337.keras",
+    "Rang_13": "Rang_13_DeepScan_a0.1667_b0.6667_seed42_20260131-023652_loss0.1009_val0.0814.keras",
+    "Rang_14": "Rang_14_DeepScan_a0.3333_b0.6667_seed42_20260131-001041_loss0.0879_val0.0822.keras",
+    "Rang_15": "Rang_15_DeepScan_a0.1667_b0.8333_seed42_20260131-000640_loss0.1355_val0.0945.keras",
+    "Rang_16": "Rang_16_DeepScan_a0.5000_b0.5000_seed42_20260131-002205_loss0.0756_val0.0753.keras",
+    "Rang_17": "Rang_17_DeepScan_a0.6667_b0.1667_seed42_20260131-053158_loss0.0631_val0.0685.keras",
+    "Rang_18": "Rang_18_DeepScan_a0.3333_b0.8333_seed42_20260131-010607_loss0.1229_val0.0927.keras",
+    "Rang_19": "Rang_19_DeepScan_a0.5000_b0.6667_seed42_20260131-011741_loss0.0923_val0.0830.keras",
+    "Rang_20": "Rang_20_DeepScan_a0.6667_b0.3333_seed43_20260131-032304_loss0.0723_val0.0736.keras",
+    "Rang_21": "Rang_21_DeepScan_a0.6667_b0.5000_seed42_20260131-042251_loss0.0825_val0.0788.keras",
+    "Rang_22": "Rang_22_DeepScan_a0.6667_b0.0000_seed42_20260131-044258_loss0.0577_val0.0638.keras",
+    "Rang_23": "Rang_23_DeepScan_a0.5000_b1.0000_seed43_20260131-031943_loss0.0993_val0.0984.keras",
+    "Rang_24": "Rang_24_DeepScan_a0.5000_b0.8333_seed43_20260131-024341_loss0.1022_val0.0910.keras",
+    "Rang_25": "Rang_25_DeepScan_a0.8333_b0.0000_seed42_20260131-061901_loss0.0662_val0.0746.keras",
+    "Rang_26": "Rang_26_DeepScan_a0.6667_b0.6667_seed44_20260131-055426_loss0.0887_val0.0842.keras",
+    "Rang_27": "Rang_27_DeepScan_a0.3333_b1.0000_seed42_20260131-020559_loss0.1302_val0.1031.keras",
+    "Rang_28": "Rang_28_DeepScan_a0.8333_b0.1667_seed43_20260131-041442_loss0.0707_val0.0773.keras",
+    "Rang_29": "Rang_29_DeepScan_a0.8333_b0.6667_seed43_20260131-043624_loss0.0821_val0.0851.keras",
+    "Rang_30": "Rang_30_DeepScan_a0.8333_b0.3333_seed43_20260131-052558_loss0.0741_val0.0801.keras",
+    "Rang_31": "Rang_31_DeepScan_a0.6667_b0.8333_seed42_20260131-033152_loss0.0990_val0.0892.keras",
+    "Rang_32": "Rang_32_DeepScan_a0.1667_b1.0000_seed42_20260131-012331_loss0.1229_val0.1074.keras",
+    "Rang_33": "Rang_33_DeepScan_a0.0000_b0.0000_seed43_20260131-003040_loss0.0152_val0.0184.keras",
+    "Rang_34": "Rang_34_DeepScan_a0.8333_b0.5000_seed42_20260131-061643_loss0.0791_val0.0824.keras",
+    "Rang_35": "Rang_35_DeepScan_a0.8333_b0.8333_seed42_20260131-052931_loss0.0845_val0.0878.keras",
+    "Rang_36": "Rang_36_DeepScan_a0.6667_b1.0000_seed42_20260131-052908_loss0.1067_val0.0946.keras",
+    "Rang_37": "Rang_37_DeepScan_a0.8333_b1.0000_seed43_20260131-064157_loss0.0893_val0.0904.keras",
+    "Rang_38": "Rang_38_DeepScan_a1.0000_b0.0000_seed42_20260131-073210_loss0.0766_val0.0862.keras",
+    "Rang_39": "Rang_39_DeepScan_a0.0000_b0.5000_seed42_20260131-000641_loss0.0809_val0.0671.keras",
+    "Rang_40": "Rang_40_DeepScan_a0.0000_b0.3333_seed42_20260131-040643_loss0.0541_val0.0522.keras",
+    "Rang_41": "Rang_41_DeepScan_a0.0000_b0.6667_seed42_20260131-015925_loss0.1080_val0.0820.keras",
+    "Rang_42": "Rang_42_DeepScan_a0.0000_b0.8333_seed42_20260131-034436_loss0.1071_val0.0969.keras",
+    "Rang_43": "Rang_43_DeepScan_a0.0000_b1.0000_seed42_20260131-000640_loss0.1372_val0.1118.keras",
+}
+
 # AUTOMATISCHE PFAD-Zuweisung
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
 
-if USE_RERUN:
-    print(">>> Nutze RERUN Setup (K-Richtung)")
+# --- AUTOMATISCHE PFAD-STEUERUNG (Korrektur) ---
+if MODE == "NEW_RERUN":
+    print(">>> Modus: NEW_RERUN (43 Modelle, Z-Richtung)")
+    MODELS = MODELS_NEW_RERUN
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Prediction.npz/Predictions_Raw_new_RERUN"
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_H_Direction_NEW_RERUN"
+elif MODE == "RERUN":
+    print(">>> Modus: RERUN (56 Modelle, Z-Richtung)")
     MODELS = MODELS_RERUN
-    IN_DIR = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "Predictions_Raw_RERUN"
-    # KORREKTUR: Eigener Ordner für die Plots
-    OUT_DIR = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "Analysis_H_Direction_RERUN"
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Prediction.npz/Predictions_Raw_RERUN"
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_H_Direction_RERUN"
 else:
-    print(">>> Nutze ORIGINAL Setup (K-Richtung)")
+    print(">>> Modus: ORIGINAL (10 Modelle, Z-Richtung)")
     MODELS = MODELS_ORIGINAL
-    IN_DIR = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "Predictions_Raw"
-    OUT_DIR = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "Analysis_H_Direction"
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Prediction.npz/Predictions_Raw"
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_H_Direction"
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -115,7 +166,7 @@ SERIES_CONFIG = {
     21: {"slice_idx": 19, "roi_x": (192, 213), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
     22: {"slice_idx": 17, "roi_x": (176, 197), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
     29: {"slice_idx": 25, "roi_x": (50, 71),   "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    35: {"slice_idx": 24, "roi_x": (98, 119),  "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 65),   "ylim_sbr": (-0.1, 0.4)},
+    35: {"slice_idx": 24, "roi_x": (128, 149),  "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 65),   "ylim_sbr": (-0.1, 0.4)},
     50: {"slice_idx": 13, "roi_x": (92, 113),  "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
 }
 
@@ -220,11 +271,24 @@ def main():
     matplotlib.use('Agg')
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    for rank_label, model_file in MODELS.items():
-        print(f"Processing Model: {rank_label}")
+    for rank_key, full_name in MODELS.items():
+        # 1. model_id für den Plot-Namen (lang und beschreibend)
+        model_id = full_name.replace(".keras", "").split("_2026")[0] if "_2026" in full_name else rank_key
+        print(f"Processing Model: {model_id}")
+
+        # 2. pure_id für die Suche der .npz Datei (Präfix entfernen)
+        if model_id.startswith("Rang_"): pure_id = model_id[8:]
+        elif model_id.startswith("Rank_"): pure_id = model_id.split("__")[1] if "__" in model_id else model_id[8:]
+        else: pure_id = model_id
+
         for s_id, cfg in SERIES_CONFIG.items():
-            file_path = IN_DIR / f"Pred_{rank_label}_D5_S{s_id}_FullSeries.npz"
-            if not file_path.exists(): continue
+            # 1. Versuch: Mit pure_id (bereinigt)
+            file_path = IN_DIR / f"Pred_{pure_id}_D5_S{s_id}_FullSeries.npz"
+            if not file_path.exists():
+                file_path = IN_DIR / f"Pred_{model_id}_D5_S{s_id}_FullSeries.npz"
+            
+            if not file_path.exists():
+                continue # Nächste Serie, falls Datei wirklich fehlt
 
             series_dir = OUT_DIR / f"Serie_{s_id}"
             series_dir.mkdir(parents=True, exist_ok=True)
@@ -294,17 +358,20 @@ def main():
                 ax3.axhline(0, color='gray', ls=':', alpha=0.5)
                 if results[i]['fit'] is not None:
                     p, e = results[i]['par'], results[i]['perr']
-                    l = (f"Gauss (Peak={p[1]:.1f}±{e[1]:.1f}, σ={p[2]:.2f}±{e[2]:.2f})")
+                    # Legende mit LaTeX-Symbolen
+                    l = (f"Gauss (Amp={p[0]:.2f}$\pm${e[0]:.2f}, Peak={p[1]:.1f}$\pm${e[1]:.1f}, $\sigma$={p[2]:.2f})")
                     ax3.plot(results[i]['x'], results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
-                
+
                 ax3.set_xlabel("Image Index (Z-Axis)")
                 if i==0: ax3.set_ylabel("SRBR")
                 ax3.grid(True, alpha=0.3); ax3.legend(loc='upper right', fontsize=8)
                 ax3.set_ylim(cfg.get("ylim_sbr", (-0.1, 0.55)))
 
             plt.tight_layout()
-            out_name = f"Ana_H_Dir_{rank_label}_S{s_id}.png"
-            fig.savefig(series_dir / out_name)
+            # WICHTIG: model_id statt rank_label verwenden!
+            out_name = f"Analysis_H_{model_id}_S{s_id}.png"
+            fig.savefig(series_dir / out_name, bbox_inches='tight')
+            print(f" OK: {out_name}") # Bestätigung in der Konsole
             plt.close(fig)
 
     print(f"\nFertig! Alle Plots in {OUT_DIR} gespeichert.")
