@@ -19,23 +19,21 @@ from tb_utils import tb_callbacks
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 # =====================================================
-# 1. SETUP & KONFIGURATION
+# 1. SETUP & KONFIGURATION (Modifiziert für Punkt 0)
 # =====================================================
-if len(sys.argv) < 2:
-    print("Fehler: Punkt-Index (0 oder 1) muss übergeben werden!")
-    sys.exit(1)
-
-POINT_IDX = int(sys.argv[1])
+# Fix auf Punkt 0 (a=0, b=0)
+POINT_IDX = 0 
 TARGET_POINTS = [(0.0, 0.0), (round(10/12, 4), 0.0)]
 MY_ALPHA, MY_BETA = TARGET_POINTS[POINT_IDX]
 
-SUCCESS_GOAL = 9  
-START_SEED = 43 
+SUCCESS_GOAL = 9   # Wir bleiben bei 9 insgesamt
+START_SEED = 66    # Startet direkt bei 66
 
 DEPTH = 5
 BATCH_SIZE = 8
 EPOCHS = 200
 
+# Verzeichnisse bleiben gleich
 ROOT_DATA = Path.home() / "data"
 SEED_STUDY_ROOT = ROOT_DATA / "seed_study_infinite" 
 SUCCESS_DIR = SEED_STUDY_ROOT / f"success_point_{POINT_IDX}"
@@ -136,24 +134,35 @@ def prepare_25d_input(x, y):
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
 # =====================================================
-# 4. INFINITE LOOP
+# 4. INFINITE LOOP (Start ab Seed 66)
 # =====================================================
-print(f"Lade Daten für Punkt Alpha={MY_ALPHA}, Beta={MY_BETA}...")
-FILES = {"training": "/home/sgaell/data/original_data/training_data.hdf5", 
-         "validation": "/home/sgaell/data/original_data/validation_data.hdf5"}
-X_train_raw, y_train_raw = load_split(FILES["training"])
-X_val_raw, y_val_raw = load_split(FILES["validation"])
-X_train_win, y_train_win = make_sliding_windows(X_train_raw, y_train_raw, 41, 5)
-X_val_win, y_val_win = make_sliding_windows(X_val_raw, y_val_raw, 41, 5)
+# Initialer Check: Wie viele Erfolge haben wir schon im Ordner?
+existing_successes = list(SUCCESS_DIR.glob(f"InfSeed_P{POINT_IDX}_*"))
+success_count = len(existing_successes)
 
-success_count = 0
+print(f"Aktueller Stand für Punkt {POINT_IDX}: {success_count}/{SUCCESS_GOAL} Erfolge gefunden.")
+print(f"Starte Suche nach weiteren Erfolgen ab Seed {START_SEED}...")
+
 current_seed = START_SEED
 
 while success_count < SUCCESS_GOAL:
-    existing = list(SUCCESS_DIR.glob(f"*_seed{current_seed}_*"))
-    if existing:
-        print(f"Seed {current_seed} bereits vorhanden. Überspringe..."); success_count += 1; current_seed += 1; continue
+    # Check ob dieser spezifische Seed schon existiert (in SUCCESS oder FAILED)
+    # Damit wir nicht doppelt trainieren, falls Seed 66 schon mal lief
+    is_done_success = list(SUCCESS_DIR.glob(f"*_seed{current_seed}_*"))
+    is_done_failed = list(FAILED_DIR.glob(f"*_seed{current_seed}_*"))
 
+    if is_done_success:
+        print(f"Seed {current_seed} ist bereits ein ERFOLG. Überspringe..."); 
+        # Falls wir ihn noch nicht im success_count hatten (manuelle Zählung oben ist sicherer)
+        current_seed += 1
+        continue
+    
+    if is_done_failed:
+         print(f"Seed {current_seed} ist bereits GEFLOPPT. Überspringe..."); 
+         current_seed += 1
+         continue
+
+    # --- AB HIER STARTET DAS TRAINING ---
     os.environ['PYTHONHASHSEED'] = str(current_seed)
     random.seed(current_seed); np.random.seed(current_seed); tf.random.set_seed(current_seed)
     tf.config.experimental.enable_op_determinism()
