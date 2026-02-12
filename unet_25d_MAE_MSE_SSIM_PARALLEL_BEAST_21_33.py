@@ -3,6 +3,7 @@ import sys
 import random
 import gc
 import shutil
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -134,10 +135,30 @@ def prepare_25d_input(x, y):
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
 # =====================================================
-# 4. INFINITE LOOP (Start ab Seed 66)
+# 4. DATA LOADING (Hinzugefügt)
 # =====================================================
-# Initialer Check: Wie viele Erfolge haben wir schon im Ordner?
-existing_successes = list(SUCCESS_DIR.glob(f"InfSeed_P{POINT_IDX}_*"))
+print("Lade Datensatz...")
+# Hier musst du den Pfad zu deiner tatsächlichen H5-Datei angeben!
+H5_DATA_PATH = ROOT_DATA / "train_data.h5" 
+if not H5_DATA_PATH.exists():
+    # Fallback/Suche falls Name anders
+    available_h5 = list(ROOT_DATA.glob("*.h5"))
+    if available_h5: H5_DATA_PATH = available_h5[0]
+
+lc_full, hc_full = load_split(H5_DATA_PATH)
+# Wir nehmen an: 10 Bilder pro Serie (bitte anpassen falls nötig)
+X_win, y_win = make_sliding_windows(lc_full, hc_full, series_len=10, depth=DEPTH)
+
+# Split (90% Train, 10% Val)
+split_at = int(len(X_win) * 0.9)
+X_train_win, y_train_win = X_win[:split_at], y_win[:split_at]
+X_val_win, y_val_win = X_win[split_at:], y_win[split_at:]
+
+# =====================================================
+# 5. INFINITE LOOP (Start ab Seed 66)
+# =====================================================
+# Zähle nur die .h5 Dateien, um pro Run nur 1x zu zählen
+existing_successes = list(SUCCESS_DIR.glob(f"InfSeed_P{POINT_IDX}_*.h5"))
 success_count = len(existing_successes)
 
 print(f"Aktueller Stand für Punkt {POINT_IDX}: {success_count}/{SUCCESS_GOAL} Erfolge gefunden.")
@@ -146,14 +167,12 @@ print(f"Starte Suche nach weiteren Erfolgen ab Seed {START_SEED}...")
 current_seed = START_SEED
 
 while success_count < SUCCESS_GOAL:
-    # Check ob dieser spezifische Seed schon existiert (in SUCCESS oder FAILED)
-    # Damit wir nicht doppelt trainieren, falls Seed 66 schon mal lief
-    is_done_success = list(SUCCESS_DIR.glob(f"*_seed{current_seed}_*"))
-    is_done_failed = list(FAILED_DIR.glob(f"*_seed{current_seed}_*"))
+    # Check ob dieser spezifische Seed schon existiert (anhand der CSV oder H5)
+    is_done_success = list(SUCCESS_DIR.glob(f"*_seed{current_seed}_*.h5"))
+    is_done_failed = list(FAILED_DIR.glob(f"*_seed{current_seed}_*.h5"))
 
     if is_done_success:
         print(f"Seed {current_seed} ist bereits ein ERFOLG. Überspringe..."); 
-        # Falls wir ihn noch nicht im success_count hatten (manuelle Zählung oben ist sicherer)
         current_seed += 1
         continue
     
@@ -200,7 +219,6 @@ while success_count < SUCCESS_GOAL:
         *tb_callbacks(TB_ROOT / RUN_NAME)
     ]
 
-    # HIER SIND ALLE METRIKEN FÜR DIE CSV
     model.compile(optimizer=optimizer, loss=get_triple_loss(MY_ALPHA, MY_BETA), 
                   metrics=[mae_center, mse_center, ssim_center, psnr_center])
     
@@ -233,3 +251,4 @@ while success_count < SUCCESS_GOAL:
     tf.keras.backend.clear_session(); gc.collect()
 
 print(f"\n--- MISSION COMPLETE: 9 Erfolge für Punkt {POINT_IDX} ---")
+print("=== MISSION FINISHED ===")
