@@ -135,24 +135,29 @@ def prepare_25d_input(x, y):
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
 # =====================================================
-# 4. DATA LOADING (Hinzugefügt)
+# 4. DATA PREPARATION (Pfade auf original_data angepasst)
 # =====================================================
-print("Lade Datensatz...")
-# Hier musst du den Pfad zu deiner tatsächlichen H5-Datei angeben!
-H5_DATA_PATH = ROOT_DATA / "train_data.h5" 
-if not H5_DATA_PATH.exists():
-    # Fallback/Suche falls Name anders
-    available_h5 = list(ROOT_DATA.glob("*.h5"))
-    if available_h5: H5_DATA_PATH = available_h5[0]
+print("Lade Trainings- und Validierungsdaten...")
+ORIGINAL_DATA_DIR = ROOT_DATA / "original_data"
 
-lc_full, hc_full = load_split(H5_DATA_PATH)
-# Wir nehmen an: 10 Bilder pro Serie (bitte anpassen falls nötig)
-X_win, y_win = make_sliding_windows(lc_full, hc_full, series_len=10, depth=DEPTH)
+# Pfade zu den spezifischen HDF5 Dateien
+TRAIN_H5 = ORIGINAL_DATA_DIR / "training_data.hdf5"
+VAL_H5 = ORIGINAL_DATA_DIR / "validation_data.hdf5"
 
-# Split (90% Train, 10% Val)
-split_at = int(len(X_win) * 0.9)
-X_train_win, y_train_win = X_win[:split_at], y_win[:split_at]
-X_val_win, y_val_win = X_win[split_at:], y_win[split_at:]
+# Überprüfung ob Dateien existieren
+for f in [TRAIN_H5, VAL_H5]:
+    if not f.exists():
+        raise FileNotFoundError(f"Datei nicht gefunden: {f}")
+
+# Trainingsdaten laden und Windows erstellen
+lc_train, hc_train = load_split(TRAIN_H5)
+X_train_win, y_train_win = make_sliding_windows(lc_train, hc_train, series_len=10, depth=DEPTH)
+
+# Validierungsdaten laden und Windows erstellen
+lc_val, hc_val = load_split(VAL_H5)
+X_val_win, y_val_win = make_sliding_windows(lc_val, hc_val, series_len=10, depth=DEPTH)
+
+print(f"Daten geladen: {len(X_train_win)} Training-Windows, {len(X_val_win)} Validation-Windows")
 
 # =====================================================
 # 5. INFINITE LOOP (Start ab Seed 66)
