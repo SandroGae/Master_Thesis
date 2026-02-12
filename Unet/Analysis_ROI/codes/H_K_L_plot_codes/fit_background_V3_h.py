@@ -9,7 +9,6 @@ import matplotlib
 # =====================================================
 # 1. GLOBALER TOGGLE (Hier auswählen!)
 # =====================================================
-MODE = "NEW_RERUN"  # "ORIGINAL", "RERUN", or "NEW_RERUN"
 
 MODELS_ORIGINAL = {
     "Rang_1": "Rang_1_unet_25d_TripleLoss_a0.33_b0.17_bf64_D5_20260121-090819_loss0.0518_val0.0510.keras",
@@ -129,21 +128,47 @@ MODELS_NEW_RERUN = {
     "Rang_43": "Rang_43_DeepScan_a0.0000_b1.0000_seed42_20260131-000640_loss0.1372_val0.1118.keras",
 }
 
+MODELS_INF_SEED = {
+    # --- POINT 0 (P0) ---
+    "P0_Seed43": "InfSeed_P0_a0.0000_b0.0000_seed43_20260210-170149_loss0.0195_val0.0224.keras",
+    "P0_Seed44": "InfSeed_P0_a0.0000_b0.0000_seed44_20260210-180919_loss0.0195_val0.0224.keras",
+    "P0_Seed47": "InfSeed_P0_a0.0000_b0.0000_seed47_20260210-193132_loss0.0158_val0.0181.keras",
+    "P0_Seed50": "InfSeed_P0_a0.0000_b0.0000_seed50_20260210-204618_loss0.0191_val0.0219.keras",
+    "P0_Seed62": "InfSeed_P0_a0.0000_b0.0000_seed62_20260211-001540_loss0.0152_val0.0180.keras",
+    "P0_Seed63": "InfSeed_P0_a0.0000_b0.0000_seed63_20260211-013023_loss0.0155_val0.0180.keras",
+    "P0_Seed65": "InfSeed_P0_a0.0000_b0.0000_seed65_20260211-024800_loss0.0154_val0.0182.keras",
+    "P0_Seed69": "InfSeed_P0_a0.0000_b0.0000_seed69_20260212-092553_loss0.0161_val0.0182.keras",
+    "P0_Seed75": "InfSeed_P0_a0.0000_b0.0000_seed75_20260212-110809_loss0.0203_val0.0226.keras",
+
+    # --- POINT 1 (P1) ---
+    "P1_Seed43": "InfSeed_P1_a0.8333_b0.0000_seed43_20260210-170150_loss0.0662_val0.0747.keras",
+    "P1_Seed44": "InfSeed_P1_a0.8333_b0.0000_seed44_20260210-180249_loss0.0655_val0.0741.keras",
+    "P1_Seed45": "InfSeed_P1_a0.8333_b0.0000_seed45_20260210-190307_loss0.0655_val0.0746.keras",
+    "P1_Seed46": "InfSeed_P1_a0.8333_b0.0000_seed46_20260210-200941_loss0.0659_val0.0745.keras",
+    "P1_Seed47": "InfSeed_P1_a0.8333_b0.0000_seed47_20260210-211638_loss0.0662_val0.0744.keras",
+    "P1_Seed48": "InfSeed_P1_a0.8333_b0.0000_seed48_20260210-222216_loss0.0658_val0.0751.keras",
+    "P1_Seed49": "InfSeed_P1_a0.8333_b0.0000_seed49_20260210-233303_loss0.0661_val0.0744.keras",
+    "P1_Seed50": "InfSeed_P1_a0.8333_b0.0000_seed50_20260211-003034_loss0.0663_val0.0752.keras",
+    "P1_Seed53": "InfSeed_P1_a0.8333_b0.0000_seed53_20260211-020101_loss0.0658_val0.0742.keras",
+}
+
+MODE = "INF_SEED"  # "ORIGINAL", "RERUN", or "NEW_RERUN"
+
 # AUTOMATISCHE PFAD-Zuweisung
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
 
-# --- AUTOMATISCHE PFAD-STEUERUNG (Korrektur) ---
-if MODE == "NEW_RERUN":
+if MODE == "INF_SEED":
+    print(">>> Modus: INF_SEED (18 Modelle, Z-Richtung Seed Study)")
+    MODELS = MODELS_INF_SEED
+    # Hier muss der Pfad EXAKT so stehen wie im Bild (Unet/Analysis_ROI/Prediction.npz/Predictions_Raw)
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Prediction.npz/Predictions_Raw_21_33"
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_H_Direction_INF_SEED"
+elif MODE == "NEW_RERUN":
     print(">>> Modus: NEW_RERUN (43 Modelle, Z-Richtung)")
     MODELS = MODELS_NEW_RERUN
     IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Prediction.npz/Predictions_Raw_new_RERUN"
     OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_H_Direction_NEW_RERUN"
-elif MODE == "RERUN":
-    print(">>> Modus: RERUN (56 Modelle, Z-Richtung)")
-    MODELS = MODELS_RERUN
-    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Prediction.npz/Predictions_Raw_RERUN"
-    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_H_Direction_RERUN"
 else:
     print(">>> Modus: ORIGINAL (10 Modelle, Z-Richtung)")
     MODELS = MODELS_ORIGINAL
@@ -272,8 +297,12 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for rank_key, full_name in MODELS.items():
-        # 1. model_id für den Plot-Namen (lang und beschreibend)
-        model_id = full_name.replace(".keras", "").split("_2026")[0] if "_2026" in full_name else rank_key
+        # WICHTIG: Wenn wir im Seed-Modus sind, nimm direkt "P0_Seed43" etc.
+        if MODE == "INF_SEED":
+            model_id = rank_key
+        else:
+            model_id = full_name.replace(".keras", "").split("_2026")[0] if "_2026" in full_name else rank_key
+            
         print(f"Processing Model: {model_id}")
 
         # 2. pure_id für die Suche der .npz Datei (Präfix entfernen)

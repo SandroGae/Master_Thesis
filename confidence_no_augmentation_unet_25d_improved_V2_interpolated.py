@@ -29,8 +29,9 @@ tf.random.set_seed(SEED)
 tf.config.experimental.enable_op_determinism()
 
 # Konfiguration
+ALPHA_OPTIMAL= 0.0
+BETA_OPTIMAL = 0.0
 DEPTH = 5
-MAX_STRIDE = 24
 USE_POISSON_NOISE = True
 SERIES_LEN_INTERP = 241
 SERIES_LEN_ORIG   = 41
@@ -41,41 +42,52 @@ AUTOTUNE          = tf.data.AUTOTUNE
 # Pfade
 DATA_ROOT = Path.home() / "data"
 INTERP_DIR = DATA_ROOT / "interpolated_data_linear"
-ORIG_DIR   = Path.home() / "data/original_data"
+ORIG_FILE = Path.home() / "data/original_data/training_data.hdf5"
 
 suffix = "pois_on.hdf5" if USE_POISSON_NOISE else "pois_off.hdf5"
 TRAIN_FILE = INTERP_DIR / f"interpolated_training_data_{suffix}"
 
-# --- FUNKTIONEN (Bleiben identisch) ---
+# --- FUNKTIONEN ---
 
-def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
+def conv_block_2d(x, filters, dropout_rate, kernel_size, padding):
     ki = "he_normal"
     for _ in range(4):
         x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
         x = layers.ReLU()(x)
+    
+    # Neu: Dropout für epistemische Unsicherheit (CARE/MC Dropout Ansatz)
+    if dropout_rate > 0:
+        x = layers.Dropout(dropout_rate)(x)
     return x
 
-def unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS, output_activation="sigmoid"):
+def unet_2d_stacked(input_shape, base_filters):
     inputs = layers.Input(shape=input_shape, name="input")
-    c1 = conv_block_2d(inputs, base_filters) ; p1 = layers.MaxPooling2D((2, 2))(c1)
-    c2 = conv_block_2d(p1, base_filters * 2) ; p2 = layers.MaxPooling2D((2, 2))(c2)
-    c3 = conv_block_2d(p2, base_filters * 4) ; p3 = layers.MaxPooling2D((2, 2))(c3)
-    c4 = conv_block_2d(p3, base_filters * 8) ; p4 = layers.MaxPooling2D((2, 2))(c4)
     
-    bn = conv_block_2d(p4, base_filters * 16)
+    c1 = conv_block_2d(inputs, base_filters, 0.1, (3,3), "same") ; p1 = layers.MaxPooling2D((2, 2))(c1)
+    c2 = conv_block_2d(p1, base_filters * 2, 0.1, (3,3), "same") ; p2 = layers.MaxPooling2D((2, 2))(c2)
+    c3 = conv_block_2d(p2, base_filters * 4, 0.1, (3,3), "same") ; p3 = layers.MaxPooling2D((2, 2))(c3)
+    c4 = conv_block_2d(p3, base_filters * 8, 0.1, (3,3), "same") ; p4 = layers.MaxPooling2D((2, 2))(c4)
+    
+    bn = conv_block_2d(p4, base_filters * 16, 0.1, (3,3), "same")
 
+    # Decoder (Hier wird meist kein Dropout genutzt, um mu stabil zu halten)
     u4 = layers.Conv2DTranspose(base_filters * 8, (2, 2), strides=(2, 2), padding="same")(bn)
-    u4 = layers.Concatenate()([u4, c4]) ; c5 = conv_block_2d(u4, base_filters * 8)
+    u4 = layers.Concatenate()([u4, c4]) ; c5 = conv_block_2d(u4, base_filters * 8, 0.0, (3,3), "same")
     u3 = layers.Conv2DTranspose(base_filters * 4, (2, 2), strides=(2, 2), padding="same")(c5)
-    u3 = layers.Concatenate()([u3, c3]) ; c6 = conv_block_2d(u3, base_filters * 4)
+    u3 = layers.Concatenate()([u3, c3]) ; c6 = conv_block_2d(u3, base_filters * 4, 0.0, (3,3), "same")
     u2 = layers.Conv2DTranspose(base_filters * 2, (2, 2), strides=(2, 2), padding="same")(c6)
-    u2 = layers.Concatenate()([u2, c2]) ; c7 = conv_block_2d(u2, base_filters * 2)
+    u2 = layers.Concatenate()([u2, c2]) ; c7 = conv_block_2d(u2, base_filters * 2, 0.0, (3,3), "same")
     u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
-    u1 = layers.Concatenate()([u1, c1]) ; c8 = conv_block_2d(u1, base_filters)
-    x = layers.Conv2D(filters=2, kernel_size=(1, 1), activation="linear", name="output_raw")(c8) # Changed filters: 1 --> 2 / activation: sigmoid --> linear
+    u1 = layers.Concatenate()([u1, c1]) ; c8 = conv_block_2d(u1, base_filters, 0.0, (3,3), "same")
+    
+    # Output Layer mit 2 Kanälen (Raw-Werte für mu und sigma)
+    x = layers.Conv2D(filters=2, kernel_size=(1, 1), activation="linear", name="output_raw")(c8) 
 
-    mu = layers.Activation("sigmoid", name="mu_output")(x[..., 0:1]) # Sigmoid für rekonstruktion
-    sigma = layers.Lambda(lambda t: tf.math.softplus(t) + 1e-6, name="sigma_output")(x[..., 1:2]) # Linear für Unsicherheit
+    # Kanal 1: mu --> das Bild
+    mu = layers.Activation("sigmoid", name="mu_output")(x[..., 0:1]) 
+    # Kanal 2: sigma --> Die Unsicherheit des Models (Wird die Confidence Map)
+    sigma = layers.Lambda(lambda t: tf.math.softplus(t) + 1e-6, name="sigma_output")(x[..., 1:2]) 
+    
     out = layers.Concatenate()([mu, sigma])
 
     return models.Model(inputs, out, name="unet_25d_stacked")
@@ -131,7 +143,6 @@ def prepare_25d_input(x, y):
     return x, y[idx]
 
 def normalize_and_scale_3d_per_slice(scale: float):
-    """Data Augmentation entfernt: Kein Flip, fixe Skalierung."""
     def map_volume(x, y):
         x = tf.nn.relu(x)
         y = tf.nn.relu(y)
@@ -143,21 +154,40 @@ def normalize_and_scale_3d_per_slice(scale: float):
     return map_volume
 
 
-def combined_probabilistic_loss(y_true, y_pred, alpha=0.6):
-    # y_pred kommt bereits fertig aktiviert aus dem Modell:
-    # mu ist [0, 1] via Sigmoid, sigma ist >0 via Softplus
-    mu = y_pred[..., 0:1]
-    sigma = y_pred[..., 1:2] 
-    
-    # 2. Der NLL-Teil (Negative Log-Likelihood der Laplace-Verteilung)
-    # nll_loss berechnet die aleatorische Unsicherheit
-    nll_loss = tf.math.log(2.0 * sigma) + (tf.abs(y_true - mu) / sigma)
-    
-    # 3. Der SSIM-Teil (Strukturerhalt für mu)
-    ssim_val = tf.image.ssim(y_true, mu, max_val=1.0)
-    ssim_loss = 1.0 - tf.reduce_mean(ssim_val)
-    
-    return (1.0 - alpha) * tf.reduce_mean(nll_loss) + alpha * ssim_loss
+def get_probabilistic_triple_loss(alpha, beta):
+    """
+    Kombiniert MAE, MSE und SSIM in einem probabilistischen Framework.
+    alpha: Gewichtung zwischen SSIM (Struktur) und Pixel-Loss.
+    beta: Gewichtung zwischen MSE (Gauß) und MAE (Laplace) innerhalb der NLL.
+    """
+    def loss(y_true, y_pred):
+        # Splitting der Kanäle
+        mu = y_pred[..., 0:1]
+        sigma = y_pred[..., 1:2]
+        
+        y_true = tf.cast(y_true, tf.float32)
+        
+        # Pixelweise Fehler
+        abs_error = tf.abs(y_true - mu)
+        sq_error = tf.square(y_true - mu)
+        
+        # Probabilistische Gewichtung (NLL)
+        # Laplace-Teil (basiert auf MAE)
+        mae_nll = (abs_error / sigma) + tf.math.log(sigma)
+        # Gauss-Teil (basiert auf MSE)
+        mse_nll = (sq_error / (2.0 * tf.square(sigma))) + tf.math.log(sigma)
+        
+        # Kombinierter Pixel-Loss (beta gewichtet MSE vs MAE)
+        pixel_loss = (beta * mse_nll) + ((1.0 - beta) * mae_nll)
+        
+        # Struktur-Loss (SSIM bleibt globaler Regulator für mu)
+        ssim_val = tf.image.ssim(y_true, mu, max_val=1.0)
+        ssim_loss = 1.0 - tf.reduce_mean(ssim_val)
+        
+        # Finales Triple-Loss (alpha gewichtet Struktur vs Pixel)
+        return (alpha * ssim_loss) + ((1.0 - alpha) * tf.reduce_mean(pixel_loss))
+        
+    return loss
 
 
 def mae_center(y_true, y_pred):
@@ -182,27 +212,38 @@ def ssim_center(y_true, y_pred):
     return tf.reduce_mean(tf.image.ssim(y_t, y_p, max_val=1.0))
 
 
-# Heatmap
-def save_uncertainty_analysis(model, test_data, fold_id, folder):
-    # Vorhersage für ein Testbeispiel
-    prediction = model.predict(test_data[:1])
+def save_uncertainty_analysis(model, sample_x, fold_id, folder, threshold):
+    """
+    Erstellt eine 4-Panel Analyse: Input, Rekonstruktion, Sigma-Map und Confidence-Maske.
+    """
+    # Vorhersage für ein Testbeispiel (Nutze Variable sample_x!)
+    prediction = model.predict(sample_x[:1])
     mu = prediction[0, ..., 0]
     sigma = prediction[0, ..., 1]
     
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    axes[0].imshow(test_data[0, ..., 2], cmap='gray')
-    axes[0].set_title("Input (Low-Count)")
+    uncertain_mask = np.where(sigma > threshold, 1.0, 0.0)
     
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    
+    # 1. Original Input (Center Slice)
+    axes[0].imshow(sample_x[0, ..., 2], cmap='gray')
+    axes[0].set_title("Input (Center Slice)")
+    
+    # 2. Rekonstruktion mu
     axes[1].imshow(mu, cmap='gray')
     axes[1].set_title(f"Rekonstruktion mu (Fold {fold_id})")
     
-    # 'inferno' visualisiert hohe Unsicherheit in hellen Farben
-    im = axes[2].imshow(sigma, cmap='inferno')
-    axes[2].set_title("Unsicherheit sigma (Aleatorisch)")
-    fig.colorbar(im, ax=axes[2])
+    # 3. Kontinuierliche Unsicherheit sigma
+    im_sigma = axes[2].imshow(sigma, cmap='inferno')
+    axes[2].set_title("Unsicherheit sigma")
+    fig.colorbar(im_sigma, ax=axes[2])
+    
+    # 4. Binäre Confidence-Maske
+    axes[3].imshow(uncertain_mask, cmap='binary')
+    axes[3].set_title(f"Uncertainty Mask (> {threshold})")
     
     plt.tight_layout()
-    plt.savefig(folder / f"fold_{fold_id}_uncertainty_check.png")
+    plt.savefig(folder / f"fold_{fold_id}_deep_analysis.png")
     plt.close(fig)
 
 
@@ -211,9 +252,8 @@ def save_uncertainty_analysis(model, test_data, fold_id, folder):
 print(f"Lade Trainingsdaten (Interpoliert): {TRAIN_FILE}")
 X_interp_raw, y_interp_raw = load_split(TRAIN_FILE)
 
-TRAIN_ORIG_FILE = Path.home() / "data/original_data/training_data.hdf5"
-print(f"Lade Trainingsdaten (Original für Val): {TRAIN_ORIG_FILE}")
-X_orig_raw, y_orig_raw = load_split(TRAIN_ORIG_FILE)
+print(f"Lade Trainingsdaten (Original für Val): {ORIG_FILE}")
+X_orig_raw, y_orig_raw = load_split(ORIG_FILE)
 
 num_series = len(X_orig_raw) // SERIES_LEN_ORIG
 series_indices = np.arange(num_series)
@@ -233,7 +273,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     FOLD_DIR = TB_ROOT / FOLD_NAME
     FOLD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Daten extrahieren & Roh-Teile sofort löschen
     def get_data_interp(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -254,7 +293,6 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
 
     X_va_fold, y_va_fold = get_data_orig(val_idx)
 
-    # 2. Fensterbau mit Peak-Management
     print(f"Generiere Volumina für Fold {fold_id}...")
     X_tr_win_list, y_tr_win_list = [], []
     SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
@@ -266,11 +304,10 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
             X_tr_win_list.append(Xw.astype(np.float32))
             y_tr_win_list.append(yw.astype(np.float32))
     
-    # Wichtig: Fold-Rohdaten löschen bevor Concatenate startet
     del X_tr_fold, y_tr_fold
 
     X_tr_win = np.concatenate(X_tr_win_list, axis=0)
-    del X_tr_win_list # Liste sofort löschen um RAM-Peak zu senken
+    del X_tr_win_list 
     y_tr_win = np.concatenate(y_tr_win_list, axis=0)
     del y_tr_win_list
 
@@ -280,10 +317,10 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     X_tr_win, y_tr_win = shuffle_initial(X_tr_win, y_tr_win, SEED)
     X_va_win, y_va_win = shuffle_initial(X_va_win, y_va_win, SEED)
 
-    # 3. Training
     model = unet_2d_stacked(input_shape=(192, 240, DEPTH))
     optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-    model.compile(optimizer=optimizer, loss=combined_probabilistic_loss, metrics=[mae_center, mse_center, psnr_center, ssim_center])
+
+    model.compile(optimizer=optimizer, loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), metrics=[mae_center, mse_center, psnr_center, ssim_center])
 
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr_win, y_tr_win))
                 .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
@@ -303,18 +340,16 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
 
     history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
 
-    # 4. Final Cleanup
     all_fold_scores.append(min(history.history['val_mae_center']))
-    # Erweitere den Aufruf um ein Dictionary für zusätzliche Infos
     meta = make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, optimizer, 5e-4, (192,240,DEPTH))
-    meta["scaling_factor"] = 10000.0  # Manuelle Ergänzung
-    meta["augmentation"] = "none"      # Wichtige Info für die Arbeit
+    meta["scaling_factor"] = 10000.0
+    meta["augmentation"] = "none"
+    meta["uncertainty_type"] = "aleatoric_laplace_and_epistemic_dropout"
     finalize_run(model, history, FOLD_NAME, meta)
 
     for sample_x, sample_y in val_ds.take(1):
-        save_uncertainty_analysis(model, sample_x, fold_id, FOLD_DIR)
+        save_uncertainty_analysis(model, sample_x, fold_id, FOLD_DIR, threshold=0.15)
 
-    # 4. Final Cleanup
     tf.keras.backend.clear_session()
     del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
 

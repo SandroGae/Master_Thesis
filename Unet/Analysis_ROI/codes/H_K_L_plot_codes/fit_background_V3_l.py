@@ -9,8 +9,6 @@ import matplotlib
 # =====================================================
 # 1. GLOBALER SETUP-MODUS (Hier auswählen!)
 # =====================================================
-# Optionen: "ORIGINAL", "RERUN", "NEW_RERUN"
-MODE = "NEW_RERUN" 
 
 # --- MODELL-LISTEN ---
 MODELS_ORIGINAL = {
@@ -131,39 +129,65 @@ MODELS_NEW_RERUN = {
     "Rang_43": "Rang_43_DeepScan_a0.0000_b1.0000_seed42_20260131-000640_loss0.1372_val0.1118.keras",
 }
 
-# --- AUTOMATISCHE PFAD-STEUERUNG ---
+# --- NEUE MODELL-LISTE FÜR INF_SEED (18 Modelle) ---
+MODELS_INF_SEED = {
+    # POINT 0 (P0)
+    "P0_Seed43": "InfSeed_P0_a0.0000_b0.0000_seed43_20260210-170149_loss0.0195_val0.0224.keras",
+    "P0_Seed44": "InfSeed_P0_a0.0000_b0.0000_seed44_20260210-180919_loss0.0195_val0.0224.keras",
+    "P0_Seed47": "InfSeed_P0_a0.0000_b0.0000_seed47_20260210-193132_loss0.0158_val0.0181.keras",
+    "P0_Seed50": "InfSeed_P0_a0.0000_b0.0000_seed50_20260210-204618_loss0.0191_val0.0219.keras",
+    "P0_Seed62": "InfSeed_P0_a0.0000_b0.0000_seed62_20260211-001540_loss0.0152_val0.0180.keras",
+    "P0_Seed63": "InfSeed_P0_a0.0000_b0.0000_seed63_20260211-013023_loss0.0155_val0.0180.keras",
+    "P0_Seed65": "InfSeed_P0_a0.0000_b0.0000_seed65_20260211-024800_loss0.0154_val0.0182.keras",
+    "P0_Seed69": "InfSeed_P0_a0.0000_b0.0000_seed69_20260212-092553_loss0.0161_val0.0182.keras",
+    "P0_Seed75": "InfSeed_P0_a0.0000_b0.0000_seed75_20260212-110809_loss0.0203_val0.0226.keras",
+
+    # POINT 1 (P1)
+    "P1_Seed43": "InfSeed_P1_a0.8333_b0.0000_seed43_20260210-170150_loss0.0662_val0.0747.keras",
+    "P1_Seed44": "InfSeed_P1_a0.8333_b0.0000_seed44_20260210-180249_loss0.0655_val0.0741.keras",
+    "P1_Seed45": "InfSeed_P1_a0.8333_b0.0000_seed45_20260210-190307_loss0.0655_val0.0746.keras",
+    "P1_Seed46": "InfSeed_P1_a0.8333_b0.0000_seed46_20260210-200941_loss0.0659_val0.0745.keras",
+    "P1_Seed47": "InfSeed_P1_a0.8333_b0.0000_seed47_20260210-211638_loss0.0662_val0.0744.keras",
+    "P1_Seed48": "InfSeed_P1_a0.8333_b0.0000_seed48_20260210-222216_loss0.0658_val0.0751.keras",
+    "P1_Seed49": "InfSeed_P1_a0.8333_b0.0000_seed49_20260210-233303_loss0.0661_val0.0744.keras",
+    "P1_Seed50": "InfSeed_P1_a0.8333_b0.0000_seed50_20260211-003034_loss0.0663_val0.0752.keras",
+    "P1_Seed53": "InfSeed_P1_a0.8333_b0.0000_seed53_20260211-020101_loss0.0658_val0.0742.keras",
+}
+
+MODE = "INF_SEED" 
+
+# --- AUTOMATISCHE PFAD-STEUERUNG (ERWEITERT) ---
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 
-if MODE == "NEW_RERUN":
+if MODE == "INF_SEED":
+    print(">>> Modus: INF_SEED (18 Modelle - Seed Study)")
+    MODELS = MODELS_INF_SEED
+    # Korrektur: Den Ordner "Prediction.npz" im Pfad einfügen!
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Prediction.npz/Predictions_Raw_21_33" 
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_L_Direction_INF_SEED"
+elif MODE == "NEW_RERUN":
     print(">>> Modus: NEW_RERUN (43 Modelle)")
     MODELS = MODELS_NEW_RERUN
-    IN_DIR  = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw_new_RERUN"
-    OUT_DIR = ROOT_DIR / "Plots/Unet/Analysis_ROI/Analysis_L_Direction_NEW_RERUN"
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Predictions_Raw_new_RERUN"
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/Analysis_L_Direction_NEW_RERUN"
 elif MODE == "RERUN":
     print(">>> Modus: RERUN (56 Modelle)")
     MODELS = MODELS_RERUN
-    IN_DIR  = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw_RERUN"
-    OUT_DIR = ROOT_DIR / "Plots/Unet/Analysis_ROI/Analysis_L_Direction_RERUN"
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Predictions_Raw_RERUN"
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/Analysis_L_Direction_RERUN"
 else:
     print(">>> Modus: ORIGINAL (10 Modelle)")
     MODELS = MODELS_ORIGINAL
-    IN_DIR  = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
-    OUT_DIR = ROOT_DIR / "Plots/Unet/Analysis_ROI/Analysis_L_Direction"
+    IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Predictions_Raw"
+    OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/Analysis_L_Direction"
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- SERIEN CONFIGURATION ---
 SERIES_CONFIG = {
-    5:  {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
-    11: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (100, 119), "bg_gap": 5, "bg_h": 10, "fit_window": (43, 143),  "y_lim_raw": (3.0, 8.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
-    12: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (24, 124),  "y_lim_raw": (2.5, 4.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
+
     15: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (98, 198),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
-    16: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (76, 176),  "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
-    21: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (101, 118), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (3.0, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.5)},
-    22: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (134, 234), "y_lim_raw": (2.5, 6.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
-    29: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (20, 120),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
-    35: {"slice_idx": 24, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (64, 164),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
-    50: {"slice_idx": 13, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 10, "bg_h": 10, "fit_window": (52, 152), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
+
 }
 
 FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
@@ -302,10 +326,16 @@ def process_combination(model_id, s_id, cfg):
 def main():
     matplotlib.use("Agg")
     for rank_key, full_name in MODELS.items():
-        model_id = full_name.replace(".keras", "").split("_2026")[0] if "_2026" in full_name else rank_key
+        # WICHTIG: Nutze für INF_SEED direkt den rank_key (z.B. "P0_Seed43")
+        # für die Suche der .npz Datei!
+        if MODE == "INF_SEED":
+            model_id = rank_key
+        else:
+            model_id = full_name.replace(".keras", "").split("_2026")[0] if "_2026" in full_name else rank_key
+            
+        print(f"Processing {model_id}...")
         for s_id, cfg in sorted(SERIES_CONFIG.items()):
             process_combination(model_id, s_id, cfg)
-    print(f"\nFertig! Alle Plots mit präziser Helligkeit erstellt.")
 
 if __name__ == "__main__":
     main()

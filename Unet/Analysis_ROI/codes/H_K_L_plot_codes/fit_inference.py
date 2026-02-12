@@ -6,7 +6,7 @@ from pathlib import Path
 
 # Konfiguration
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-MODEL_DIR = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "keras_models"
+MODEL_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "KERAS_MODEL"
 H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
 OUT_DIR = ROOT_DIR / "Plots" / "Unet" / "Analysis_ROI" / "Predictions_Raw"
 
@@ -21,7 +21,7 @@ MODELS = {
     "FILE_25d_middle_improved_V2_interpolated": "unet_25d_D5_VarStride1-24__20251201-093031_loss0.0690_val0.0594.keras"
 }
 """
-
+"""
 MODELS = {
     "Rang_1": "Rang_1_unet_25d_TripleLoss_a0.33_b0.17_bf64_D5_20260121-090819_loss0.0518_val0.0510.keras",
     "Rang_2": "Rang_2_unet_25d_TripleLoss_a0.17_b0.0_bf64_D5_20260121-012804_loss0.0259_val0.0296.keras",
@@ -34,8 +34,33 @@ MODELS = {
     "Rang_9": "Rang_9_unet_25d_TripleLoss_RESCUE_a0.17_b0.5_bf64_D5_20260123-214154_loss0.0832_val0.0685.keras",
     "Rang_10": "Rang_10_unet_25d_DeepScan_a0.25_b0.1667_bf64_D5_20260126-094704_loss0.0461_val0.0468.keras",
 }
+"""
 
-SERIES_LIST = [35] # Serien auswählen
+MODELS = {
+    # --- SUCCESS POINT 0 (P0) ---
+    "P0_Seed43": "InfSeed_P0_a0.0000_b0.0000_seed43_20260210-170149_loss0.0195_val0.0224.keras",
+    "P0_Seed44": "InfSeed_P0_a0.0000_b0.0000_seed44_20260210-180919_loss0.0195_val0.0224.keras",
+    "P0_Seed47": "InfSeed_P0_a0.0000_b0.0000_seed47_20260210-193132_loss0.0158_val0.0181.keras",
+    "P0_Seed50": "InfSeed_P0_a0.0000_b0.0000_seed50_20260210-204618_loss0.0191_val0.0219.keras",
+    "P0_Seed62": "InfSeed_P0_a0.0000_b0.0000_seed62_20260211-001540_loss0.0152_val0.0180.keras",
+    "P0_Seed63": "InfSeed_P0_a0.0000_b0.0000_seed63_20260211-013023_loss0.0155_val0.0180.keras",
+    "P0_Seed65": "InfSeed_P0_a0.0000_b0.0000_seed65_20260211-024800_loss0.0154_val0.0182.keras",
+    "P0_Seed69": "InfSeed_P0_a0.0000_b0.0000_seed69_20260212-092553_loss0.0161_val0.0182.keras",
+    "P0_Seed75": "InfSeed_P0_a0.0000_b0.0000_seed75_20260212-110809_loss0.0203_val0.0226.keras",
+
+    # --- SUCCESS POINT 1 (P1) ---
+    "P1_Seed43": "InfSeed_P1_a0.8333_b0.0000_seed43_20260210-170150_loss0.0662_val0.0747.keras",
+    "P1_Seed44": "InfSeed_P1_a0.8333_b0.0000_seed44_20260210-180249_loss0.0655_val0.0741.keras",
+    "P1_Seed45": "InfSeed_P1_a0.8333_b0.0000_seed45_20260210-190307_loss0.0655_val0.0746.keras",
+    "P1_Seed46": "InfSeed_P1_a0.8333_b0.0000_seed46_20260210-200941_loss0.0659_val0.0745.keras",
+    "P1_Seed47": "InfSeed_P1_a0.8333_b0.0000_seed47_20260210-211638_loss0.0662_val0.0744.keras",
+    "P1_Seed48": "InfSeed_P1_a0.8333_b0.0000_seed48_20260210-222216_loss0.0658_val0.0751.keras",
+    "P1_Seed49": "InfSeed_P1_a0.8333_b0.0000_seed49_20260210-233303_loss0.0661_val0.0744.keras",
+    "P1_Seed50": "InfSeed_P1_a0.8333_b0.0000_seed50_20260211-003034_loss0.0663_val0.0752.keras",
+    "P1_Seed53": "InfSeed_P1_a0.8333_b0.0000_seed53_20260211-020101_loss0.0658_val0.0742.keras",
+}
+
+SERIES_LIST = [5, 11, 12, 15, 16, 21, 22, 29, 35, 50] # Serien auswählen
 SERIES_LEN = 41
 
 
@@ -58,17 +83,23 @@ def normalize(volume, scale=10000.0):
 
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-
     # Äußere Schleife: Modelle
     for chosen_name, model_file in MODELS.items():
-        model_path = MODEL_DIR / model_file
-        print(f"\n--- Lade Modell: {chosen_name} ---")
+        print(f"\n--- Suche Modell: {chosen_name} ---")
         
-        if not model_path.exists():
-            print(f"Warnung: {model_path} existiert nicht!")
+        # NEU: Sucht rekursiv in KERAS_MODEL und allen Unterordnern nach der Datei
+        search_results = list(MODEL_DIR.rglob(model_file))
+        
+        if not search_results:
+            print(f"Fehler: Die Datei '{model_file}' wurde in {MODEL_DIR} oder seinen Unterordnern nicht gefunden!")
             continue
+        
+        # Nimm den ersten Treffer
+        model_path = search_results[0]
+        print(f"Gefunden in: {model_path.parent.name}")
 
         model = models.load_model(model_path, compile=False)
+        # ... Rest des Codes bleibt identisch ...
         input_dimension = len(model.input_shape)
 
         # Tiefe extrahieren

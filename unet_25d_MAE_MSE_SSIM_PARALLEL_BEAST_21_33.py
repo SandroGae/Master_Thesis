@@ -27,8 +27,8 @@ POINT_IDX = 0
 TARGET_POINTS = [(0.0, 0.0), (round(10/12, 4), 0.0)]
 MY_ALPHA, MY_BETA = TARGET_POINTS[POINT_IDX]
 
-SUCCESS_GOAL = 9   # Wir bleiben bei 9 insgesamt
-START_SEED = 66    # Startet direkt bei 66
+SUCCESS_GOAL = 1   # Nur 1 neuer Erfolg benötigt
+START_SEED = 76    # Startet direkt bei 76
 
 DEPTH = 5
 BATCH_SIZE = 8
@@ -87,7 +87,9 @@ def unet_2d_stacked(input_shape=(192, 240, 5)):
     c2 = conv_block_2d(p1, 128);    p2 = layers.MaxPooling2D((2, 2))(c2)
     c3 = conv_block_2d(p2, 256);    p3 = layers.MaxPooling2D((2, 2))(c3)
     c4 = conv_block_2d(p3, 512);    p4 = layers.MaxPooling2D((2, 2))(c4)
+
     bn = conv_block_2d(p4, 1024)
+
     u4 = layers.Conv2DTranspose(512, (2, 2), strides=(2, 2), padding="same")(bn)
     u4 = layers.Concatenate()([u4, c4]); c5 = conv_block_2d(u4, 512)
     u3 = layers.Conv2DTranspose(256, (2, 2), strides=(2, 2), padding="same")(c5)
@@ -96,6 +98,7 @@ def unet_2d_stacked(input_shape=(192, 240, 5)):
     u2 = layers.Concatenate()([u2, c2]); c7 = conv_block_2d(u2, 128)
     u1 = layers.Conv2DTranspose(64, (2, 2), strides=(2, 2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1]); c8 = conv_block_2d(u1, 64)
+    
     out = layers.Conv2D(1, (1, 1), activation="sigmoid")(c8)
     return models.Model(inputs, out)
 
@@ -140,39 +143,33 @@ def prepare_25d_input(x, y):
 print("Lade Trainings- und Validierungsdaten...")
 ORIGINAL_DATA_DIR = ROOT_DATA / "original_data"
 
-# Pfade zu den spezifischen HDF5 Dateien
 TRAIN_H5 = ORIGINAL_DATA_DIR / "training_data.hdf5"
 VAL_H5 = ORIGINAL_DATA_DIR / "validation_data.hdf5"
 
-# Überprüfung ob Dateien existieren
 for f in [TRAIN_H5, VAL_H5]:
     if not f.exists():
         raise FileNotFoundError(f"Datei nicht gefunden: {f}")
 
-# Trainingsdaten laden und Windows erstellen
 lc_train, hc_train = load_split(TRAIN_H5)
 X_train_win, y_train_win = make_sliding_windows(lc_train, hc_train, series_len=10, depth=DEPTH)
 
-# Validierungsdaten laden und Windows erstellen
 lc_val, hc_val = load_split(VAL_H5)
 X_val_win, y_val_win = make_sliding_windows(lc_val, hc_val, series_len=10, depth=DEPTH)
 
 print(f"Daten geladen: {len(X_train_win)} Training-Windows, {len(X_val_win)} Validation-Windows")
 
 # =====================================================
-# 5. INFINITE LOOP (Start ab Seed 66)
+# 5. INFINITE LOOP (Start ab Seed 76, stoppt nach 1 Erfolg)
 # =====================================================
-# Zähle nur die .h5 Dateien, um pro Run nur 1x zu zählen
-existing_successes = list(SUCCESS_DIR.glob(f"InfSeed_P{POINT_IDX}_*.h5"))
-success_count = len(existing_successes)
+success_count = 0 # Ignoriere Files im Ordner, suche 1 neuen Erfolg
 
-print(f"Aktueller Stand für Punkt {POINT_IDX}: {success_count}/{SUCCESS_GOAL} Erfolge gefunden.")
-print(f"Starte Suche nach weiteren Erfolgen ab Seed {START_SEED}...")
+print(f"Aktueller Stand für Punkt {POINT_IDX}: Suche 1 neuen Erfolg.")
+print(f"Starte Suche ab Seed {START_SEED}...")
 
 current_seed = START_SEED
 
 while success_count < SUCCESS_GOAL:
-    # Check ob dieser spezifische Seed schon existiert (anhand der CSV oder H5)
+    # Check ob dieser spezifische Seed schon existiert
     is_done_success = list(SUCCESS_DIR.glob(f"*_seed{current_seed}_*.h5"))
     is_done_failed = list(FAILED_DIR.glob(f"*_seed{current_seed}_*.h5"))
 
@@ -193,7 +190,7 @@ while success_count < SUCCESS_GOAL:
     
     TS_RUN = datetime.now().strftime("%Y%m%d-%H%M%S")
     RUN_NAME = f"InfSeed_P{POINT_IDX}_a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{current_seed}_{TS_RUN}"
-    print(f"\n>>> VERSUCH {success_count + 1}/{SUCCESS_GOAL} | Seed: {current_seed}")
+    print(f"\n>>> VERSUCH 1/1 | Seed: {current_seed}")
 
     train_ds = (tf.data.Dataset.from_tensor_slices((X_train_win, y_train_win))
                 .shuffle(len(X_train_win), seed=current_seed)
@@ -255,5 +252,5 @@ while success_count < SUCCESS_GOAL:
     current_seed += 1
     tf.keras.backend.clear_session(); gc.collect()
 
-print(f"\n--- MISSION COMPLETE: 9 Erfolge für Punkt {POINT_IDX} ---")
+print(f"\n--- MISSION COMPLETE: 1 neuer Erfolg für Punkt {POINT_IDX} gefunden ---")
 print("=== MISSION FINISHED ===")
