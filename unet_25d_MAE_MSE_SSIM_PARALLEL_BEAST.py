@@ -10,6 +10,14 @@ from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
+from tensorflow.keras import mixed_precision
+
+# =====================================================
+# 0. MIXED PRECISION SETUP (A100 Power-Up)
+# =====================================================
+# BFloat16 ist auf A100 ideal: schnell wie FP16, stabil wie FP32
+policy = mixed_precision.Policy('mixed_bfloat16')
+mixed_precision.set_global_policy(policy)
 
 # Deine Custom-Module
 from unet_3d_simple_checkpoints import finalize_run, make_meta_dict
@@ -24,10 +32,8 @@ args = parser.parse_args()
 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
-# Pfade
 SCRATCH_ROOT = Path.home() / "scratch" / "43_Models_10_Seeds"
 TB_ROOT = SCRATCH_ROOT / "tensorboard_logs"
-# Pfad zu den neuen TFRecords (wie im Konvertierungs-Skript definiert)
 TF_DATA_DIR = Path.home() / "data" / "original_data" / "tfrecords"
 
 for d in [SCRATCH_ROOT, TB_ROOT]:
@@ -47,33 +53,38 @@ ALL_CONFIGS = generate_configs()
 MY_POINT_IDX = args.point_idx
 MY_ALPHA, MY_BETA = ALL_CONFIGS[MY_POINT_IDX]
 
-# Deine Seeds (42 bis 51 = 10 Seeds)
 SEEDS = range(42, 52) 
 BATCH_SIZE = 8
 EPOCHS = 200
 
 # =====================================================
-# 2. METRIKEN & LOSS (Identisch)
+# 2. METRIKEN & LOSS
 # =====================================================
+# WICHTIG: Metriken in FP32 rechnen für Genauigkeit
 def mae_center(yt, yp):
+    yt = tf.cast(yt, tf.float32); yp = tf.cast(yp, tf.float32)
     yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
     return tf.reduce_mean(tf.abs(yt - yp))
 
 def mse_center(yt, yp):
+    yt = tf.cast(yt, tf.float32); yp = tf.cast(yp, tf.float32)
     yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
     return tf.reduce_mean(tf.square(yt - yp))
 
 def psnr_center(yt, yp):
+    yt = tf.cast(yt, tf.float32); yp = tf.cast(yp, tf.float32)
     yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
     mse = tf.reduce_mean(tf.square(yt - yp), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
 def ssim_center(yt, yp):
+    yt = tf.cast(yt, tf.float32); yp = tf.cast(yp, tf.float32)
     yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
     return tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
 
 def get_triple_loss(alpha, beta):
     def loss(yt, yp):
+        # Cast zu Float32 für stabile Loss-Berechnung
         yt = tf.cast(yt, tf.float32); yp = tf.cast(yp, tf.float32)
         mae = tf.reduce_mean(tf.abs(yt - yp))
         mse = tf.reduce_mean(tf.square(yt - yp))
@@ -82,7 +93,7 @@ def get_triple_loss(alpha, beta):
     return loss
 
 # =====================================================
-# 3. TFRECORD PARSING & PIPELINE
+# 3. TFRECORD PARSING & ARCHITEKTUR
 # =====================================================
 def parse_tfrecord(example_proto):
     feature_description = {
@@ -90,8 +101,6 @@ def parse_tfrecord(example_proto):
         'y': tf.io.FixedLenFeature([], tf.string),
     }
     parsed = tf.io.parse_single_example(example_proto, feature_description)
-    
-    # Dekodieren der Binärdaten
     X = tf.io.decode_raw(parsed['X'], tf.float32)
     X = tf.reshape(X, (5, 192, 240, 1))
     y = tf.io.decode_raw(parsed['y'], tf.float32)
@@ -110,10 +119,8 @@ def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
     return map_vol
 
 def prepare_25d_input(x, y):
-    # Center-Slice Extraktion für 2.5D
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
-# --- Architektur (Identisch) ---
 def conv_block_2d(x, filters):
     ki = "he_normal"
     for _ in range(4):
@@ -136,48 +143,46 @@ def unet_2d_stacked(input_shape=(192, 240, 5)):
     u2 = layers.Concatenate()([u2, c2]); c7 = conv_block_2d(u2, 128)
     u1 = layers.Conv2DTranspose(64, (2, 2), strides=(2, 2), padding="same")(c7)
     u1 = layers.Concatenate()([u1, c1]); c8 = conv_block_2d(u1, 64)
-    out = layers.Conv2D(1, (1, 1), activation="sigmoid")(c8)
+    # WICHTIG: Letzter Layer muss float32 sein für Sigmoid-Stabilität
+    out = layers.Conv2D(1, (1, 1), activation="sigmoid", dtype='float32')(c8)
     return models.Model(inputs, out)
 
 # =====================================================
 # 4. MAIN LOOP
 # =====================================================
-print(f"--- Starte TFRecord-Training Punkt {MY_POINT_IDX} (a={MY_ALPHA}, b={MY_BETA}) ---")
+print(f"--- Starte Mixed-Precision TFRecord-Training Punkt {MY_POINT_IDX} ---")
 
 point_dir = SCRATCH_ROOT / f"Point_{MY_POINT_IDX}_a{MY_ALPHA}_b{MY_BETA}"
 point_dir.mkdir(exist_ok=True)
 
 for current_seed in SEEDS:
     RUN_NAME = f"P{MY_POINT_IDX}_a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{current_seed}"
-    
     if (point_dir / f"{RUN_NAME}.h5").exists() and (point_dir / f"{RUN_NAME}.json").exists():
         continue
 
-    # Determinismus
     os.environ['PYTHONHASHSEED'] = str(current_seed)
     random.seed(current_seed); np.random.seed(current_seed); tf.random.set_seed(current_seed)
     tf.config.experimental.enable_op_determinism()
 
-    # --- TFRecord Pipeline ---
     train_ds = (tf.data.TFRecordDataset(str(TF_DATA_DIR / "training.tfrecord"))
-                .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
-                .shuffle(1000, seed=current_seed)
-                .map(augment_and_normalize_3d_per_slice(5000, 15000, 0.5), num_parallel_calls=tf.data.AUTOTUNE)
-                .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
-                .batch(BATCH_SIZE)
-                .prefetch(tf.data.AUTOTUNE))
+            .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
+            .cache()
+            .shuffle(1000, seed=current_seed)
+            .map(augment_and_normalize_3d_per_slice(5000, 15000, 0.5), num_parallel_calls=tf.data.AUTOTUNE)
+            .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+            .batch(BATCH_SIZE)
+            .prefetch(tf.data.AUTOTUNE))
 
     val_ds = (tf.data.TFRecordDataset(str(TF_DATA_DIR / "validation.tfrecord"))
-              .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
-              .map(augment_and_normalize_3d_per_slice(10000, 10001, 0), num_parallel_calls=tf.data.AUTOTUNE)
-              .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
-              .cache() # Wichtig für Geschwindigkeit
-              .batch(BATCH_SIZE)
-              .prefetch(tf.data.AUTOTUNE))
+          .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
+          .cache()
+          .map(augment_and_normalize_3d_per_slice(10000, 10001, 0), num_parallel_calls=tf.data.AUTOTUNE)
+          .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+          .batch(BATCH_SIZE)
+          .prefetch(tf.data.AUTOTUNE))
 
     model = unet_2d_stacked()
     optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-    
     status = {"aborted": False, "reason": "none", "best_psnr": -1.0, "drop_cnt": 0}
     temp_csv = f"temp_{RUN_NAME}.csv"
     best_model_path = point_dir / f"{RUN_NAME}.h5"
@@ -208,17 +213,15 @@ for current_seed in SEEDS:
     model.compile(optimizer=optimizer, loss=get_triple_loss(MY_ALPHA, MY_BETA), 
                   metrics=["mae", "mse", mae_center, mse_center, ssim_center, psnr_center])
     
-    history = None
     try:
         history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=1)
     except Exception as e:
-        status["aborted"] = True; status["reason"] = str(e)
+        status["aborted"] = True; status["reason"] = str(e); history = None
 
-    # Finalisierung
     f_psnr = float(history.history['val_psnr_center'][-1]) if history and not status["aborted"] else 0.0
     meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
                           extra={"alpha": MY_ALPHA, "beta": MY_BETA, "seed": current_seed, 
-                                 "aborted": status["aborted"], "reason": status["reason"], "final_psnr": f_psnr})
+                                 "aborted": status["aborted"], "reason": status["reason"], "final_psnr": f_psnr, "precision": "mixed_bfloat16"})
     
     finalize_run(model, history, RUN_NAME, meta, folder_name=str(point_dir))
     if os.path.exists(temp_csv): shutil.move(temp_csv, point_dir / f"{RUN_NAME}_metrics.csv")
