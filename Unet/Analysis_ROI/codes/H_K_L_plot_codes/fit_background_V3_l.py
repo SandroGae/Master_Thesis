@@ -130,8 +130,9 @@ MODELS_NEW_RERUN = {
 }
 
 # --- NEUE MODELL-LISTE FÜR INF_SEED (18 Modelle) ---
+# MODELL-LISTEN
 MODELS_INF_SEED = {
-    # POINT 0 (P0)
+    # --- POINT 0 (P0) ---
     "P0_Seed43": "InfSeed_P0_a0.0000_b0.0000_seed43_20260210-170149_loss0.0195_val0.0224.keras",
     "P0_Seed44": "InfSeed_P0_a0.0000_b0.0000_seed44_20260210-180919_loss0.0195_val0.0224.keras",
     "P0_Seed47": "InfSeed_P0_a0.0000_b0.0000_seed47_20260210-193132_loss0.0158_val0.0181.keras",
@@ -141,8 +142,9 @@ MODELS_INF_SEED = {
     "P0_Seed65": "InfSeed_P0_a0.0000_b0.0000_seed65_20260211-024800_loss0.0154_val0.0182.keras",
     "P0_Seed69": "InfSeed_P0_a0.0000_b0.0000_seed69_20260212-092553_loss0.0161_val0.0182.keras",
     "P0_Seed75": "InfSeed_P0_a0.0000_b0.0000_seed75_20260212-110809_loss0.0203_val0.0226.keras",
+    "P0_Seed77": "InfSeed_P0_a0.0000_b0.0000_seed77_20260213-025719_loss0.0201_val0.0225.keras",
 
-    # POINT 1 (P1)
+    # --- POINT 1 (P1) ---
     "P1_Seed43": "InfSeed_P1_a0.8333_b0.0000_seed43_20260210-170150_loss0.0662_val0.0747.keras",
     "P1_Seed44": "InfSeed_P1_a0.8333_b0.0000_seed44_20260210-180249_loss0.0655_val0.0741.keras",
     "P1_Seed45": "InfSeed_P1_a0.8333_b0.0000_seed45_20260210-190307_loss0.0655_val0.0746.keras",
@@ -185,9 +187,16 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- SERIEN CONFIGURATION ---
 SERIES_CONFIG = {
-
+    5:  {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
+    11: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (100, 119), "bg_gap": 5, "bg_h": 10, "fit_window": (43, 143),  "y_lim_raw": (3.0, 8.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
+    12: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (24, 124),  "y_lim_raw": (2.5, 4.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
     15: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (98, 198),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
-
+    16: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (76, 176),  "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
+    21: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (101, 118), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (3.0, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.5)},
+    22: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (134, 234), "y_lim_raw": (2.5, 6.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
+    29: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (20, 120),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
+    35: {"slice_idx": 24, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (64, 164),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
+    50: {"slice_idx": 13, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 10, "bg_h": 10, "fit_window": (52, 152), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
 }
 
 FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']

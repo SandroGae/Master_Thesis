@@ -19,9 +19,9 @@ LOG_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "codes" / "Evaluation_Metrics_H_K
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 OUT_FILE = LOG_DIR / "CDW_Hyperparameter_Results_P0_P1.csv"
 
-# Die 18 Modelle für P0 und P1
+# Die 20 Modelle für P0 und P1 (inkl. Seed 77 und Seed 53)
 NEW_MODELS = {
-    # --- P0 ---
+    # --- P0 (10 Modelle) ---
     "P0_Seed43": "InfSeed_P0_a0.0000_b0.0000_seed43_20260210-170149_loss0.0195_val0.0224.keras",
     "P0_Seed44": "InfSeed_P0_a0.0000_b0.0000_seed44_20260210-180919_loss0.0195_val0.0224.keras",
     "P0_Seed47": "InfSeed_P0_a0.0000_b0.0000_seed47_20260210-193132_loss0.0158_val0.0181.keras",
@@ -31,8 +31,10 @@ NEW_MODELS = {
     "P0_Seed65": "InfSeed_P0_a0.0000_b0.0000_seed65_20260211-024800_loss0.0154_val0.0182.keras",
     "P0_Seed69": "InfSeed_P0_a0.0000_b0.0000_seed69_20260212-092553_loss0.0161_val0.0182.keras",
     "P0_Seed75": "InfSeed_P0_a0.0000_b0.0000_seed75_20260212-110809_loss0.0203_val0.0226.keras",
+    "P0_Seed77": "InfSeed_P0_a0.0000_b0.0000_seed77_20260213-025719_loss0.0201_val0.0225.keras",
 
-    # --- P1 ---
+    # --- P1 (10 Modelle) ---
+    "P1_Seed42": "InfSeed_P1_a0.8333_b0.0000_seed42_20260131-042251_loss0.0825_val0.0788.keras",
     "P1_Seed43": "InfSeed_P1_a0.8333_b0.0000_seed43_20260210-170150_loss0.0662_val0.0747.keras",
     "P1_Seed44": "InfSeed_P1_a0.8333_b0.0000_seed44_20260210-180249_loss0.0655_val0.0741.keras",
     "P1_Seed45": "InfSeed_P1_a0.8333_b0.0000_seed45_20260210-190307_loss0.0655_val0.0746.keras",
@@ -94,25 +96,36 @@ def extract_profile(vol, cfg, direction):
         return np.arange(240), get_stable_sbr(sig, bg)
 
 # =====================================================
-# 3. EVALUATION START
+# 3. EVALUATION START (Anpassung für Seed 42 & Debugging)
 # =====================================================
 def run_evaluation():
     all_results = []
     
-    for rank_key, full_keras_name in NEW_MODELS.items():
+    # Sortiere NEW_MODELS Keys, damit die Verarbeitung strukturiert abläuft
+    for rank_key in sorted(NEW_MODELS.keys()):
+        full_keras_name = NEW_MODELS[rank_key]
+        
+        # Regex flexibel halten: Erlaubt jetzt verschiedene Datumsformate
         match = re.search(r'InfSeed_(P\d)_a(\d+\.\d+)_b(\d+\.\d+)_seed(\d+)', full_keras_name)
-        if not match: continue
+        if not match: 
+            print(f"!!! Regex Fehler bei: {full_keras_name}")
+            continue
         
         p_type, alpha, beta, seed = match.group(1), float(match.group(2)), float(match.group(3)), match.group(4)
-        print(f">>> Processing {rank_key}...")
+        print(f">>> Processing {rank_key} (Seed: {seed})...")
+
+        found_files_for_this_model = 0
 
         for s_id, cfg in SERIES_CONFIG.items():
-            # Dateiname wie von deinem ersten Skript erzeugt: Pred_P0_Seed43_D5_S5_FullSeries.npz
+            # WICHTIG: Dateiname muss EXAKT so im Ordner liegen
             path = IN_DIR / f"Pred_{rank_key}_D5_S{s_id}_FullSeries.npz"
             
             if not path.exists():
+                # Debug-Info: Nur ausgeben, wenn wir wissen wollen, warum ein Seed fehlt
+                # print(f"    Datei fehlt: {path.name}") 
                 continue
             
+            found_files_for_this_model += 1
             data = np.load(path)
             v_pr, v_gt = np.clip(data['pred'], 0, None), np.clip(data['gt'], 0, None)
 
@@ -133,31 +146,35 @@ def run_evaluation():
                         "SBRGain": f_p[0]/f_g[0],
                         "PosShift": abs(f_p[1]-f_g[1])
                     })
+        
+        if found_files_for_this_model == 0:
+            print(f"!!! WARNUNG: Keine .npz-Dateien für {rank_key} gefunden!")
 
     if not all_results:
-        print(f"Keine Dateien gefunden in: {IN_DIR}")
+        print(f"Keine Ergebnisse generiert. Bitte Pfad prüfen: {IN_DIR}")
         return
 
+    # --- Zusammenfassung und Speichern ---
     df = pd.DataFrame(all_results)
     
-    # Mittelwert über H, K, L pro Run
+    # Wichtig: Seed als Zahl behandeln für korrekte Sortierung (42 vor 43)
+    df["Seed"] = pd.to_numeric(df["Seed"])
+    
     summary = df.groupby(["Type", "Seed", "Alpha", "Beta"]).agg({
         "AreaRatio": "mean", "SBRGain": "mean", "PosShift": "mean"
     }).reset_index()
 
-    # Sortierung und Trennung
     df_p0 = summary[summary["Type"] == "P0"].sort_values("Seed")
     df_p1 = summary[summary["Type"] == "P1"].sort_values("Seed")
 
-    # Speichern mit manuellem Abstand
     with open(OUT_FILE, 'w', encoding='utf-8') as f:
         f.write("# --- SUCCESS POINT 0 (P0) ---\n")
         df_p0.to_csv(f, index=False)
-        f.write("\n\n") # Der gewünschte Abstand
+        f.write("\n\n")
         f.write("# --- SUCCESS POINT 1 (P1) ---\n")
-        df_p1.to_csv(f, index=False, header=True) # Header für P1 zur besseren Lesbarkeit
+        df_p1.to_csv(f, index=False, header=True)
 
-    print(f"\nFertig! CSV gespeichert unter:\n{OUT_FILE}")
+    print(f"\nFertig! {len(summary)} Runs in CSV gespeichert unter:\n{OUT_FILE}")
 
 if __name__ == "__main__":
     run_evaluation()

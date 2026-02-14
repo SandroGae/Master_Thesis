@@ -139,6 +139,7 @@ MODELS_INF_SEED = {
     "P0_Seed65": "InfSeed_P0_a0.0000_b0.0000_seed65_20260211-024800_loss0.0154_val0.0182.keras",
     "P0_Seed69": "InfSeed_P0_a0.0000_b0.0000_seed69_20260212-092553_loss0.0161_val0.0182.keras",
     "P0_Seed75": "InfSeed_P0_a0.0000_b0.0000_seed75_20260212-110809_loss0.0203_val0.0226.keras",
+    "P0_Seed77": "InfSeed_P0_a0.0000_b0.0000_seed77_20260213-025719_loss0.0201_val0.0225.keras",
 
     # --- POINT 1 (P1) ---
     "P1_Seed43": "InfSeed_P1_a0.8333_b0.0000_seed43_20260210-170150_loss0.0662_val0.0747.keras",

@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 # 1. PFADE & SETUP
 # =====================================================
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-IN_DIR   = ROOT_DIR / "Plots/Unet/Analysis_ROI/Predictions_Raw"
+IN_DIR   = ROOT_DIR / "Unet/Analysis_ROI/Predictions_Raw"
 OUT_FILE = ROOT_DIR / "Evaluation_Metrics_Summary.txt"
 
 MODELS = {
