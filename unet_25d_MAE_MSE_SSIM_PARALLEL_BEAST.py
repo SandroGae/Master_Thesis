@@ -7,12 +7,11 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 
-import h5py
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers, models
 
-# Deine Custom-Module (müssen im selben Pfad liegen)
+# Deine Custom-Module
 from unet_3d_simple_checkpoints import finalize_run, make_meta_dict
 from tb_utils import tb_callbacks
 
@@ -25,24 +24,22 @@ args = parser.parse_args()
 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
-# Pfade auf Scratch (wie angefordert)
+# Pfade
 SCRATCH_ROOT = Path.home() / "scratch" / "43_Models_10_Seeds"
 TB_ROOT = SCRATCH_ROOT / "tensorboard_logs"
-ORIGINAL_DATA_DIR = Path.home() / "data" / "original_data"
+# Pfad zu den neuen TFRecords (wie im Konvertierungs-Skript definiert)
+TF_DATA_DIR = Path.home() / "data" / "original_data" / "tfrecords"
 
 for d in [SCRATCH_ROOT, TB_ROOT]:
     d.mkdir(parents=True, exist_ok=True)
 
-# Generierung der 43 Konfigurationen (Strikte 1/12 Schritte)
 def generate_configs():
     configs = []
-    # 42 Paare im 1/12 Raster für a < 1
-    for a_idx in range(12):  # a = 0 bis 11/12
-        for b_idx in range(13): # b = 0 bis 12/12 (1.0)
+    for a_idx in range(12): 
+        for b_idx in range(13):
             configs.append((round(a_idx / 12, 4), round(b_idx / 12, 4)))
             if len(configs) == 42: break
         if len(configs) == 42: break
-    # Der 43. Run: a = 1.0 (Beta irrelevant)
     configs.append((1.0, 0.0))
     return configs
 
@@ -50,13 +47,13 @@ ALL_CONFIGS = generate_configs()
 MY_POINT_IDX = args.point_idx
 MY_ALPHA, MY_BETA = ALL_CONFIGS[MY_POINT_IDX]
 
-SEEDS = range(42, 52) # 10 Seeds: 76 bis 85
-DEPTH = 5
+# Deine Seeds (42 bis 51 = 10 Seeds)
+SEEDS = range(42, 52) 
 BATCH_SIZE = 8
 EPOCHS = 200
 
 # =====================================================
-# 2. METRIKEN & LOSS
+# 2. METRIKEN & LOSS (Identisch)
 # =====================================================
 def mae_center(yt, yp):
     yt, yp = tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp, 0, 1)
@@ -81,61 +78,25 @@ def get_triple_loss(alpha, beta):
         mae = tf.reduce_mean(tf.abs(yt - yp))
         mse = tf.reduce_mean(tf.square(yt - yp))
         ssim = 1.0 - tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
-        # Triple Loss Formel
         return (alpha * ssim) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
     return loss
 
 # =====================================================
-# 3. ARCHITEKTUR (U-Net 2D Stacked)
+# 3. TFRECORD PARSING & PIPELINE
 # =====================================================
-def conv_block_2d(x, filters):
-    ki = "he_normal"
-    for _ in range(4):
-        x = layers.Conv2D(filters, (3, 3), padding="same", kernel_initializer=ki)(x)
-        x = layers.ReLU()(x)
-    return x
-
-def unet_2d_stacked(input_shape=(192, 240, 5)):
-    inputs = layers.Input(shape=input_shape)
-    # Encoder
-    c1 = conv_block_2d(inputs, 64); p1 = layers.MaxPooling2D((2, 2))(c1)
-    c2 = conv_block_2d(p1, 128);    p2 = layers.MaxPooling2D((2, 2))(c2)
-    c3 = conv_block_2d(p2, 256);    p3 = layers.MaxPooling2D((2, 2))(c3)
-    c4 = conv_block_2d(p3, 512);    p4 = layers.MaxPooling2D((2, 2))(c4)
-    # Bridge
-    bn = conv_block_2d(p4, 1024)
-    # Decoder
-    u4 = layers.Conv2DTranspose(512, (2, 2), strides=(2, 2), padding="same")(bn)
-    u4 = layers.Concatenate()([u4, c4]); c5 = conv_block_2d(u4, 512)
-    u3 = layers.Conv2DTranspose(256, (2, 2), strides=(2, 2), padding="same")(c5)
-    u3 = layers.Concatenate()([u3, c3]); c6 = conv_block_2d(u3, 256)
-    u2 = layers.Conv2DTranspose(128, (2, 2), strides=(2, 2), padding="same")(c6)
-    u2 = layers.Concatenate()([u2, c2]); c7 = conv_block_2d(u2, 128)
-    u1 = layers.Conv2DTranspose(64, (2, 2), strides=(2, 2), padding="same")(c7)
-    u1 = layers.Concatenate()([u1, c1]); c8 = conv_block_2d(u1, 64)
-    out = layers.Conv2D(1, (1, 1), activation="sigmoid")(c8)
-    return models.Model(inputs, out)
-
-# =====================================================
-# 4. DATA UTILITIES
-# =====================================================
-def load_split(h5_path):
-    with h5py.File(h5_path, "r") as f:
-        lc = f["low_count/data"][:].astype('float32')
-        hc = f["high_count/data"][:].astype('float32')
-    lc = np.moveaxis(lc, -1, 0)[:, :, :, np.newaxis]
-    hc = np.moveaxis(hc, -1, 0)[:, :, :, np.newaxis]
-    return lc, hc
-
-def make_sliding_windows(X, y, series_len, depth):
-    n_vols = series_len - depth + 1
-    X_v, y_v = [], []
-    for i in range(X.shape[0] // series_len):
-        bx = X[i*series_len : (i+1)*series_len]
-        by = y[i*series_len : (i+1)*series_len]
-        for s in range(n_vols):
-            X_v.append(bx[s:s+depth]); y_v.append(by[s:s+depth])
-    return np.stack(X_v), np.stack(y_v)
+def parse_tfrecord(example_proto):
+    feature_description = {
+        'X': tf.io.FixedLenFeature([], tf.string),
+        'y': tf.io.FixedLenFeature([], tf.string),
+    }
+    parsed = tf.io.parse_single_example(example_proto, feature_description)
+    
+    # Dekodieren der Binärdaten
+    X = tf.io.decode_raw(parsed['X'], tf.float32)
+    X = tf.reshape(X, (5, 192, 240, 1))
+    y = tf.io.decode_raw(parsed['y'], tf.float32)
+    y = tf.reshape(y, (5, 192, 240, 1))
+    return X, y
 
 def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
     def map_vol(x, y):
@@ -149,18 +110,39 @@ def augment_and_normalize_3d_per_slice(scale_min, scale_max, p=0.5):
     return map_vol
 
 def prepare_25d_input(x, y):
+    # Center-Slice Extraktion für 2.5D
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
-# =====================================================
-# 5. MAIN TRAINING LOOP (10 Seeds per Point)
-# =====================================================
-print(f"--- Starte Punkt {MY_POINT_IDX}: Alpha={MY_ALPHA}, Beta={MY_BETA} ---")
+# --- Architektur (Identisch) ---
+def conv_block_2d(x, filters):
+    ki = "he_normal"
+    for _ in range(4):
+        x = layers.Conv2D(filters, (3, 3), padding="same", kernel_initializer=ki)(x)
+        x = layers.ReLU()(x)
+    return x
 
-# Daten einmal pro Job laden
-lc_t, hc_t = load_split(ORIGINAL_DATA_DIR / "training_data.hdf5")
-X_train_win, y_train_win = make_sliding_windows(lc_t, hc_t, 10, DEPTH)
-lc_v, hc_v = load_split(ORIGINAL_DATA_DIR / "validation_data.hdf5")
-X_val_win, y_val_win = make_sliding_windows(lc_v, hc_v, 10, DEPTH)
+def unet_2d_stacked(input_shape=(192, 240, 5)):
+    inputs = layers.Input(shape=input_shape)
+    c1 = conv_block_2d(inputs, 64); p1 = layers.MaxPooling2D((2, 2))(c1)
+    c2 = conv_block_2d(p1, 128);    p2 = layers.MaxPooling2D((2, 2))(c2)
+    c3 = conv_block_2d(p2, 256);    p3 = layers.MaxPooling2D((2, 2))(c3)
+    c4 = conv_block_2d(p3, 512);    p4 = layers.MaxPooling2D((2, 2))(c4)
+    bn = conv_block_2d(p4, 1024)
+    u4 = layers.Conv2DTranspose(512, (2, 2), strides=(2, 2), padding="same")(bn)
+    u4 = layers.Concatenate()([u4, c4]); c5 = conv_block_2d(u4, 512)
+    u3 = layers.Conv2DTranspose(256, (2, 2), strides=(2, 2), padding="same")(c5)
+    u3 = layers.Concatenate()([u3, c3]); c6 = conv_block_2d(u3, 256)
+    u2 = layers.Conv2DTranspose(128, (2, 2), strides=(2, 2), padding="same")(c6)
+    u2 = layers.Concatenate()([u2, c2]); c7 = conv_block_2d(u2, 128)
+    u1 = layers.Conv2DTranspose(64, (2, 2), strides=(2, 2), padding="same")(c7)
+    u1 = layers.Concatenate()([u1, c1]); c8 = conv_block_2d(u1, 64)
+    out = layers.Conv2D(1, (1, 1), activation="sigmoid")(c8)
+    return models.Model(inputs, out)
+
+# =====================================================
+# 4. MAIN LOOP
+# =====================================================
+print(f"--- Starte TFRecord-Training Punkt {MY_POINT_IDX} (a={MY_ALPHA}, b={MY_BETA}) ---")
 
 point_dir = SCRATCH_ROOT / f"Point_{MY_POINT_IDX}_a{MY_ALPHA}_b{MY_BETA}"
 point_dir.mkdir(exist_ok=True)
@@ -168,9 +150,7 @@ point_dir.mkdir(exist_ok=True)
 for current_seed in SEEDS:
     RUN_NAME = f"P{MY_POINT_IDX}_a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{current_seed}"
     
-    # Existenz-Check
     if (point_dir / f"{RUN_NAME}.h5").exists() and (point_dir / f"{RUN_NAME}.json").exists():
-        print(f"Überspringe {RUN_NAME} - bereits erledigt.")
         continue
 
     # Determinismus
@@ -178,19 +158,26 @@ for current_seed in SEEDS:
     random.seed(current_seed); np.random.seed(current_seed); tf.random.set_seed(current_seed)
     tf.config.experimental.enable_op_determinism()
 
-    train_ds = (tf.data.Dataset.from_tensor_slices((X_train_win, y_train_win))
-                .shuffle(len(X_train_win), seed=current_seed)
-                .map(augment_and_normalize_3d_per_slice(5000, 15000, 0.5), -1)
-                .map(prepare_25d_input, -1).batch(BATCH_SIZE).prefetch(-1))
+    # --- TFRecord Pipeline ---
+    train_ds = (tf.data.TFRecordDataset(str(TF_DATA_DIR / "training.tfrecord"))
+                .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
+                .shuffle(1000, seed=current_seed)
+                .map(augment_and_normalize_3d_per_slice(5000, 15000, 0.5), num_parallel_calls=tf.data.AUTOTUNE)
+                .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+                .batch(BATCH_SIZE)
+                .prefetch(tf.data.AUTOTUNE))
 
-    val_ds = (tf.data.Dataset.from_tensor_slices((X_val_win, y_val_win))
-              .map(augment_and_normalize_3d_per_slice(10000, 10001, 0), -1)
-              .map(prepare_25d_input, -1).cache().batch(BATCH_SIZE).prefetch(-1))
+    val_ds = (tf.data.TFRecordDataset(str(TF_DATA_DIR / "validation.tfrecord"))
+              .map(parse_tfrecord, num_parallel_calls=tf.data.AUTOTUNE)
+              .map(augment_and_normalize_3d_per_slice(10000, 10001, 0), num_parallel_calls=tf.data.AUTOTUNE)
+              .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+              .cache() # Wichtig für Geschwindigkeit
+              .batch(BATCH_SIZE)
+              .prefetch(tf.data.AUTOTUNE))
 
     model = unet_2d_stacked()
     optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
     
-    # Status für Crash-Überwachung
     status = {"aborted": False, "reason": "none", "best_psnr": -1.0, "drop_cnt": 0}
     temp_csv = f"temp_{RUN_NAME}.csv"
     best_model_path = point_dir / f"{RUN_NAME}.h5"
@@ -205,11 +192,11 @@ for current_seed in SEEDS:
             if psnr < (status["best_psnr"] - 4.5) or psnr < 24.0:
                 status["drop_cnt"] += 1
             else: status["drop_cnt"] = 0
-            if status["drop_cnt"] >= 3: # Gnadenfrist von 3 Epochen
+            if status["drop_cnt"] >= 3:
                 status["aborted"] = True; status["reason"] = "perf_collapse"; model.stop_training = True
 
     callbacks = [
-        tf.keras.callbacks.TerminateOnNaN(), # Sofort-Stopp bei Gradiententod
+        tf.keras.callbacks.TerminateOnNaN(),
         tf.keras.callbacks.ModelCheckpoint(filepath=str(best_model_path), monitor='val_loss', save_best_only=True, verbose=1),
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, verbose=1),
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True),
@@ -224,23 +211,17 @@ for current_seed in SEEDS:
     history = None
     try:
         history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=1)
-        if history and np.isnan(history.history['loss'][-1]):
-            status["aborted"] = True; status["reason"] = "NaN_loss"
     except Exception as e:
-        status["aborted"] = True; status["reason"] = f"Crash: {str(e)}"
+        status["aborted"] = True; status["reason"] = str(e)
 
-    # Finalisierung: JSON und Aufräumen
-    print(f"Finalisiere {RUN_NAME}...")
+    # Finalisierung
     f_psnr = float(history.history['val_psnr_center'][-1]) if history and not status["aborted"] else 0.0
     meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
                           extra={"alpha": MY_ALPHA, "beta": MY_BETA, "seed": current_seed, 
                                  "aborted": status["aborted"], "reason": status["reason"], "final_psnr": f_psnr})
     
     finalize_run(model, history, RUN_NAME, meta, folder_name=str(point_dir))
-    
-    if os.path.exists(temp_csv):
-        shutil.move(temp_csv, point_dir / f"{RUN_NAME}_metrics.csv")
-    
+    if os.path.exists(temp_csv): shutil.move(temp_csv, point_dir / f"{RUN_NAME}_metrics.csv")
     tf.keras.backend.clear_session(); gc.collect()
 
-print(f"\n--- Punkt {MY_POINT_IDX} (10 Seeds) erfolgreich beendet ---")
+print(f"\n--- PUNKT {MY_POINT_IDX} ERFOLGREICH BEENDET ---")
