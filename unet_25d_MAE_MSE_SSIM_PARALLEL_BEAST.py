@@ -50,6 +50,8 @@ SEEDS = range(42, 52)
 DEPTH = 5
 BATCH_SIZE = 8
 EPOCHS = 200
+LR_TARGET = 5e-4
+WARMUP_EPOCHS = 10
 
 # =====================================================
 # 2. METRIKEN & LOSS (MIT CLIPPING)
@@ -73,7 +75,6 @@ def ssim_center(yt, yp):
 
 def get_triple_loss(alpha, beta):
     def loss(yt, yp):
-        # Loss selbst wird meist ohne Clipping gerechnet, um Gradientenfluss nicht zu stören
         mae = tf.reduce_mean(tf.abs(yt - yp))
         mse = tf.reduce_mean(tf.square(yt - yp))
         ssim = 1.0 - tf.reduce_mean(tf.image.ssim(yt, yp, 1.0))
@@ -81,7 +82,7 @@ def get_triple_loss(alpha, beta):
     return loss
 
 # =====================================================
-# 3. ARCHITEKTUR & DATA UTILS (IDENTISCH ZUM URSPRUNG)
+# 3. ARCHITEKTUR & DATA UTILS
 # =====================================================
 def conv_block_2d(x, filters):
     for _ in range(4):
@@ -139,6 +140,14 @@ def prepare_25d_input(x, y):
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
 # =====================================================
+# 4. LR WARMUP CALLBACK
+# =====================================================
+def lr_warmup_scheduler(epoch, lr):
+    if epoch < WARMUP_EPOCHS:
+        return LR_TARGET * (epoch + 1) / WARMUP_EPOCHS
+    return lr
+
+# =====================================================
 # 5. MAIN LOOP
 # =====================================================
 print(f"--- STARTE TRAINING PUNKT {MY_POINT_IDX} (a={MY_ALPHA}, b={MY_BETA}) ---")
@@ -167,7 +176,7 @@ for current_seed in SEEDS:
               .map(prepare_25d_input, -1).cache().batch(BATCH_SIZE).prefetch(-1))
 
     model = unet_2d_stacked()
-    optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True)
 
     status = {"best_psnr": -1.0, "drop_cnt": 0, "aborted": False, "reason": "none"}
     temp_csv = f"temp_{RUN_NAME}.csv"
@@ -187,6 +196,8 @@ for current_seed in SEEDS:
                 model.stop_training = True
 
     callbacks = [
+        tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
+        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, verbose=1),
         tf.keras.callbacks.ModelCheckpoint(filepath=str(best_model_path), monitor='val_loss', save_best_only=True),
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True),
         tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
@@ -206,7 +217,7 @@ for current_seed in SEEDS:
 
     if history is not None or status["aborted"]:
         f_psnr = float(history.history['val_psnr_center'][-1]) if history and hasattr(history, 'history') else 0.0
-        meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, 5e-4, (192, 240, 5), 
+        meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (192, 240, 5), 
                               extra={"alpha": MY_ALPHA, "beta": MY_BETA, "seed": current_seed, 
                                      "aborted": status["aborted"], "reason": status["reason"], "final_psnr": f_psnr})
         finalize_run(model, history, RUN_NAME, meta, folder_name=str(point_dir))
