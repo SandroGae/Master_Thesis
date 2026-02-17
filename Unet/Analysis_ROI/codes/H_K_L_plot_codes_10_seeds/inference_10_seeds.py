@@ -18,11 +18,12 @@ SERIES_LIST   = [5, 11, 12, 15, 16, 21, 22, 29, 35, 50]
 SERIES_LEN    = 41
 
 def is_npz_valid(filepath):
-    """Prüft ob die Datei existiert und nicht korrupt ist."""
     if not filepath.exists(): return False
     try:
         with np.load(filepath) as data:
-            _ = data['pred']
+            # NEU: Prüfe, ob die Prediction wirklich Daten enthält (nicht nur Nullen)
+            if np.max(data['pred']) == 0:
+                return False 
         return True
     except:
         return False
