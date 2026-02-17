@@ -10,7 +10,7 @@ import os
 # =====================================================
 # 1. KONFIGURATION (Pfade & Serien)
 # =====================================================
-MODELS_ROOT = Path.home() / "scratch" / "43_Models_10_Seeds"
+# IN_DIR: Hier liegen deine Eval_..._SXX.npz Dateien
 IN_DIR      = Path.home() / "scratch" / "Evaluation_Pipeline" / "Evaluation_results"
 OUT_DIR     = Path.home() / "scratch" / "Evaluation_Pipeline" / "Plots"
 
@@ -36,7 +36,7 @@ FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
 TITLES     = ["Low Count", "Prediction", "Ground Truth"]
 
 # =====================================================
-# 2. HILFSFUNKTIONEN (Exakt wie in deinem K-Skript)
+# 2. HILFSFUNKTIONEN
 # =====================================================
 def gaussian(x, amplitude, mu, sigma):
     return amplitude * np.exp(-(x - mu)**2 / (2 * sigma**2))
@@ -61,21 +61,19 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
         return None, None, None
 
 # =====================================================
-# 3. PROZESS-FUNKTION (K-Richtung Logik)
+# 3. PROZESS-FUNKTION (Pfadlogik gefixt)
 # =====================================================
-def process_combination(model_id, s_id, cfg):
-    path = IN_DIR / f"Eval_{model_id}_S{s_id}.npz"
-    if not path.exists(): return
-
-    data = np.load(path)
+def process_combination(npz_path, s_id, cfg):
+    data = np.load(npz_path)
+    # Extrahiere Label für Plot-Überschrift und Dateiname (Eval_P19_... -> P19_...)
+    full_label = npz_path.stem.replace("Eval_", "")
+    
     idx = cfg["slice_idx"]
     imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
     
     bg_l = min(IMAGE_WIDTH, cfg["roi_x"][1] + cfg["bg_gap"])
     bg_r = min(IMAGE_WIDTH, bg_l + 20)
-    bg_coords = (bg_l, bg_r)
-
-    # Noise-Referenz vom Ground Truth Hintergrund
+    
     gt_bg_slice = imgs[2][ROI_Y[0]:ROI_Y[1], bg_l:bg_r]
     gt_noise = np.std(gt_bg_slice)
     
@@ -86,7 +84,7 @@ def process_combination(model_id, s_id, cfg):
         sig_s = img[ROI_Y[0]:ROI_Y[1], cfg["roi_x"][0]:cfg["roi_x"][1]]
         bg_s  = img[ROI_Y[0]:ROI_Y[1], bg_l:bg_r]
         
-        prof_sig = np.sum(sig_s, axis=1) # Summe über Spalten -> vertikales Profil
+        prof_sig = np.sum(sig_s, axis=1)
         scale = sig_s.shape[1] / bg_s.shape[1]
         prof_bg = np.sum(bg_s, axis=1) * scale
         
@@ -104,6 +102,8 @@ def process_combination(model_id, s_id, cfg):
         results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=150, gridspec_kw={'height_ratios': [1, 0.8, 1]})
+    fig.suptitle(f"Analysis: {full_label}", fontsize=16, fontweight='bold')
+    
     p_low, p_high = cfg.get("vis_p", (0.5, 99.5))
 
     for i in range(3):
@@ -123,33 +123,39 @@ def process_combination(model_id, s_id, cfg):
 
         ax3 = axes[2, i]; ax3.errorbar(y_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', color='black', alpha=0.6)
         if results[i]['fit'] is not None:
-            p, e = results[i]['par'], results[i]['perr']
-            l = f"Gauss (Amp={p[0]:.2f}, Peak={p[1]:.1f}, $\sigma$={p[2]:.2f})"
-            ax3.plot(y_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
+            ax3.plot(y_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5)
         ax3.set_xlim(FIT_WINDOW); ax3.set_ylim(cfg.get("ylim_sbr", (-0.2, 0.5))); ax3.grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
     series_dir = OUT_DIR / f"series_{s_id}"
     series_dir.mkdir(parents=True, exist_ok=True)
     
-    save_p = series_dir / f"Analysis_K_{model_id}_S{s_id}.png"
+    save_p = series_dir / f"Analysis_K_{full_label}.png"
     fig.savefig(save_p, bbox_inches='tight')
     plt.close(fig)
     print(f" OK: K-Dir series_{s_id}/{save_p.name}")
 
 # =====================================================
-# 4. MAIN
+# 4. MAIN (Suche in IN_DIR statt MODELS_ROOT)
 # =====================================================
 def main():
     matplotlib.use("Agg")
-    all_models = sorted(list(MODELS_ROOT.glob("Point_*/*.h5")))
-    model_ids = [m.stem for m in all_models]
+    # Wir suchen direkt nach allen NPZ-Dateien im Results-Ordner
+    all_npzs = sorted(list(IN_DIR.glob("*.npz")))
     
-    print(f"Starte K-Plotting für {len(model_ids)} Modelle...")
+    print(f"Gefunden: {len(all_npzs)} NPZ-Dateien. Starte K-Plotting...")
 
-    for model_id in model_ids:
-        for s_id, cfg in sorted(SERIES_CONFIG.items()):
-            process_combination(model_id, s_id, cfg)
+    for npz_path in all_npzs:
+        try:
+            # Extrahiere S_id aus dem Ende des Namens (z.B. ..._S50.npz)
+            s_str = npz_path.stem.split('_S')[-1]
+            s_id = int(s_str)
+            
+            if s_id in SERIES_CONFIG:
+                process_combination(npz_path, s_id, SERIES_CONFIG[s_id])
+        except Exception as e:
+            print(f"Überspringe {npz_path.name} wegen Fehler: {e}")
 
 if __name__ == "__main__":
     main()
