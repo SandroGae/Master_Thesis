@@ -8,18 +8,11 @@ import matplotlib
 import os
 
 # =====================================================
-# 1. KONFIGURATION (Pfade & Serien)
+# 1. KONFIGURATION
 # =====================================================
-# Quelle der Modelle (für die Namensliste)
-MODELS_ROOT = Path.home() / "scratch" / "43_Models_10_Seeds"
-
-# Quelle der NPZ-Daten (aus der Evaluation-Pipeline)
-IN_DIR = Path.home() / "scratch" / "Evaluation_Pipeline" / "Evaluation_results"
-
-# Ziel für die Plots
+IN_DIR  = Path.home() / "scratch" / "Evaluation_Pipeline" / "Evaluation_results"
 OUT_DIR = Path.home() / "scratch" / "Evaluation_Pipeline" / "Plots"
 
-# Serien-Konfiguration (Haargenau dein Original)
 SERIES_CONFIG = {
     5:  {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
     11: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (100, 119), "bg_gap": 5, "bg_h": 10, "fit_window": (43, 143),  "y_lim_raw": (3.0, 8.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
@@ -37,7 +30,7 @@ FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
 TITLES     = ["Low Count", "Prediction", "Ground Truth"]
 
 # =====================================================
-# 2. HILFSFUNKTIONEN (Bleiben exakt gleich)
+# 2. HILFSFUNKTIONEN
 # =====================================================
 def gaussian(x, A, mu, sigma):
     return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
@@ -62,14 +55,12 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
         return None, None, None
 
 # =====================================================
-# 3. PROZESS-FUNKTION (Speicherort angepasst)
+# 3. PROZESS-FUNKTION
 # =====================================================
-def process_combination(model_id, s_id, cfg):
-    # NPZ-Datei laden
-    path = IN_DIR / f"Eval_{model_id}_S{s_id}.npz"
-    if not path.exists(): return
-
-    data = np.load(path)
+def process_combination(npz_path, s_id, cfg):
+    data = np.load(npz_path)
+    model_label = npz_path.stem.replace("Eval_", "") # Der volle Name für den Titel
+    
     idx = cfg["slice_idx"]
     imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
 
@@ -100,16 +91,17 @@ def process_combination(model_id, s_id, cfg):
         results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=150, gridspec_kw={'height_ratios': [1, 0.8, 1]})
+    fig.suptitle(f"Analysis: {model_label}", fontsize=16, fontweight='bold')
+
     p_l, p_h = cfg.get("vis_p", (0.5, 99.5))
     for i in range(3):
         ax = axes[0, i]
         ax.imshow(vis_norm(imgs[i], p_l, p_h), cmap="gray_r")
-        ax.set_title(TITLES[i], fontsize=14, fontweight='bold')
+        ax.set_title(TITLES[i], fontsize=14)
         roi_w, roi_h = rx[1]-rx[0], ry[1]-ry[0]
         ax.add_patch(patches.Rectangle((rx[0], ry[0]), roi_w, roi_h, lw=2, ec='blue', fc='none'))
         ax.add_patch(patches.Rectangle((rx[0], r1_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.2))
         ax.add_patch(patches.Rectangle((rx[0], r2_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.2))
-        ax.add_patch(patches.Rectangle((cfg["fit_window"][0], ry[0]), cfg["fit_window"][1]-cfg["fit_window"][0], roi_h, lw=0, fc='green', alpha=0.2))
         ax.axis('off')
 
         ax2 = axes[1, i]; ax2.plot(x_ax, results[i]['sig'], color='blue', alpha=0.7); ax2.plot(x_ax, results[i]['bg'], color='red', alpha=0.7)
@@ -118,34 +110,38 @@ def process_combination(model_id, s_id, cfg):
 
         ax3 = axes[2, i]; ax3.errorbar(x_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', color='black', alpha=0.6)
         if results[i]['fit'] is not None:
-            p, e = results[i]['par'], results[i]['perr']
             ax3.plot(x_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5)
         ax3.set_xlim(cfg["fit_window"]); ax3.set_ylim(cfg["y_lim_sbr"]); ax3.grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
-    # NEU: Nur Unterordner für Serien (z.B. series_5)
     series_dir = OUT_DIR / f"series_{s_id}"
     series_dir.mkdir(parents=True, exist_ok=True)
     
-    save_p = series_dir / f"Analysis_L_{model_id}_S{s_id}.png"
+    save_p = series_dir / f"Plot_{model_label}.png"
     fig.savefig(save_p, bbox_inches='tight')
     plt.close(fig)
-    print(f" OK: series_{s_id}/{save_p.name}")
 
 # =====================================================
 # 4. MAIN
 # =====================================================
 def main():
     matplotlib.use("Agg")
-    all_models = sorted(list(MODELS_ROOT.glob("Point_*/*.h5")))
-    model_ids = [m.stem for m in all_models]
+    all_npzs = sorted(list(IN_DIR.glob("*.npz")))
     
-    print(f"Starte Plotting für {len(model_ids)} Modelle...")
+    print(f"Gefunden: {len(all_npzs)} NPZ-Dateien. Starte Plotting...")
 
-    for model_id in model_ids:
-        for s_id, cfg in sorted(SERIES_CONFIG.items()):
-            process_combination(model_id, s_id, cfg)
+    for i, npz_path in enumerate(all_npzs):
+        try:
+            # Extrahiert S_id aus dem Ende des Namens, z.B. ..._S50.npz
+            s_str = npz_path.stem.split('_S')[-1]
+            s_id = int(s_str)
+            
+            if s_id in SERIES_CONFIG:
+                process_combination(npz_path, s_id, SERIES_CONFIG[s_id])
+                if i % 50 == 0: print(f"Fortschritt: {i}/{len(all_npzs)} Plots fertig...")
+        except Exception as e:
+            print(f"Fehler bei {npz_path.name}: {e}")
 
 if __name__ == "__main__":
     main()
