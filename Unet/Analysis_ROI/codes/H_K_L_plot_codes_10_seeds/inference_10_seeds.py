@@ -14,13 +14,19 @@ from pathlib import Path
 SCRATCH_DATA  = Path.home() / "scratch" / "43_Models_10_Seeds"
 H5_TEST_PATH  = Path.home() / "data" / "original_data" / "test_data.hdf5"
 OUT_DIR       = Path.home() / "scratch" / "Evaluation_Pipeline" / "Evaluation_results"
-
 SERIES_LIST   = [5, 11, 12, 15, 16, 21, 22, 29, 35, 50] 
 SERIES_LEN    = 41
 
-# =====================================================
-# 2. HILFSFUNKTIONEN
-# =====================================================
+def is_npz_valid(filepath):
+    """Prüft ob die Datei existiert und nicht korrupt ist."""
+    if not filepath.exists(): return False
+    try:
+        with np.load(filepath) as data:
+            _ = data['pred']
+        return True
+    except:
+        return False
+
 def load_volume_by_start_index(h5_path, series_idx_0, window_start_idx_0, depth, series_len=41):
     global_start = series_idx_0 * series_len + window_start_idx_0 
     with h5py.File(h5_path, "r") as f:
@@ -35,96 +41,59 @@ def normalize(volume, scale=10000.0):
     sums = np.sum(volume, axis=(2, 3, 4), keepdims=True) + 1e-12
     return (volume / sums) * scale
 
-def print_progress(current, total, model_name=""):
-    """Erstellt eine Fortschrittsanzeige in der Konsole."""
-    percent = (current / total) * 100
-    bar_length = 40
-    done = int(percent / 100 * bar_length)
-    bar = "█" * done + "-" * (bar_length - done)
-    sys.stdout.write(f"\rGesamtfortschritt: |{bar}| {percent:.2f}% ({current}/{total}) | Modell: {model_name}")
-    sys.stdout.flush()
-
-# =====================================================
-# 3. MAIN PIPELINE
-# =====================================================
 def main():
-    if not H5_TEST_PATH.exists():
-        print(f"FEHLER: Test-Daten nicht gefunden unter {H5_TEST_PATH}")
-        return
-
+    # Hole die Modell-Nummer vom Slurm Array Index
+    task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
+    
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     model_paths = sorted(list(SCRATCH_DATA.glob("Point_*/*.keras")))
     
-    total_tasks = len(model_paths) * len(SERIES_LIST)
-    completed_tasks = 0
+    if task_id >= len(model_paths):
+        print(f"Task ID {task_id} außerhalb der Range.")
+        return
+
+    model_path = model_paths[task_id]
+    model_name = model_path.stem
+    print(f"TASK {task_id}: Starte Modell {model_name}")
+
+    # Check ob das Modell überhaupt bearbeitet werden muss
+    needed_series = [s for s in SERIES_LIST if not is_npz_valid(OUT_DIR / f"Eval_{model_name}_S{s}.npz")]
     
-    print(f"Starte Evaluation...")
-    print(f"Gefundene Modelle: {len(model_paths)}")
-    print(f"Zu erstellende Dateien: {total_tasks}\n")
+    if not needed_series:
+        print(f"Modell {model_name} bereits vollständig und valide. Überspringe.")
+        return
 
-    # Initialer Check: Wie viel wurde schon gemacht? (Falls Neustart)
-    for mp in model_paths:
-        m_name = mp.stem
-        for s in SERIES_LIST:
-            if (OUT_DIR / f"Eval_{m_name}_S{s}.npz").exists():
-                completed_tasks += 1
+    # Modell laden
+    model = models.load_model(model_path, compile=False)
+    input_shape = model.input_shape
+    depth = input_shape[-1] if len(input_shape) == 4 else input_shape[1]
+    center_offset = depth // 2
 
-    for model_path in model_paths:
-        model_name = model_path.stem
+    for series_idx in needed_series:
+        outfile = OUT_DIR / f"Eval_{model_name}_S{series_idx}.npz"
+        print(f"  -> Verarbeite Serie {series_idx}")
         
-        # Check ob Modell komplett übersprungen werden kann
-        if all((OUT_DIR / f"Eval_{model_name}_S{s}.npz").exists() for s in SERIES_LIST):
-            print_progress(completed_tasks, total_tasks, f"Skip {model_name}")
-            continue
+        series_idx_0 = series_idx - 1
+        full_stack_lc   = np.zeros((SERIES_LEN, 192, 240), dtype=np.float32)
+        full_stack_pred = np.zeros((SERIES_LEN, 192, 240), dtype=np.float32)
+        full_stack_gt   = np.zeros((SERIES_LEN, 192, 240), dtype=np.float32)
 
-        try:
-            model = models.load_model(model_path, compile=False)
-        except Exception as e:
-            print(f"\nFehler bei {model_name}: {e}")
-            completed_tasks += len(SERIES_LIST) # Zähle als "erledigt" um Progress nicht zu sprengen
-            continue
-
-        input_shape = model.input_shape
-        input_dimension = len(input_shape)
-        depth = input_shape[-1] if input_dimension == 4 else input_shape[1]
-        center_offset = depth // 2
-
-        for series_idx in SERIES_LIST:
-            outfile = OUT_DIR / f"Eval_{model_name}_S{series_idx}.npz"
+        for img_idx_0 in range(SERIES_LEN):
+            window_start = img_idx_0 - center_offset
+            if window_start < 0 or (window_start + depth) > SERIES_LEN: continue
             
-            if not outfile.exists():
-                series_idx_0 = series_idx - 1
-                full_stack_lc   = np.zeros((SERIES_LEN, 192, 240), dtype=np.float32)
-                full_stack_pred = np.zeros((SERIES_LEN, 192, 240), dtype=np.float32)
-                full_stack_gt   = np.zeros((SERIES_LEN, 192, 240), dtype=np.float32)
-
-                for img_idx_0 in range(SERIES_LEN):
-                    window_start = img_idx_0 - center_offset
-                    if window_start < 0 or (window_start + depth) > SERIES_LEN:
-                        continue
-                    
-                    X_raw, Y_raw = load_volume_by_start_index(H5_TEST_PATH, series_idx_0, window_start, depth, SERIES_LEN)
-                    X_input = normalize(X_raw)
-
-                    X_feed = np.transpose(np.squeeze(X_input, axis=-1), (0, 2, 3, 1)) if input_dimension == 4 else X_input
-                    Y_pred_raw = model.predict(X_feed, verbose=0)
-                    
-                    img_pred = Y_pred_raw[0, :, :, 0] if Y_pred_raw.ndim == 4 else Y_pred_raw[0, Y_pred_raw.shape[1]//2, :, :, 0]
-                    
-                    full_stack_lc[img_idx_0]   = X_input[0, center_offset, :, :, 0]
-                    full_stack_pred[img_idx_0] = img_pred
-                    full_stack_gt[img_idx_0]   = normalize(Y_raw)[0, center_offset, :, :, 0]
-
-                np.savez_compressed(outfile, lc=full_stack_lc, pred=full_stack_pred, gt=full_stack_gt)
+            X_raw, Y_raw = load_volume_by_start_index(H5_TEST_PATH, series_idx_0, window_start, depth, SERIES_LEN)
+            X_input = normalize(X_raw)
+            X_feed = np.transpose(np.squeeze(X_input, axis=-1), (0, 2, 3, 1)) if len(input_shape) == 4 else X_input
             
-            completed_tasks += 1
-            print_progress(completed_tasks, total_tasks, model_name)
+            Y_pred_raw = model.predict(X_feed, verbose=0)
+            img_pred = Y_pred_raw[0, :, :, 0] if Y_pred_raw.ndim == 4 else Y_pred_raw[0, Y_pred_raw.shape[1]//2, :, :, 0]
             
-        tf.keras.backend.clear_session()
-        del model
-        gc.collect()
+            full_stack_lc[img_idx_0]   = X_input[0, center_offset, :, :, 0]
+            full_stack_pred[img_idx_0] = img_pred
+            full_stack_gt[img_idx_0]   = normalize(Y_raw)[0, center_offset, :, :, 0]
 
-    print(f"\n\nFertig! Alle 4300 Evaluationen wurden erfolgreich verarbeitet.")
+        np.savez_compressed(outfile, lc=full_stack_lc, pred=full_stack_pred, gt=full_stack_gt)
 
 if __name__ == "__main__":
     main()
