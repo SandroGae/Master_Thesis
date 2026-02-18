@@ -8,87 +8,42 @@ import matplotlib
 import os
 
 # =====================================================
-# 1. KONFIGURATION (Cluster-Pfade)
+# 1. KONFIGURATION (Pfade & Serien analog zum K-Skript)
 # =====================================================
-MODELS_ROOT  = Path.home() / "scratch" / "43_Models_10_Seeds"
-IN_DIR       = Path.home() / "scratch" / "Evaluation_Pipeline" / "Evaluation_results"
-OUT_DIR      = Path.home() / "scratch" / "Evaluation_Pipeline" / "Plots"
+IN_DIR      = Path.home() / "scratch" / "Evaluation_Pipeline" / "Evaluation_results"
+OUT_DIR     = Path.home() / "scratch" / "Evaluation_Pipeline" / "Plots"
 
-# Serien-Konfiguration (Original-Werte)
+# H-Richtung Spezifika (Mathematik bleibt identisch zum H-Entwurf)
+ROI_Y = (0, 192)
+FIT_WINDOW = (90, 130)
+IMAGE_WIDTH = 240
+
 SERIES_CONFIG = {
-    5:  {"slice_idx": 15, "roi_x": (195, 216), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    11: {"slice_idx": 20, "roi_x": (76, 97),   "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    12: {"slice_idx": 18, "roi_x": (60, 81),   "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    15: {"slice_idx": 19, "roi_x": (136, 157), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    16: {"slice_idx": 17, "roi_x": (115, 136), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    21: {"slice_idx": 19, "roi_x": (192, 213), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    22: {"slice_idx": 17, "roi_x": (176, 197), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    29: {"slice_idx": 25, "roi_x": (50, 71),   "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    35: {"slice_idx": 24, "roi_x": (128, 149), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    50: {"slice_idx": 13, "roi_x": (92, 113),  "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
+    5:  {"slice_idx": 15, "roi_x": (190, 211), "bg_gap": -211, "vis_p": (0.5, 99.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5)},
+    11: {"slice_idx": 20, "roi_x": (83, 104),  "bg_gap": 52,   "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 7.0), "ylim_sbr": (-0.2, 0.5)},
+    12: {"slice_idx": 18, "roi_x": (60, 81),   "bg_gap": 64,   "vis_p": (0.5, 99.0), "ylim_raw": (3.5, 6.0), "ylim_sbr": (-0.2, 0.5)},
+    15: {"slice_idx": 19, "roi_x": (141, 162), "bg_gap": -162, "vis_p": (0.5, 99.0), "ylim_raw": (3.5, 7.0), "ylim_sbr": (-0.2, 0.5)},
+    16: {"slice_idx": 17, "roi_x": (121, 142), "bg_gap": 78,   "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5)},
+    21: {"slice_idx": 19, "roi_x": (192, 213), "bg_gap": -213, "vis_p": (0.5, 99.5), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5)},
+    22: {"slice_idx": 17, "roi_x": (173, 194), "bg_gap": -183, "vis_p": (0.5, 98.5), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5)},
+    29: {"slice_idx": 25, "roi_x": (59, 80),   "bg_gap": -80,  "vis_p": (0.5, 99.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5)},
+    35: {"slice_idx": 24, "roi_x": (106, 127), "bg_gap": 45,   "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 6.0), "ylim_sbr": (-0.2, 0.5)},
+    50: {"slice_idx": 13, "roi_x": (97, 118),  "bg_gap": 38,   "vis_p": (0.5, 98.5), "ylim_raw": (3.5, 6.0), "ylim_sbr": (-0.2, 0.5)},
 }
 
-FIX_W, FIX_H = 21, 11
-BG_BOX_HEIGHT = 10
-FIT_WIN       = (2, 38)
-FIT_COLORS    = ['darkorange', 'mediumseagreen', 'darkviolet']
-TITLES        = ["Low Count", "Prediction", "Ground Truth"]
+FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
+TITLES     = ["Low Count", "Prediction", "Ground Truth"]
 
 # =====================================================
-# 2. HILFSFUNKTIONEN (Haargenau wie im H-Skript)
+# 2. HILFSFUNKTIONEN (Identisch)
 # =====================================================
-def update_config_to_fixed_size(cfg_dict, w, h):
-    new_cfg = {}
-    for s_id, vals in cfg_dict.items():
-        v = vals.copy()
-        cx = (v["roi_x"][0] + v["roi_x"][1]) / 2
-        v["roi_x"] = (int(cx - w//2), int(cx - w//2 + w))
-        cy = (v["roi_y"][0] + v["roi_y"][1]) / 2
-        v["roi_y"] = (int(cy - h//2), int(cy - h//2 + h))
-        new_cfg[s_id] = v
-    return new_cfg
-
-SERIES_CONFIG = update_config_to_fixed_size(SERIES_CONFIG, FIX_W, FIX_H)
-
 def gaussian(x, amplitude, mu, sigma):
     return amplitude * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
-def vis_norm(image, p_low, p_high):
+def vis_norm(image, p_low=0.5, p_high=99.5):
     vmin, vmax = np.percentile(image, [p_low, p_high])
     if vmax - vmin == 0: return image
     return np.clip((image - vmin) / (vmax - vmin), 0, 1)
-
-def get_bg_coords_vertical(cfg):
-    y_start, y_end = cfg["roi_y"]
-    gap = cfg["bg_gap"]
-    t_y2 = max(0, y_start - gap); t_y1 = max(0, t_y2 - BG_BOX_HEIGHT)
-    b_y1 = min(192, y_end + gap); b_y2 = min(192, b_y1 + BG_BOX_HEIGHT)
-    return (t_y1, t_y2), (b_y1, b_y2)
-
-def calculate_sbr_z_profiles(volume, cfg, bg_coords, force_noise_std_array=None):
-    n_frames = volume.shape[0]
-    x1, x2 = cfg["roi_x"]; y1, y2 = cfg["roi_y"]
-    (ty1, ty2), (by1, by2) = bg_coords
-    n_sig_pixels = (x2 - x1) * (y2 - y1)
-    p_sig, p_bg, p_sbr, p_err = [], [], [], []
-    for i in range(n_frames):
-        img = volume[i]
-        sum_signal = np.sum(img[y1:y2, x1:x2])
-        bg_pixels = []
-        if ty2 > ty1: bg_pixels.append(img[ty1:ty2, x1:x2])
-        if by2 > by1: bg_pixels.append(img[by1:by2, x1:x2])
-        bg_concat = np.concatenate(bg_pixels)
-        mean_bg = np.mean(bg_concat)
-        sum_bg_equiv = mean_bg * n_sig_pixels
-        net_signal = sum_signal - sum_bg_equiv
-        sbr = net_signal / max(sum_bg_equiv, 1e-9)
-        px_std = force_noise_std_array[i] if force_noise_std_array is not None else np.std(bg_concat)
-        scale = n_sig_pixels / bg_concat.size
-        err_sig, err_bg = px_std * np.sqrt(n_sig_pixels), px_std * np.sqrt(bg_concat.size) * scale
-        err_net = np.sqrt(err_sig**2 + err_bg**2)
-        total_rel = np.sqrt((err_net/max(abs(net_signal),1e-9))**2 + (err_bg/max(sum_bg_equiv,1e-9))**2)
-        p_sig.append(sum_signal); p_bg.append(sum_bg_equiv); p_sbr.append(sbr); p_err.append(abs(sbr) * total_rel)
-    return np.arange(n_frames), np.array(p_sig), np.array(p_bg), np.array(p_sbr), np.array(p_err)
 
 def perform_gaussian_fit(x, y, y_err, fit_window):
     mask = (x >= fit_window[0]) & (x <= fit_window[1])
@@ -97,83 +52,111 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
     p0 = [np.max(y_f) - np.median(y_f), x_f[np.argmax(y_f)], 5.0]
     bounds = ([0, fit_window[0], 0.5], [np.inf, fit_window[1], 15.0])
     try:
-        popt, pcov = curve_fit(gaussian, x_f, y_f, p0=p0, sigma=y_err[mask], absolute_sigma=True, bounds=bounds, maxfev=10000)
+        popt, pcov = curve_fit(gaussian, x_f, y_f, p0=p0, sigma=y_err[mask], 
+                               absolute_sigma=True, bounds=bounds, maxfev=10000)
         perr = np.sqrt(np.diag(pcov))
         return gaussian(x, *popt), popt, perr
-    except: return None, None, None
+    except:
+        return None, None, None
 
 # =====================================================
-# 3. PROZESS-FUNKTION
+# 3. PROZESS-FUNKTION (Pfade analog zu K-Direktion)
 # =====================================================
-def process_combination(model_id, s_id, cfg):
-    path = IN_DIR / f"Eval_{model_id}_S{s_id}.npz"
-    if not path.exists(): return
-
-    data = np.load(path)
-    volumes = [data['lc'], data['pred'], data['gt']]
-    bg_coords = get_bg_coords_vertical(cfg)
+def process_combination(npz_path, s_id, cfg):
+    data = np.load(npz_path)
+    # Label-Logik analog zum K-Skript
+    full_label = npz_path.stem.replace("Eval_", "")
     
-    # 3D Rausch-Profil vom GT extrahieren
-    gt_noise = []
-    for v_slice in volumes[2]:
-        (ty1, ty2), (by1, by2) = bg_coords
-        bg_list = []
-        if ty2 > ty1: bg_list.append(v_slice[ty1:ty2, cfg["roi_x"][0]:cfg["roi_x"][1]])
-        if by2 > by1: bg_list.append(v_slice[by1:by2, cfg["roi_x"][0]:cfg["roi_x"][1]])
-        gt_noise.append(np.std(np.concatenate(bg_list)))
-
+    idx = cfg["slice_idx"]
+    imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
+    
+    bg_l = min(IMAGE_WIDTH, cfg["roi_x"][1] + cfg["bg_gap"])
+    bg_r = min(IMAGE_WIDTH, bg_l + 20)
+    
+    gt_bg_slice = imgs[2][ROI_Y[0]:ROI_Y[1], bg_l:bg_r]
+    gt_noise = np.std(gt_bg_slice)
+    
     results = []
-    for i, vol in enumerate(volumes):
-        noise = gt_noise if i == 1 else None
-        x, sig, bg, sbr, err = calculate_sbr_z_profiles(vol, cfg, bg_coords, noise)
+    y_ax = np.arange(ROI_Y[0], ROI_Y[1])
+
+    for i, img in enumerate(imgs):
+        sig_s = img[ROI_Y[0]:ROI_Y[1], cfg["roi_x"][0]:cfg["roi_x"][1]]
+        bg_s  = img[ROI_Y[0]:ROI_Y[1], bg_l:bg_r]
+        
+        prof_sig = np.sum(sig_s, axis=1)
+        scale = sig_s.shape[1] / bg_s.shape[1]
+        prof_bg = np.sum(bg_s, axis=1) * scale
+        
+        denom = np.where(prof_bg == 0, 1e-9, prof_bg)
+        sbr = (prof_sig - prof_bg) / denom
+        
+        p_std = gt_noise if i == 1 else np.std(bg_s)
+        err_net = np.sqrt((p_std * np.sqrt(sig_s.shape[1]))**2 + (p_std * np.sqrt(bg_s.shape[1]) * scale)**2)
+        sbr_err = np.abs(sbr) * np.sqrt((err_net/np.abs(np.where(prof_sig-prof_bg==0,1,prof_sig-prof_bg)))**2 + (p_std*np.sqrt(bg_s.shape[1])*scale/np.abs(denom))**2)
+
         fit_y, par, perr = (None, None, None)
-        if i > 0: fit_y, par, perr = perform_gaussian_fit(x, sbr, err, FIT_WIN)
-        results.append({'x':x, 'sig':sig, 'bg':bg, 'sbr':sbr, 'err':err, 'fit':fit_y, 'par':par, 'perr':perr})
+        if i > 0:
+            fit_y, par, perr = perform_gaussian_fit(y_ax, sbr, sbr_err, FIT_WINDOW)
+        
+        results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=150, gridspec_kw={'height_ratios': [1, 0.8, 1]})
-    p_low, p_high = cfg["vis_p"]
+    fig.suptitle(f"Analysis H-Dir: {full_label}", fontsize=16, fontweight='bold')
+    
+    p_low, p_high = cfg.get("vis_p", (0.5, 99.5))
 
     for i in range(3):
         ax = axes[0, i]
-        ax.imshow(vis_norm(volumes[i][cfg["slice_idx"]], p_low, p_high), cmap="gray_r")
-        ax.set_title(f"{TITLES[i]} (S{s_id})", fontsize=14, fontweight='bold')
-        x1, x2 = cfg["roi_x"]; y1, y2 = cfg["roi_y"]; rw, rh = x2 - x1, y2 - y1
-        ax.add_patch(patches.Rectangle((x1, y1), rw, rh, lw=0, fc='green', alpha=0.3))
-        ax.add_patch(patches.Rectangle((x1, y1), rw, rh, lw=2, ec='blue', fc='none'))
-        (ty1, ty2), (by1, by2) = bg_coords
-        if ty2 > ty1: ax.add_patch(patches.Rectangle((x1, ty1), rw, ty2-ty1, lw=1, ec='red', fc='red', alpha=0.2))
-        if by2 > by1: ax.add_patch(patches.Rectangle((x1, by1), rw, by2-by1, lw=1, ec='red', fc='red', alpha=0.2))
+        ax.imshow(vis_norm(imgs[i], p_low, p_high), cmap="gray_r")
+        ax.set_title(TITLES[i], fontsize=14, fontweight='bold')
+        roi_x = cfg["roi_x"]
+        roi_w, roi_h = roi_x[1] - roi_x[0], ROI_Y[1] - ROI_Y[0]
+        ax.add_patch(patches.Rectangle((roi_x[0], ROI_Y[0]), roi_w, roi_h, lw=2, ec='blue', fc='none'))
+        ax.add_patch(patches.Rectangle((roi_x[0], FIT_WINDOW[0]), roi_w, FIT_WINDOW[1]-FIT_WINDOW[0], lw=0, fc='green', alpha=0.2))
+        ax.add_patch(patches.Rectangle((bg_l, ROI_Y[0]), bg_r-bg_l, roi_h, lw=1, ec='red', fc='red', alpha=0.15))
         ax.axis('off')
 
-        ax2 = axes[1, i]; ax2.plot(results[i]['x'], results[i]['sig'], color='blue', alpha=0.7); ax2.plot(results[i]['x'], results[i]['bg'], color='red', alpha=0.7)
-        ax2.axvspan(FIT_WIN[0], FIT_WIN[1], color='green', alpha=0.15); ax2.grid(True, alpha=0.3)
-        ax2.set_ylim(cfg.get("ylim_raw", (40, 65)))
+        ax2 = axes[1, i]; ax2.plot(y_ax, results[i]['sig'], color='blue', alpha=0.7); ax2.plot(y_ax, results[i]['bg'], color='red', alpha=0.7)
+        ax2.axvspan(FIT_WINDOW[0], FIT_WINDOW[1], color='green', alpha=0.15)
+        ax2.set_ylim(cfg.get("ylim_raw", (2.5, 7.0))); ax2.grid(True, alpha=0.3)
 
-        ax3 = axes[2, i]; ax3.errorbar(results[i]['x'], results[i]['sbr'], yerr=results[i]['err'], fmt='.', color='black', alpha=0.6)
+        ax3 = axes[2, i]; ax3.errorbar(y_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', color='black', alpha=0.6)
         if results[i]['fit'] is not None:
-            p, e = results[i]['par'], results[i]['perr']
-            l = f"Gauss (Amp={p[0]:.2f}, Peak={p[1]:.1f}, $\sigma$={p[2]:.2f})"
-            ax3.plot(results[i]['x'], results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
-        ax3.set_xlim(FIT_WIN); ax3.set_ylim(cfg.get("ylim_sbr", (-0.1, 0.55))); ax3.grid(True, alpha=0.3); ax3.legend(loc='upper right', fontsize=8)
+            ax3.plot(y_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5)
+        ax3.set_xlim(FIT_WINDOW); ax3.set_ylim(cfg.get("ylim_sbr", (-0.2, 0.5))); ax3.grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Speicherung in series_XX Ordnern analog zu K
     series_dir = OUT_DIR / f"series_{s_id}"
     series_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(series_dir / f"Analysis_H_{model_id}_S{s_id}.png", bbox_inches='tight')
+    
+    # Dateiname auf H geändert
+    save_p = series_dir / f"Analysis_H_{full_label}.png"
+    fig.savefig(save_p, bbox_inches='tight')
     plt.close(fig)
-    print(f" OK: H-Dir series_{s_id}/{model_id}")
+    print(f" OK: H-Dir series_{s_id}/{save_p.name}")
 
 # =====================================================
-# 4. MAIN
+# 4. MAIN (Suche in IN_DIR analog zum K-Skript)
 # =====================================================
 def main():
-    matplotlib.use('Agg')
-    all_models = sorted(list(MODELS_ROOT.glob("Point_*/*.h5")))
-    model_ids = [m.stem for m in all_models]
-    print(f"Starte H-Plotting für {len(model_ids)} Modelle...")
-    for model_id in model_ids:
-        for s_id, cfg in sorted(SERIES_CONFIG.items()):
-            process_combination(model_id, s_id, cfg)
+    matplotlib.use("Agg")
+    # Alle NPZ-Dateien aus Evaluation_results sammeln
+    all_npzs = sorted(list(IN_DIR.glob("*.npz")))
+    
+    print(f"Gefunden: {len(all_npzs)} NPZ-Dateien. Starte H-Plotting...")
+
+    for npz_path in all_npzs:
+        try:
+            # Extrahiere S_id aus dem Dateinamen
+            s_str = npz_path.stem.split('_S')[-1]
+            s_id = int(s_str)
+            
+            if s_id in SERIES_CONFIG:
+                process_combination(npz_path, s_id, SERIES_CONFIG[s_id])
+        except Exception as e:
+            print(f"Überspringe {npz_path.name} wegen Fehler: {e}")
 
 if __name__ == "__main__":
     main()
