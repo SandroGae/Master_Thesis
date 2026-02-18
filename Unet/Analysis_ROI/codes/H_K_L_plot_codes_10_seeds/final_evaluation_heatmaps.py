@@ -2,6 +2,8 @@ import os
 import json
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg') # Headless-Modus für Cluster
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.interpolate import griddata
@@ -14,6 +16,7 @@ import matplotlib.gridspec as gridspec
 MODELS_ROOT = Path.home() / "scratch" / "43_Models_10_Seeds"
 IN_DIR      = Path.home() / "scratch" / "Evaluation_Pipeline" / "Evaluation_results"
 OUT_DIR     = Path.home() / "scratch" / "Evaluation_Pipeline" / "Final_Heatmaps"
+CSV_PATH    = OUT_DIR / "evaluation_metrics_database.csv"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 SERIES_IDS = [5, 11, 12, 15, 16, 21, 22, 29, 35, 50]
@@ -36,12 +39,12 @@ def perform_fit(x, y, win=[90, 130]):
     except: return None
 
 # =====================================================
-# 3. DATEN-SAMMLUNG
+# 3. DATEN-LOGIK (Scan + Duplizierung für Quadrat)
 # =====================================================
 def collect_data():
     results = []
     all_jsons = list(MODELS_ROOT.glob("Point_*/*.json"))
-    print(f"Scanne {len(all_jsons)} JSON-Dateien...")
+    print(f"Scanne {len(all_jsons)} JSON-Dateien und NPZs...")
 
     for j_path in all_jsons:
         with open(j_path, 'r') as f:
@@ -57,8 +60,7 @@ def collect_data():
             if not npz_p.exists(): continue
             
             data = np.load(npz_p)
-            # Wir nehmen den mittleren Slice der NPZ (K-Richtung Profil)
-            p_gt = np.sum(data['gt'][15], axis=1) # Beispiel Slice 15
+            p_gt = np.sum(data['gt'][15], axis=1) 
             p_pr = np.sum(data['pred'][15], axis=1)
             x = np.arange(len(p_gt))
             
@@ -72,13 +74,33 @@ def collect_data():
                 "alpha": alpha, "beta": beta, "seed": seed, "aborted": aborted,
                 "area": np.mean(area_ratios), "shift": np.mean(shifts)
             })
-    return pd.DataFrame(results)
+    
+    df = pd.DataFrame(results)
+
+    # --- SPEZIAL-LOGIK: Punkt 43 duplizieren für Alpha=1 Kante ---
+    # Wir suchen den Punkt, der Alpha=1 repräsentiert (normalerweise Point_43)
+    p43_data = df[df['alpha'] >= 0.99]
+    if not p43_data.empty:
+        print("Dupliziere Punkt 43 Daten für die gesamte Alpha=1 Kante (Quadrat-Fix)...")
+        # Wir erstellen 7 künstliche Beta-Werte (0.0 bis 1.0) für Alpha=1
+        beta_grid = np.linspace(0, 1, 7)
+        extra_rows = []
+        for b_val in beta_grid:
+            # Nehme alle 10 Seeds von Punkt 43 und setze sie auf die neue Beta-Position
+            for _, row in p43_data.iterrows():
+                new_row = row.copy()
+                new_row['beta'] = b_val
+                new_row['alpha'] = 1.0
+                extra_rows.append(new_row)
+        df = pd.concat([df, pd.DataFrame(extra_rows)], ignore_index=True)
+
+    return df
 
 # =====================================================
-# 4. HEATMAP GENERATOR
+# 4. PLOTTING (1x3 und 1x2 Layout)
 # =====================================================
 def plot_master(df):
-    # Aggregation der 3 Datensätze
+    # Aggregation (wie gehabt)
     df_h = df[df['aborted'] == False].groupby(['alpha', 'beta']).mean().reset_index()
     df_a = df.groupby(['alpha', 'beta']).mean().reset_index()
     df_s = df.groupby(['alpha', 'beta']).apply(lambda x: 1 - x['aborted'].mean()).reset_index(name='stab')
@@ -88,50 +110,76 @@ def plot_master(df):
     grid_a, grid_b = np.meshgrid(ai, bi)
     
     def get_zi(d, col):
-        return griddata((d['alpha'], d['beta']), d[col], (grid_a, grid_b), method='cubic')
+        return griddata((d['alpha'], d['beta']), d[col], (grid_a, grid_b), method='linear')
 
-    # Layout: Zeile 1 (1x3) für Area/Stab, Zeile 2 (1x2) für Shift
-    fig = plt.figure(figsize=(20, 12), dpi=150)
-    gs = gridspec.GridSpec(2, 3, figure=fig)
+    fig = plt.figure(figsize=(22, 12), dpi=150)
+    gs = gridspec.GridSpec(2, 3, figure=fig, height_ratios=[1, 1])
 
-    # --- Zeile 1: Area & Stabilität ---
-    titles_r1 = ["Area Ratio (Healthy)", "Area Ratio (All Seeds)", "Training Stability"]
-    data_r1 = [(df_h, 'area', 'plasma'), (df_a, 'area', 'plasma'), (df_s, 'stab', 'RdYlGn')]
+    # --- Zeile 1: Area & Stabilität (1x3) ---
+    plots_r1 = [
+        (df_h, 'area', 'Area Ratio (Healthy)', 'plasma'),
+        (df_a, 'area', 'Area Ratio (All Seeds)', 'plasma'),
+        (df_s, 'stab', 'Training Stability', 'RdYlGn')
+    ]
 
-    for i in range(3):
+    for i, (data, col, title, cmap) in enumerate(plots_r1):
         ax = fig.add_subplot(gs[0, i])
-        zi = get_zi(data_r1[i][0], data_r1[i][1])
-        cf = ax.contourf(grid_a, grid_b, zi, levels=50, cmap=data_r1[i][2])
-        fig.colorbar(cf, ax=ax)
-        ax.scatter(data_r1[i][0]['alpha'], data_r1[i][0]['beta'], c='white', s=10, alpha=0.3)
-        ax.set_title(titles_r1[i], fontweight='bold')
+        zi = get_zi(data, col)
+        cf = ax.contourf(grid_a, grid_b, zi, levels=50, cmap=cmap)
+        plt.colorbar(cf, ax=ax)
+        ax.set_title(title, fontweight='bold', fontsize=14)
+        
+        # Y-Label nur ganz links (Spalte 0)
+        if i == 0:
+            ax.set_ylabel("Beta (MAE/MSE)", fontsize=12)
+        
+        # X-Label nur, wenn kein Plot mehr darunter kommt (hier nur für Stability Spalte 2)
+        if i == 2:
+            ax.set_xlabel("Alpha (SSIM)", fontsize=12)
 
-    # --- Zeile 2: Mu-Shift ---
-    titles_r2 = ["Mu-Shift (Healthy)", "Mu-Shift (All Seeds)"]
-    data_r2 = [(df_h, 'shift', 'magma'), (df_a, 'shift', 'magma')]
+    # --- Zeile 2: Mu-Shift (1x2) ---
+    plots_r2 = [
+        (df_h, 'shift', 'Mu-Shift (Healthy)', 'magma'),
+        (df_a, 'shift', 'Mu-Shift (All Seeds)', 'magma')
+    ]
 
-    for i in range(2):
+    for i, (data, col, title, cmap) in enumerate(plots_r2):
         ax = fig.add_subplot(gs[1, i])
-        zi = get_zi(data_r2[i][0], data_r2[i][1])
-        cf = ax.contourf(grid_a, grid_b, zi, levels=50, cmap=data_r2[i][2])
-        fig.colorbar(cf, ax=ax)
-        ax.set_title(titles_r2[i], fontweight='bold')
+        zi = get_zi(data, col)
+        cf = ax.contourf(grid_a, grid_b, zi, levels=50, cmap=cmap)
+        plt.colorbar(cf, ax=ax)
+        ax.set_title(title, fontweight='bold', fontsize=14)
+        
+        # Y-Label nur ganz links (Spalte 0)
+        if i == 0:
+            ax.set_ylabel("Beta (MAE/MSE)", fontsize=12)
+        
+        # X-Label unter beiden Plots der untersten Zeile
+        ax.set_xlabel("Alpha (SSIM)", fontsize=12)
 
-    # Labels für alle
-    for ax in fig.axes:
-        ax.set_xlabel("Alpha (SSIM)")
-        ax.set_ylabel("Beta (MAE/MSE)")
+    # Info-Box (Spalte 2, Zeile 2)
+    ax_info = fig.add_subplot(gs[1, 2])
+    ax_info.axis('off')
 
     plt.tight_layout()
-    plt.savefig(OUT_DIR / "Master_Heatmap_Comparison.png")
+    save_path = OUT_DIR / "Master_Heatmap_Comparison_Clean.png"
+    plt.savefig(save_path, bbox_inches='tight')
+    print(f"Plot gespeichert: {save_path}")
     
-    # Text-Zusammenfassung
-    with open(OUT_DIR / "final_stats.txt", "w") as f:
-        f.write(f"Gesamt-Auswertung von {len(df)} Einzelläufen.\n")
-        f.write(f"Bester Healthy Area-Ratio: {df_h['area'].max():.4f}\n")
-        f.write(f"Niedrigster Healthy Shift: {df_h['shift'].min():.4f} px\n")
+# =====================================================
+# 5. MAIN LOGIK (mit CSV-Check)
+# =====================================================
+def main():
+    if CSV_PATH.exists():
+        print(f"Lade existierende Daten aus CSV: {CSV_PATH}")
+        df = pd.read_csv(CSV_PATH)
+    else:
+        print("Erstelle neue Datenbank aus JSONs/NPZs...")
+        df = collect_data()
+        df.to_csv(CSV_PATH, index=False)
+        print(f"Datenbank gespeichert unter: {CSV_PATH}")
+
+    plot_master(df)
 
 if __name__ == "__main__":
-    data_df = collect_data()
-    plot_master(data_df)
-    print(f"Erfolg! Check den Ordner: {OUT_DIR}")
+    main()
