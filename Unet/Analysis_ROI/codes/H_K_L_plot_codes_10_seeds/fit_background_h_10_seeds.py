@@ -6,6 +6,7 @@ from scipy.optimize import curve_fit
 from pathlib import Path
 import matplotlib
 import os
+import re
 
 # =====================================================
 # 1. KONFIGURATION (Pfade & Serien analog zum K-Skript)
@@ -65,7 +66,9 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
 def process_combination(npz_path, s_id, cfg):
     data = np.load(npz_path)
     # Label-Logik analog zum K-Skript
-    full_label = npz_path.stem.replace("Eval_", "")
+    p_id = int(re.search(r"P(\d+)_", npz_path.stem).group(1))
+    suffix = re.search(r"a\d+\.\d+.*", npz_path.stem).group(0)
+    full_label = f"P{p_id:02d}_{suffix}"  # Rekonstruiert den sauberen Namen für Titel & Pfad
     
     idx = cfg["slice_idx"]
     imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
@@ -132,7 +135,7 @@ def process_combination(npz_path, s_id, cfg):
     series_dir.mkdir(parents=True, exist_ok=True)
     
     # Dateiname auf H geändert
-    save_p = series_dir / f"Analysis_H_{full_label}.png"
+    save_p = series_dir / f"Plot_H_P{p_id:02d}_{suffix}.png"
     fig.savefig(save_p, bbox_inches='tight')
     plt.close(fig)
     print(f" OK: H-Dir series_{s_id}/{save_p.name}")

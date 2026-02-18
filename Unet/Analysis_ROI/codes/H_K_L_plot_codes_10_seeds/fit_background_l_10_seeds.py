@@ -6,6 +6,7 @@ from scipy.optimize import curve_fit
 from pathlib import Path
 import matplotlib
 import os
+import re
 
 # =====================================================
 # 1. KONFIGURATION
@@ -59,7 +60,9 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
 # =====================================================
 def process_combination(npz_path, s_id, cfg):
     data = np.load(npz_path)
-    model_label = npz_path.stem.replace("Eval_", "") # Der volle Name für den Titel
+    p_id = int(re.search(r"P(\d+)_", npz_path.stem).group(1))
+    suffix = re.search(r"a\d+\.\d+.*", npz_path.stem).group(0)
+    full_label = f"P{p_id:02d}_{suffix}"  # Rekonstruiert den sauberen Namen für Titel & Pfad
     
     idx = cfg["slice_idx"]
     imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
@@ -91,7 +94,7 @@ def process_combination(npz_path, s_id, cfg):
         results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=150, gridspec_kw={'height_ratios': [1, 0.8, 1]})
-    fig.suptitle(f"Analysis: {model_label}", fontsize=16, fontweight='bold')
+    fig.suptitle(f"Analysis L-Dir: {full_label}", fontsize=16, fontweight='bold')
 
     p_l, p_h = cfg.get("vis_p", (0.5, 99.5))
     for i in range(3):
@@ -118,7 +121,7 @@ def process_combination(npz_path, s_id, cfg):
     series_dir = OUT_DIR / f"series_{s_id}"
     series_dir.mkdir(parents=True, exist_ok=True)
     
-    save_p = series_dir / f"Plot_{model_label}.png"
+    save_p = series_dir / f"Plot_L_P{p_id:02d}_{suffix}.png"
     fig.savefig(save_p, bbox_inches='tight')
     plt.close(fig)
 

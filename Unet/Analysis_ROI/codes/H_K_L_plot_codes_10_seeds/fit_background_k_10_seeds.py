@@ -6,6 +6,7 @@ from scipy.optimize import curve_fit
 from pathlib import Path
 import matplotlib
 import os
+import re
 
 # =====================================================
 # 1. KONFIGURATION (Pfade & Serien)
@@ -65,8 +66,9 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
 # =====================================================
 def process_combination(npz_path, s_id, cfg):
     data = np.load(npz_path)
-    # Extrahiere Label für Plot-Überschrift und Dateiname (Eval_P19_... -> P19_...)
-    full_label = npz_path.stem.replace("Eval_", "")
+    p_id = int(re.search(r"P(\d+)_", npz_path.stem).group(1))
+    suffix = re.search(r"a\d+\.\d+.*", npz_path.stem).group(0)
+    full_label = f"P{p_id:02d}_{suffix}"  # Rekonstruiert den sauberen Namen für Titel & Pfad
     
     idx = cfg["slice_idx"]
     imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
@@ -131,7 +133,7 @@ def process_combination(npz_path, s_id, cfg):
     series_dir = OUT_DIR / f"series_{s_id}"
     series_dir.mkdir(parents=True, exist_ok=True)
     
-    save_p = series_dir / f"Analysis_K_{full_label}.png"
+    save_p = series_dir / f"Plot_K_P{p_id:02d}_{suffix}.png"
     fig.savefig(save_p, bbox_inches='tight')
     plt.close(fig)
     print(f" OK: K-Dir series_{s_id}/{save_p.name}")
