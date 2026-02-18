@@ -34,17 +34,26 @@ for d in [SCRATCH_ROOT, TB_ROOT]:
 
 def generate_configs():
     configs = []
-    for a_idx in range(12):
-        for b_idx in range(13):
-            configs.append((round(a_idx / 12, 4), round(b_idx / 12, 4)))
-            if len(configs) == 42: break
-        if len(configs) == 42: break
+    # 1/6 Schritte für das Gitter
+    steps = [round(x, 4) for x in np.linspace(0, 1, 7)]
+    
+    # Generiere Punkte für Alpha 0.0 bis 0.8333 (6 Spalten * 7 Zeilen = 42 Punkte)
+    for a in steps[:-1]: 
+        for b in steps:
+            configs.append((a, b))
+            
+    # Füge exakt EINEN Punkt für Alpha 1.0 hinzu (Point 42)
     configs.append((1.0, 0.0))
     return configs
 
 ALL_CONFIGS = generate_configs()
 MY_POINT_IDX = args.point_idx
 MY_ALPHA, MY_BETA = ALL_CONFIGS[MY_POINT_IDX]
+
+# WICHTIG: Die Skip-Logik innerhalb deiner Seed-Schleife
+# Sie prüft, ob der Ordner ODER die Datei bereits existieren
+point_dir = SCRATCH_ROOT / f"Point_{MY_POINT_IDX}_a{MY_ALPHA}_b{MY_BETA}"
+
 
 SEEDS = range(42, 52) 
 DEPTH = 5
@@ -157,12 +166,12 @@ X_train_win, y_train_win = make_sliding_windows(lc_t, hc_t, 10, DEPTH)
 lc_v, hc_v = load_split(ORIGINAL_DATA_DIR / "validation_data.hdf5")
 X_val_win, y_val_win = make_sliding_windows(lc_v, hc_v, 10, DEPTH)
 
-point_dir = SCRATCH_ROOT / f"Point_{MY_POINT_IDX}_a{MY_ALPHA}_b{MY_BETA}"
+point_dir = SCRATCH_ROOT / f"Point_{MY_POINT_IDX:02d}_a{MY_ALPHA}_b{MY_BETA}"
 point_dir.mkdir(exist_ok=True)
 
 for current_seed in SEEDS:
-    RUN_NAME = f"P{MY_POINT_IDX}_a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{current_seed}"
-    if (point_dir / f"{RUN_NAME}.h5").exists() and (point_dir / f"{RUN_NAME}.json").exists(): continue
+    RUN_NAME = f"P{MY_POINT_IDX:02d}_a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{current_seed}"
+    if (point_dir / f"{RUN_NAME}.keras").exists() and (point_dir / f"{RUN_NAME}.json").exists(): continue
 
     random.seed(current_seed); np.random.seed(current_seed); tf.random.set_seed(current_seed)
     
@@ -180,7 +189,6 @@ for current_seed in SEEDS:
 
     status = {"best_psnr": -1.0, "drop_cnt": 0, "aborted": False, "reason": "none"}
     temp_csv = f"temp_{RUN_NAME}.csv"
-    best_model_path = point_dir / f"{RUN_NAME}.h5"
 
     def check_crash(epoch, logs):
         psnr = logs.get('val_psnr_center', 0)
@@ -195,10 +203,19 @@ for current_seed in SEEDS:
                 status["reason"] = "perf_collapse"
                 model.stop_training = True
 
+    best_model_file = point_dir / f"{RUN_NAME}.keras" # Nutze .keras statt .h5
+
     callbacks = [
         tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, verbose=1),
-        tf.keras.callbacks.ModelCheckpoint(filepath=str(best_model_path), monitor='val_loss', save_best_only=True),
+        # Korrigierter Checkpoint
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(best_model_file), 
+            monitor='val_loss', 
+            save_best_only=True, 
+            mode='min', 
+            verbose=1
+        ),
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True),
         tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
         tf.keras.callbacks.CSVLogger(temp_csv),
@@ -211,9 +228,16 @@ for current_seed in SEEDS:
     history = None
     try:
         history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=1)
+        if best_model_file.exists():
+            print(f"Lade beste Gewichte von {best_model_file} für Finalisierung...")
+            model.load_weights(str(best_model_file))
+        
     except Exception as e:
         status["aborted"] = True
         status["reason"] = f"crash_{str(e)[:40]}"
+        # Auch im Crash-Fall versuchen, die beste Datei zu retten:
+        if best_model_file.exists():
+            model.load_weights(str(best_model_file))
 
     if history is not None or status["aborted"]:
         f_psnr = float(history.history['val_psnr_center'][-1]) if history and hasattr(history, 'history') else 0.0
