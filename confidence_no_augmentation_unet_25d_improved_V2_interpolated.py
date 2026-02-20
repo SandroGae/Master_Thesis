@@ -142,15 +142,28 @@ def prepare_25d_input(x, y):
     idx = tf.shape(y)[0] // 2
     return x, y[idx]
 
-def normalize_and_scale_3d_per_slice(scale: float):
+def augment_and_normalize_3d_per_slice(scale_min, scale_max, p_flip=0.5):
     def map_volume(x, y):
+        # 1. ReLU (Sicherheit gegen negative Werte)
         x = tf.nn.relu(x)
         y = tf.nn.relu(y)
+
+        # 2. Horizontale Spiegelung (Spatial Augmentation)
+        # tf.reverse(..., [2]) spiegelt die Width-Achse im 4D Tensor (D, H, W, C)
+        if p_flip > 0:
+            flip = tf.random.uniform([], 0, 1) < p_flip
+            x = tf.cond(flip, lambda: tf.reverse(x, [2]), lambda: x)
+            y = tf.cond(flip, lambda: tf.reverse(y, [2]), lambda: y)
+
+        # 3. Summen-Normalisierung (Basis)
         sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
         sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
         x, y = x / sum_x, y / sum_y
-        scale_t = tf.constant(scale, dtype=tf.float32)
-        return x * scale_t, y * scale_t
+
+        # 4. Zufällige Skalierung (Intensity Augmentation)
+        scale = tf.random.uniform([], scale_min, scale_max)
+        return x * scale, y * scale
+        
     return map_volume
 
 
@@ -317,36 +330,42 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
     X_tr_win, y_tr_win = shuffle_initial(X_tr_win, y_tr_win, SEED)
     X_va_win, y_va_win = shuffle_initial(X_va_win, y_va_win, SEED)
 
-    model = unet_2d_stacked(input_shape=(192, 240, DEPTH))
+    model = unet_2d_stacked(input_shape=(192, 240, DEPTH), base_filters=BASEFILTERS)
     optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
 
-    model.compile(optimizer=optimizer, loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), metrics=[mae_center, mse_center, psnr_center, ssim_center])
+    model.compile(
+        optimizer=optimizer, 
+        loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
+        metrics=[mae_center, mse_center, psnr_center, ssim_center]
+    )
 
+    # Training Dataset mit Augmentierung
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr_win, y_tr_win))
-                .shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
-                .map(normalize_and_scale_3d_per_slice(10000.0), num_parallel_calls=AUTOTUNE)
-                .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE).prefetch(AUTOTUNE))
+                .shuffle(len(X_tr_win), seed=SEED) # Seed für Shuffle ist wichtig!
+                .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p_flip=0.5), num_parallel_calls=AUTOTUNE)
+                .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
+                .batch(BATCH_SIZE)
+                .prefetch(AUTOTUNE))
 
+    # Validierung (Konsistent ohne Zufall)
     val_ds = (tf.data.Dataset.from_tensor_slices((X_va_win, y_va_win))
-              .map(normalize_and_scale_3d_per_slice(10000.0), num_parallel_calls=AUTOTUNE)
-              .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
+              .map(augment_and_normalize_3d_per_slice(10000.0, 10000.0, p_flip=0.0), num_parallel_calls=AUTOTUNE)
+              .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
+              .cache() # Cache spart Zeit in den folgenden Epochen
+              .batch(BATCH_SIZE)
+              .prefetch(AUTOTUNE))
 
-    fold_callbacks = [
-        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
-        make_epoch_ckpt_callback(FOLD_NAME),
-        tf.keras.callbacks.CSVLogger(str(FOLD_DIR / f"{FOLD_NAME}.csv")),
-        *tb_callbacks(FOLD_DIR)
-    ]
-
+    # Training
     history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
 
+    # Metadaten sauber dokumentieren
     all_fold_scores.append(min(history.history['val_mae_center']))
     meta = make_meta_dict(FOLD_NAME, BATCH_SIZE, 100, optimizer, 5e-4, (192,240,DEPTH))
-    meta["scaling_factor"] = 10000.0
-    meta["augmentation"] = "none"
+    meta["scaling_factor"] = "random_5k_15k"
+    meta["augmentation"] = "horizontal_flip_p05" # Hier aktualisiert!
     meta["uncertainty_type"] = "aleatoric_laplace_and_epistemic_dropout"
+    
     finalize_run(model, history, FOLD_NAME, meta)
-
     for sample_x, sample_y in val_ds.take(1):
         save_uncertainty_analysis(model, sample_x, fold_id, FOLD_DIR, threshold=0.15)
 

@@ -214,7 +214,7 @@ for current_seed in SEEDS:
             monitor='val_loss', 
             save_best_only=True, 
             mode='min', 
-            verbose=1
+            verbose=2
         ),
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True),
         tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
@@ -227,7 +227,7 @@ for current_seed in SEEDS:
     
     history = None
     try:
-        history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=1)
+        history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
         if best_model_file.exists():
             print(f"Lade beste Gewichte von {best_model_file} für Finalisierung...")
             model.load_weights(str(best_model_file))
