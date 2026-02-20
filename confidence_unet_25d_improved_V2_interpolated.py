@@ -354,6 +354,22 @@ for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
               .cache() # Cache spart Zeit in den folgenden Epochen
               .batch(BATCH_SIZE)
               .prefetch(AUTOTUNE))
+    
+    fold_callbacks = [
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss", 
+            factor=0.5, 
+            patience=10, 
+            min_lr=1e-6, 
+            verbose=1
+        ),
+        # Speichert Checkpoints für jeden Fold separat
+        make_epoch_ckpt_callback(FOLD_NAME),
+        # Schreibt die CSV-Metriken in den Fold-Ordner
+        tf.keras.callbacks.CSVLogger(str(FOLD_DIR / f"{FOLD_NAME}.csv")),
+        # TensorBoard Logs für diesen Fold
+        *tb_callbacks(FOLD_DIR)
+    ]
 
     # Training
     history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=fold_callbacks, verbose=2)
