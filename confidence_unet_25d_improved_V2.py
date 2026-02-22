@@ -213,11 +213,18 @@ RUN_ID = datetime.now().strftime("%Y%m%d-%H%M%S")
 TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
 all_fold_scores = []
 
-kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
+# kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
 
-for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
+# Berechne einen festen Split (80/20)
+split_idx = int(0.8 * len(series_indices))
+manual_split = [(series_indices[:split_idx], series_indices[split_idx:])]
+
+# Kommentiere die originale Schleife aus und nutze die neue:
+# for fold, (train_idx, val_idx) in enumerate(kf.split(series_indices)):
+for fold, (train_idx, val_idx) in enumerate(manual_split): 
     fold_id = fold + 1
-    print(f"\n\n{'='*40}\nSTARTE FOLD {fold_id} / 5\n{'='*40}")
+    # Ab hier bleibt alles wie es ist, inklusive der Einrückung!
+    print(f"\n\n{'='*40}\nSTARTE SINGLE RUN (80/20 Split)\n{'='*40}")
     
     FOLD_NAME = f"{BASE_NAME}_fold{fold_id}_{RUN_ID}"
     FOLD_DIR = TB_ROOT / FOLD_NAME
