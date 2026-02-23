@@ -62,13 +62,15 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
         return None, None, None
 
 # =====================================================
-# 3. PROZESS-FUNKTION (Pfadlogik gefixt)
+# 3. PROZESS-FUNKTION (Visuelles Styling synchronisiert)
 # =====================================================
 def process_combination(npz_path, s_id, cfg):
     data = np.load(npz_path)
+    
+    # --- DATEINAMEN-LOGIK (DEINE ANPASSUNG BEIBEHALTEN) ---
     p_id = int(re.search(r"P(\d+)_", npz_path.stem).group(1))
     suffix = re.search(r"a\d+\.\d+.*", npz_path.stem).group(0)
-    full_label = f"P{p_id:02d}_{suffix}"  # Rekonstruiert den sauberen Namen für Titel & Pfad
+    full_label = f"P{p_id:02d}_{suffix}" 
     
     idx = cfg["slice_idx"]
     imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
@@ -103,37 +105,61 @@ def process_combination(npz_path, s_id, cfg):
         
         results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
 
+    # --- PLOTTING (VISUELLES STYLING EXAKT WIE REFERENZ) ---
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=150, gridspec_kw={'height_ratios': [1, 0.8, 1]})
-    fig.suptitle(f"Analysis: {full_label}", fontsize=16, fontweight='bold')
+    fig.suptitle(f"Analysis K-Dir: {full_label}", fontsize=16, fontweight='bold')
     
     p_low, p_high = cfg.get("vis_p", (0.5, 99.5))
 
     for i in range(3):
+        # ZEILE 0: Bilder + ROI Patches
         ax = axes[0, i]
         ax.imshow(vis_norm(imgs[i], p_low, p_high), cmap="gray_r")
         ax.set_title(TITLES[i], fontsize=14, fontweight='bold')
         roi_x = cfg["roi_x"]
         roi_w, roi_h = roi_x[1] - roi_x[0], ROI_Y[1] - ROI_Y[0]
+        
         ax.add_patch(patches.Rectangle((roi_x[0], ROI_Y[0]), roi_w, roi_h, lw=2, ec='blue', fc='none'))
         ax.add_patch(patches.Rectangle((roi_x[0], FIT_WINDOW[0]), roi_w, FIT_WINDOW[1]-FIT_WINDOW[0], lw=0, fc='green', alpha=0.2))
         ax.add_patch(patches.Rectangle((bg_l, ROI_Y[0]), bg_r-bg_l, roi_h, lw=1, ec='red', fc='red', alpha=0.15))
         ax.axis('off')
 
-        ax2 = axes[1, i]; ax2.plot(y_ax, results[i]['sig'], color='blue', alpha=0.7); ax2.plot(y_ax, results[i]['bg'], color='red', alpha=0.7)
+        # ZEILE 1: Raw Intensitäten + Legende
+        ax2 = axes[1, i]
+        ax2.plot(y_ax, results[i]['sig'], color='blue', alpha=0.7, label='Raw Sum')
+        ax2.plot(y_ax, results[i]['bg'], color='red', alpha=0.7, label='Background Sum')
         ax2.axvspan(FIT_WINDOW[0], FIT_WINDOW[1], color='green', alpha=0.15)
-        ax2.set_ylim(cfg.get("ylim_raw", (2.5, 7.0))); ax2.grid(True, alpha=0.3)
+        ax2.set_ylim(cfg.get("ylim_raw", (3.5, 6.5))) 
+        ax2.grid(True, alpha=0.3)
+        if i == 0: ax2.set_ylabel("Counts")
+        if i == 1: ax2.legend(loc='upper right', fontsize=8)
 
-        ax3 = axes[2, i]; ax3.errorbar(y_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', color='black', alpha=0.6)
+        # ZEILE 2: SRBR + Gauss Fit + Detaillierte Legende
+        ax3 = axes[2, i]
+        ax3.errorbar(y_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', markersize=5, color='black', alpha=0.6, label='SRBR')
+        ax3.axhline(0, color='gray', ls=':', alpha=0.5) # Nulllinie
+        
         if results[i]['fit'] is not None:
-            ax3.plot(y_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5)
-        ax3.set_xlim(FIT_WINDOW); ax3.set_ylim(cfg.get("ylim_sbr", (-0.2, 0.5))); ax3.grid(True, alpha=0.3)
+            p, e = results[i]['par'], results[i]['perr']
+            # Detaillierte Legende mit Amp, Peak, Sigma
+            l = (f"Gauss (Amp={p[0]:.2f}±{e[0]:.2f}, "
+                 f"Peak={p[1]:.1f}±{e[1]:.1f}, "
+                 f"σ={p[2]:.2f}±{e[2]:.2f})")
+            ax3.plot(y_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
+        
+        ax3.set_xlabel("Pixel Y")
+        ax3.grid(True, alpha=0.3)
+        ax3.legend(loc='upper right', fontsize=8)
+        ax3.set_xlim(FIT_WINDOW)
+        ax3.set_ylim(cfg.get("ylim_sbr", (-0.2, 0.5)))
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
+    # --- SPEICHER-LOGIK (DEINE VERSION BEIBEHALTEN) ---
     series_dir = OUT_DIR / f"series_{s_id}"
     series_dir.mkdir(parents=True, exist_ok=True)
-    
     save_p = series_dir / f"Plot_K_P{p_id:02d}_{suffix}.png"
+    
     fig.savefig(save_p, bbox_inches='tight')
     plt.close(fig)
     print(f" OK: K-Dir series_{s_id}/{save_p.name}")
