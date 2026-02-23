@@ -230,6 +230,9 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     FOLD_DIR = TB_ROOT / FOLD_NAME
     FOLD_DIR.mkdir(parents=True, exist_ok=True)
 
+    CKPT_DIR = FOLD_DIR / "checkpoints"
+    CKPT_DIR.mkdir(parents=True, exist_ok=True)
+
     def get_data_split(indices):
         X_l, y_l = [], []
         for i in indices:
@@ -280,10 +283,11 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
               .cache()
               .batch(BATCH_SIZE)
               .prefetch(AUTOTUNE))
+
     
     fold_callbacks = [
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=1),
-        make_epoch_ckpt_callback(FOLD_NAME),
+        make_epoch_ckpt_callback(FOLD_NAME, str(CKPT_DIR)),
         tf.keras.callbacks.CSVLogger(str(FOLD_DIR / f"{FOLD_NAME}.csv")),
         *tb_callbacks(FOLD_DIR)
     ]
