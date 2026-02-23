@@ -11,12 +11,12 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # =====================================================
-# 1. KONFIGURATION & PFADE
+# 1. KONFIGURATION & PFADE (Cluster-Struktur fixiert)
 # =====================================================
 BASE_DIR = Path.home() / "scratch/Evaluation_Pipeline"
 NPZ_DIR  = BASE_DIR / "Evaluation_results"
-# Pfad zu deinen Trainings-Logs (JSON), um Early-Stopping zu prüfen
-LOG_DIR  = Path.home() / "scratch/Confidence/logs" 
+# NEUER PFAD: Die Logs liegen in den Point-Unterordnern
+LOG_ROOT = Path.home() / "scratch/43_Models_10_Seeds" 
 OUT_DIR  = BASE_DIR / "Final_Heatmaps"
 CSV_PATH = OUT_DIR / "Full_Evaluation_Results.csv"
 
@@ -24,84 +24,93 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # 7x7 Raster Definition
 STEPS = [0.0, 0.1667, 0.3333, 0.5, 0.6667, 0.8333, 1.0]
-
-# Wir nehmen die L-Richtung Parameter als Referenz für den Fit
 FIT_WINDOW = (140, 240) 
 
 # =====================================================
-# 2. HILFSFUNKTIONEN
+# 2. HILFSFUNKTIONEN & LOG-CACHING
 # =====================================================
+
+# Wir erstellen einen Cache, um JSON-Dateien sofort zu finden
+print(">>> Scanne Log-Verzeichnis (dies kann einen Moment dauern)...")
+LOG_CACHE = {}
+for json_file in LOG_ROOT.rglob("*_02_meta.json"):
+    # Extrahiere ID wie 'P00_a0.0000_b0.0000_seed44'
+    match = re.search(r'(P\d+_a\d+\.\d+_b\d+\.\d+_seed\d+)', json_file.name)
+    if match:
+        LOG_CACHE[match.group(1)] = json_file
+
+print(f">>> {len(LOG_CACHE)} Trainings-Logs gefunden und indiziert.")
+
 def gaussian(x, A, mu, sigma):
     return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 def perform_area_fit(x, y):
-    """Extrahiert Amplitude und Sigma via Gauss-Fit"""
     p0 = [np.max(y), x[np.argmax(y)], 5.0]
     bounds = ([0, x[0], 0.5], [np.inf, x[-1], 20.0])
     try:
         popt, _ = curve_fit(gaussian, x, y, p0=p0, bounds=bounds, maxfev=2000)
-        # Area = Amplitude * Sigma * sqrt(2*pi) -> sqrt(2pi) ist konstant, weglassen für Ratio
         return {"amp": popt[0], "mu": popt[1], "sigma": popt[2], "area": popt[0] * popt[2]}
     except:
         return None
 
-def check_training_status(model_id):
-    """Prüft ob Modell via Early Stopping (True) oder Max Epochs/Crash (False) endete"""
-    # Suche das passende JSON log
-    log_files = list(LOG_DIR.glob(f"*{model_id}*.json"))
-    if not log_files: return False # Im Zweifel als 'nicht sauber' markieren
+def check_training_status(model_id_str):
+    """Prüft via LOG_CACHE, ob Early Stopping gegriffen hat"""
+    # model_id_str sieht aus wie 'P12_a0.1667_b0.8333_seed50'
+    log_file = LOG_CACHE.get(model_id_str)
+    if not log_file:
+        return False 
     
     try:
-        with open(log_files[0], 'r') as f:
+        with open(log_file, 'r') as f:
             log_data = json.load(f)
-            # Logik: Wenn gestoppte Epoche < Max Epochen -> Early Stopping Erfolg
+            # Early Stopping Check: Aktuelle Epoche < Max Epochen
             return log_data.get('stopped_epoch', 999) < log_data.get('epochs', 1000)
     except:
         return False
 
 # =====================================================
-# 3. DATEN-PROZESSING (CSV GENERIERUNG)
+# 3. DATEN-PROZESSING
 # =====================================================
 def run_processing():
     if CSV_PATH.exists():
-        print(f">>> CSV existiert bereits: {CSV_PATH}. Überspringe Berechnung.")
+        print(f">>> CSV existiert bereits: {CSV_PATH}. Lade vorhandene Daten.")
         return pd.read_csv(CSV_PATH)
 
-    all_files = list(NPZ_DIR.glob("*.npz"))
+    all_files = sorted(list(NPZ_DIR.glob("*.npz")))
     print(f">>> Starte Analyse von {len(all_files)} Dateien...")
     
     results = []
-    
     for i, path in enumerate(all_files):
-        # Extrahiere Metadaten aus Dateiname
-        match = re.search(r'P(\d+)_a(\d+\.\d+)_b(\d+\.\d+)_seed(\d+)_S(\d+)', path.stem)
+        # Regex angepasst auf: Eval_P12_a0.1667_b0.8333_seed50_S11.npz
+        match = re.search(r'Eval_(P\d+)_a(\d+\.\d+)_b(\d+\.\d+)_seed(\d+)_S(\d+)', path.stem)
         if not match: continue
         
-        p_idx, alpha, beta, seed, s_id = match.groups()
-        model_uid = f"a{alpha}_b{beta}_seed{seed}" # ID um das Training-Log zu finden
+        p_str, alpha, beta, seed, s_id = match.groups()
+        # Diese ID muss exakt so im LOG_CACHE sein
+        model_uid = f"{p_str}_a{alpha}_b{beta}_seed{seed}"
 
-        data = np.load(path)
-        # Wir nutzen das Profil in L-Richtung (X-Achse) für die Fläche
-        # Slice Index 15 als Standard aus deinem L-Skript
-        img_pr = data['pred'][15]
-        img_gt = data['gt'][15]
-        
-        # Profile extrahieren (ROI y: 102-117)
-        prof_pr = np.sum(img_pr[102:117, :], axis=0)
-        prof_gt = np.sum(img_gt[102:117, :], axis=0)
-        x_ax = np.arange(240)
+        try:
+            data = np.load(path)
+            # L-Richtung Profil
+            img_pr = data['pred'][15]
+            img_gt = data['gt'][15]
+            prof_pr = np.sum(img_pr[102:117, :], axis=0)
+            prof_gt = np.sum(img_gt[102:117, :], axis=0)
+            x_ax = np.arange(240)
 
-        fit_pr = perform_area_fit(x_ax[FIT_WINDOW[0]:FIT_WINDOW[1]], prof_pr[FIT_WINDOW[0]:FIT_WINDOW[1]])
-        fit_gt = perform_area_fit(x_ax[FIT_WINDOW[0]:FIT_WINDOW[1]], prof_gt[FIT_WINDOW[0]:FIT_WINDOW[1]])
+            fit_pr = perform_area_fit(x_ax[FIT_WINDOW[0]:FIT_WINDOW[1]], prof_pr[FIT_WINDOW[0]:FIT_WINDOW[1]])
+            fit_gt = perform_area_fit(x_ax[FIT_WINDOW[0]:FIT_WINDOW[1]], prof_gt[FIT_WINDOW[0]:FIT_WINDOW[1]])
 
-        if fit_pr and fit_gt:
-            is_clean = check_training_status(model_uid)
-            results.append({
-                "Alpha": float(alpha), "Beta": float(beta), "Seed": int(seed), "Series": int(s_id),
-                "AreaRatio": fit_pr['area'] / fit_gt['area'], # GT ist hier implizit normiert
-                "PosShift": abs(fit_pr['mu'] - fit_gt['mu']),
-                "IsClean": is_clean
-            })
+            if fit_pr and fit_gt:
+                is_clean = check_training_status(model_uid)
+                results.append({
+                    "Alpha": float(alpha), "Beta": float(beta), "Seed": int(seed), "Series": int(s_id),
+                    "AreaRatio": fit_pr['area'] / fit_gt['area'],
+                    "PosShift": abs(fit_pr['mu'] - fit_gt['mu']),
+                    "IsClean": is_clean
+                })
+        except Exception as e:
+            print(f"Fehler bei {path.name}: {e}")
         
         if i % 200 == 0: print(f"Fortschritt: {i}/{len(all_files)}")
 
@@ -113,41 +122,9 @@ def run_processing():
     df.to_csv(CSV_PATH, index=False)
     return df
 
-# =====================================================
-# 4. PLOTTING (HEATMAPS)
-# =====================================================
-def plot_heatmaps(df):
-    fig, axes = plt.subplots(1, 3, figsize=(24, 7))
-    
-    # --- PLOT 1: Area All (Alle 100 NPZs) ---
-    pivot_all = df.groupby(['Alpha', 'Beta'])['AreaRatio'].mean().unstack()
-    sns.heatmap(pivot_all, annot=True, fmt=".2f", cmap="RdYlGn", ax=axes[0])
-    axes[0].set_title("1. Avg Area Ratio (All Runs)\nGT Normalized to 1.0")
-
-    # --- PLOT 2: Area Clean (Only Early Stopping) + Errorbars via STD ---
-    clean_df = df[df['IsClean'] == True]
-    pivot_clean = clean_df.groupby(['Alpha', 'Beta'])['AreaRatio'].mean().unstack()
-    
-    # Berechnung der "Unzuverlässigkeit": 1 - (Anzahl Clean / Soll-Anzahl)
-    # Je weniger sauber, desto dunkler die Markierung/größer der theoretische Fehler
-    count_ratio = df.groupby(['Alpha', 'Beta'])['IsClean'].mean().unstack()
-    
-    sns.heatmap(pivot_clean, annot=True, fmt=".2f", cmap="RdYlGn", ax=axes[1])
-    # Visueller Hinweis auf unsaubere Runs (Dots werden kleiner bei Ausfall)
-    axes[1].set_title("2. Avg Area Ratio (Early Stopping Only)\nValues: Clean Runs Mean")
-
-    # --- PLOT 3: Positional Shift (Clean Only) ---
-    pivot_shift = clean_df.groupby(['Alpha', 'Beta'])['PosShift'].mean().unstack()
-    sns.heatmap(pivot_shift, annot=True, fmt=".2f", cmap="Reds_r", ax=axes[2])
-    axes[2].set_title("3. Avg Positional Shift (Clean Only)\nLower is Better (Pixels)")
-
-    plt.tight_layout()
-    plt.savefig(OUT_DIR / "Final_Evaluation_Heatmaps.png", dpi=150)
-    print(f">>> Plots gespeichert in {OUT_DIR}")
 
 # =====================================================
 # MAIN
 # =====================================================
 if __name__ == "__main__":
     data = run_processing()
-    plot_heatmaps(data)
