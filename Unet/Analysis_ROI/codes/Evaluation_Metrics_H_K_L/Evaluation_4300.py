@@ -107,48 +107,5 @@ def run_processing():
     df.to_csv(CSV_PATH, index=False)
     return df
 
-# =====================================================
-# 4. PLOTTING (HEATMAPS)
-# =====================================================
-def plot_heatmaps(df):
-    fig, axes = plt.subplots(1, 3, figsize=(26, 8))
-    
-    # 1. Plot: Area Ratio (Alle)
-    pivot_all = df.groupby(['Alpha', 'Beta'])['AreaRatio'].mean().unstack()
-    sns.heatmap(pivot_all, annot=True, fmt=".2f", cmap="RdYlGn", ax=axes[0], cbar_kws={'label': 'Ratio (PR/GT)'})
-    axes[0].set_title("1. Avg Area Ratio (All Runs)\n(Normalized to GT=1.0)", fontweight='bold')
-
-    # 2. Plot: Area Ratio (Nur Clean) + Info wie viele Seeds
-    clean_df = df[df['IsClean'] == True]
-    if not clean_df.empty:
-        # Mittelwerte für Heatmap
-        pivot_clean = clean_df.groupby(['Alpha', 'Beta'])['AreaRatio'].mean().unstack()
-        # Anzahl der sauberen SEEDS pro Punkt (jede Serie zählt als 1, also durch 10 teilen)
-        counts = (df.groupby(['Alpha', 'Beta'])['IsClean'].sum() / 10).unstack().astype(int)
-        
-        # Kombiniere Wert und Seed-Anzahl für die Annotation
-        annot_matrix = pivot_clean.copy().astype(str)
-        for r in range(len(STEPS)):
-            for c in range(len(STEPS)):
-                val = pivot_clean.iloc[r, c]
-                n = counts.iloc[r, c]
-                annot_matrix.iloc[r, c] = f"{val:.2f}\n({n}/10)"
-
-        sns.heatmap(pivot_clean, annot=annot_matrix, fmt="", cmap="RdYlGn", ax=axes[1])
-        axes[1].set_title("2. Avg Area Ratio (Early Stopping Only)\nValues: Mean (Clean Seeds/Total)", fontweight='bold')
-    else:
-        axes[1].text(0.5, 0.5, "Keine sauberen Runs gefunden", ha='center')
-
-    # 3. Plot: Positional Shift (Nur Clean)
-    if not clean_df.empty:
-        pivot_shift = clean_df.groupby(['Alpha', 'Beta'])['PosShift'].mean().unstack()
-        sns.heatmap(pivot_shift, annot=True, fmt=".2f", cmap="Reds_r", ax=axes[2])
-        axes[2].set_title("3. Avg Positional Shift (Early Stopping Only)\n(Lower is Better, Pixels)", fontweight='bold')
-
-    plt.tight_layout()
-    plt.savefig(OUT_DIR / "Final_Evaluation_Heatmaps_v2.png", dpi=200)
-    print(f">>> Heatmaps gespeichert in: {OUT_DIR}")
-
 if __name__ == "__main__":
     data = run_processing()
-    plot_heatmaps(data)
