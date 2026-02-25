@@ -301,11 +301,6 @@ def lr_warmup_scheduler(epoch, lr):
 # =====================================================
 print(f"--- STARTE TRAINING PUNKT {MY_POINT_IDX} (a={MY_ALPHA}, b={MY_BETA}) ---")
 
-lc_t, hc_t = load_split(ORIGINAL_DATA_DIR / "training_data.hdf5")
-X_train_win, y_train_win = make_sliding_windows(lc_t, hc_t, 10, DEPTH)
-lc_v, hc_v = load_split(ORIGINAL_DATA_DIR / "validation_data.hdf5")
-X_val_win, y_val_win = make_sliding_windows(lc_v, hc_v, 10, DEPTH)
-
 point_dir = SCRATCH_ROOT / f"Point_{MY_POINT_IDX:02d}_a{MY_ALPHA}_b{MY_BETA}"
 point_dir.mkdir(exist_ok=True)
 
@@ -315,6 +310,11 @@ point_dir.mkdir(exist_ok=True)
 if not acquire_permanent_point_claim(point_dir):
     print(f"PUNKT {MY_POINT_IDX:02d} ist bereits dauerhaft geclaimt. Dieser Job beendet sich.")
     sys.exit(0)
+
+lc_t, hc_t = load_split(ORIGINAL_DATA_DIR / "training_data.hdf5")
+X_train_win, y_train_win = make_sliding_windows(lc_t, hc_t, 10, DEPTH)
+lc_v, hc_v = load_split(ORIGINAL_DATA_DIR / "validation_data.hdf5")
+X_val_win, y_val_win = make_sliding_windows(lc_v, hc_v, 10, DEPTH)
 
 
 for current_seed in SEEDS:
