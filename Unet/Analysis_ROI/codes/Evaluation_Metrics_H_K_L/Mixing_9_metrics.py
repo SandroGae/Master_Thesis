@@ -1,95 +1,107 @@
-import pandas as pd
+from pathlib import Path
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
-from pathlib import Path
 import warnings
 
 warnings.filterwarnings("ignore")
 
-# =====================================================
-# 1. SETUP
-# =====================================================
-ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
-CSV_FILE = ROOT_DIR / "Unet/Analysis_ROI/codes/Evaluation_Metrics_H_K_L/CDW_Hyperparameter_Results.csv"
-OUT_DIR  = ROOT_DIR / "Unet/Analysis_ROI/codes/Evaluation_Metrics_H_K_L/Hyperparameter_Topologies"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+# --------------------------------------------------
+# 1. Pfade & Setup
+# --------------------------------------------------
+SCRIPT_DIR = Path(__file__).resolve().parent
+CSV_FILE = SCRIPT_DIR.parent / "Evaluation_Metrics_H_K_L" / "Full_Evaluation_Results.csv"
+OUT_FILE = SCRIPT_DIR / "hyperparameter_heatmaps_refined.png"
 
+# --------------------------------------------------
+# 2. Daten laden & Aufbereiten
+# --------------------------------------------------
 df = pd.read_csv(CSV_FILE)
 
-# =====================================================
-# 2. BERECHNUNG & NORMIERUNG
-# =====================================================
-# A. Neue Metrik: Detection Power
-df['DetectionPower'] = df['SBRGain'] * df['AreaRatio']
+# Numerische Konvertierung
+for col in ["Alpha", "Beta", "AreaRatio", "PosShift"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# B. Mittelung über H, K, L
-model_avg = df.groupby(['Alpha', 'Beta']).agg({
-    'PosShift': 'mean',
-    'DetectionPower': 'mean'
-}).reset_index()
+df["Alpha"] = df["Alpha"].round(4)
+df["Beta"] = df["Beta"].round(4)
+df["PosShiftAbs"] = df["PosShift"].abs()
 
-# C. Normierung für fairen Vergleich (0 = Schlecht, 1 = Bestmöglich)
-# Für Power: Höher ist besser
-p_min, p_max = model_avg['DetectionPower'].min(), model_avg['DetectionPower'].max()
-model_avg['Power_Norm'] = (model_avg['DetectionPower'] - p_min) / (p_max - p_min)
+# Einzigartige Achsenwerte
+alpha_vals = np.sort(df["Alpha"].dropna().unique())
+beta_vals  = np.sort(df["Beta"].dropna().unique())
 
-# Für Shift: Niedriger ist besser -> wir invertieren, damit 1 = "kein Shift"
-s_min, s_max = model_avg['PosShift'].min(), model_avg['PosShift'].max()
-model_avg['Shift_Norm'] = 1.0 - ((model_avg['PosShift'] - s_min) / (s_max - s_min))
+# --- NEU: Daten-Kopie für Alpha = 1.0 ---
+# Da bei Alpha=1 Beta keinen Einfluss hat, kopieren wir den Punkt (1,0) auf alle Beta-Werte bei Alpha=1
+ref_a1_b0 = df[(df["Alpha"] == 1.0) & (df["Beta"] == 0.0)]
+if not ref_a1_b0.empty:
+    additionals = []
+    for b in beta_vals:
+        if b == 0.0: continue
+        new_rows = ref_a1_b0.copy()
+        new_rows["Beta"] = b
+        additionals.append(new_rows)
+    df = pd.concat([df] + additionals, ignore_index=True)
 
-# D. Kombinierter Score (50/50 gewichtet)
-model_avg['Trigger_Reliability'] = (model_avg['Power_Norm'] + model_avg['Shift_Norm']) / 2
+# --------------------------------------------------
+# 3. Plotting Funktion (Visu-Match)
+# --------------------------------------------------
+def plot_refined_heatmaps(data):
+    fig, axes = plt.subplots(2, 2, figsize=(15, 13), dpi=150)
+    plt.subplots_adjust(wspace=0.3, hspace=0.3)
 
-# =====================================================
-# 3. PLOTTING (1x2 Heatmap Layout)
-# =====================================================
-def plot_trigger_analysis(data):
-    # Wir plotten die Originalwerte, nutzen aber RdYlGn für die Bewertung
-    metrics = [
-        ('PosShift', 'RdYlGn_r', 'Precision: Avg Pos Shift (Lower = Green)'),
-        ('DetectionPower', 'RdYlGn', 'Visibility: Detection Power (Higher = Green)')
-    ]
-    
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7), dpi=150)
-    plt.subplots_adjust(wspace=0.25)
-
+    # Meshgrid für die glatte Interpolation (100x100)
     xi = np.linspace(0, 1, 100)
     yi = np.linspace(0, 1, 100)
     X, Y = np.meshgrid(xi, yi)
 
-    for i, (m_col, cmap, m_title) in enumerate(metrics):
-        ax = axes[i]
+    # Konfiguration der 4 Subplots
+    # (Metrik-Key, df_filter, colormap, Titel, Colorbar-Label)
+    plot_configs = [
+        ("AreaRatio", data, 'RdYlGn', "Area Ratio: All Runs", "Mean AreaRatio"),
+        ("AreaRatio", data[data["IsClean"]==True], 'RdYlGn', "Area Ratio: Clean Seeds", "Mean AreaRatio"),
+        ("PosShiftAbs", data, 'RdYlGn_r', "Peak Shift: All Runs", "Avg |Δμ|"),
+        ("PosShiftAbs", data[data["IsClean"]==True], 'RdYlGn_r', "Peak Shift: Clean Seeds", "Avg |Δμ|")
+    ]
+
+    for i, (m_col, d_source, cmap, title, cb_label) in enumerate(plot_configs):
+        ax = axes[i // 2, i % 2]
         
-        # Interpolation der Topologie
-        Z = griddata((data['Alpha'], data['Beta']), data[m_col], (X, Y), method='cubic')
+        # Aggregation auf Mittelwerte pro Hyperparameter-Punkt
+        avg_data = d_source.groupby(['Alpha', 'Beta'])[m_col].mean().reset_index()
         
-        # Plot
+        # Interpolation (Cubic für den glatten Look)
+        Z = griddata((avg_data['Alpha'], avg_data['Beta']), avg_data[m_col], (X, Y), method='cubic')
+        
+        # Hintergrund-Farbe
         cp = ax.contourf(X, Y, Z, levels=50, cmap=cmap)
         cb = fig.colorbar(cp, ax=ax)
-        cb.set_label(m_col, fontweight='bold')
+        cb.set_label(cb_label, fontweight='bold')
         
+        # Dezente Konturlinien einzeichnen
         ax.contour(X, Y, Z, levels=12, colors='black', alpha=0.1)
-        ax.scatter(data['Alpha'], data['Beta'], c='white', edgecolors='black', s=30, alpha=0.7)
         
-        # Achsenbeschriftung
-        ax.set_title(m_title, fontsize=13, fontweight='bold')
-        ax.set_xlabel(r"$\alpha$ (alpha * SSIM)", fontsize=11)
-        if i == 0:
-            ax.set_ylabel(r"$\beta$ (beta * MSE + (1 - beta) * MAE)", fontsize=11)
+        # Die ursprünglichen 49 Messpunkte einzeichnen (Weiß mit schwarzem Rand)
+        ax.scatter(avg_data['Alpha'], avg_data['Beta'], c='white', edgecolors='black', s=25, alpha=0.8, zorder=5)
+        
+        # Styling & Achsen
+        ax.set_title(title, fontsize=13, fontweight='bold')
+        ax.set_xlabel(r"$\alpha$ (SSIM weight)", fontsize=11)
+        ax.set_ylabel(r"$\beta$ (MSE vs MAE)", fontsize=11)
+        
+        # Achsen-Ticks exakt auf die 7x7 Werte setzen
+        ax.set_xticks(alpha_vals)
+        ax.set_yticks(beta_vals)
+        ax.set_xticklabels([f"{v:.2f}" for v in alpha_vals], rotation=45)
+        ax.set_yticklabels([f"{v:.2f}" for v in beta_vals])
+        ax.set_aspect("equal")
 
-    plt.suptitle("Trigger Optimization Strategy: Precision vs. Detection Strength", 
-                 fontsize=16, fontweight='bold', y=1.02)
+    plt.suptitle("Hyperparameter Topology: Comparison of All vs. Clean Runs", 
+                 fontsize=18, fontweight='bold', y=0.96)
     
-    save_path = OUT_DIR / "Heatmap_Dual_Trigger_Analysis.png"
-    plt.savefig(save_path, bbox_inches='tight')
+    plt.savefig(OUT_FILE, bbox_inches='tight')
     plt.show()
 
-# =====================================================
-# 4. START & RANKING AUSGABE
-# =====================================================
-plot_trigger_analysis(model_avg)
-
-print("\nTOP 5 MODELLE FÜR SMART SAMPLING (Balanced Score):")
-top_models = model_avg.sort_values('Trigger_Reliability', ascending=False).head(5)
-print(top_models[['Alpha', 'Beta', 'PosShift', 'DetectionPower', 'Trigger_Reliability']].to_string(index=False))
+# Start
+plot_refined_heatmaps(df)
+print(f"Heatmap erfolgreich erstellt: {OUT_FILE}")
