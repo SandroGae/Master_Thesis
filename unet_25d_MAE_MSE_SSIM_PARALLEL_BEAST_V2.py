@@ -157,6 +157,37 @@ def read_state_file(state_file: Path):
             return json.load(f)
     except Exception:
         return None
+    
+def acquire_permanent_point_claim(point_dir: Path) -> bool:
+    """
+    Dauerhafte Punkt-Sperre (Claim), wird NIE automatisch geloescht.
+    Verhindert, dass ein zweiter Job denselben Punkt jemals bearbeitet.
+    """
+    claim_file = point_dir / "__POINT_CLAIM.json"
+    now = time.time()
+
+    try:
+        fd = os.open(str(claim_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            json.dump(
+                {
+                    "claimed_at_unix": now,
+                    "claimed_at_iso": datetime.now().isoformat(timespec="seconds"),
+                    "host": socket.gethostname(),
+                    "pid": os.getpid(),
+                    "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+                    "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID"),
+                    "point_idx": MY_POINT_IDX,
+                    "alpha": MY_ALPHA,
+                    "beta": MY_BETA,
+                    "note": "Permanent point claim. Delete manually only if you intentionally want to retrain this point."
+                },
+                f,
+                indent=2,
+            )
+        return True
+    except FileExistsError:
+        return False
 
 
 # =====================================================
@@ -277,6 +308,14 @@ X_val_win, y_val_win = make_sliding_windows(lc_v, hc_v, 10, DEPTH)
 
 point_dir = SCRATCH_ROOT / f"Point_{MY_POINT_IDX:02d}_a{MY_ALPHA}_b{MY_BETA}"
 point_dir.mkdir(exist_ok=True)
+
+# =====================================================
+# PERMANENTE PUNKT-SPERRE (HARTE TRENNUNG PRO PUNKT)
+# =====================================================
+if not acquire_permanent_point_claim(point_dir):
+    print(f"PUNKT {MY_POINT_IDX:02d} ist bereits dauerhaft geclaimt. Dieser Job beendet sich.")
+    sys.exit(0)
+
 
 for current_seed in SEEDS:
     RUN_NAME = f"P{MY_POINT_IDX:02d}_a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{current_seed}"
