@@ -216,9 +216,6 @@ def mse_clipped(y_true, y_pred):
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.math.squared_difference(y_true, y_pred))
-    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
-    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
-    return tf.reduce_mean(tf.math.squared_difference(y_true, y_pred))
 
 def psnr_clipped(y_true, y_pred):
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)

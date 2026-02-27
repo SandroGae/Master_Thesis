@@ -10,37 +10,35 @@ import matplotlib
 # 1. GLOBALER SETUP-MODUS
 # =====================================================
 
-# Hier auf dein neues Modell setzen
 MODE = "TEST_BEST" 
 
 ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 
-# Konfiguration für das neue "Best"-Modell
 if MODE == "TEST_BEST":
-    print(">>> Modus: TEST_BEST (Analyse des Improved_V2 Modells)")
+    print(">>> Modus: TEST_BEST (K-Profil Vergleich...)")
     MODELS = {
-        "Improved_V2_Best": "unet_25d_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20260227-112959_loss0.0521_val0.0585.keras"
+    # Dein neues Beast-Modell (gerade heruntergeladen)
+    "A100_Beast_P00": "A100_Beast_P00_seed42.keras",
     }
-    # Pfad, in dem deine neuen .npz Dateien liegen (aus fit_inference_TEST.py)
     IN_DIR  = ROOT_DIR / "Unet" / "Analysis_ROI" / "Predictions_Raw"
-    OUT_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "H_K_L_Plots" / "Analysis_Improved_V2_TEST"
+    OUT_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "H_K_L_Plots" / "TEST_ANALYSIS_L"
 else:
-    # (Andere Modi bleiben hier optional erhalten...)
+    # Fallback für andere Modi
     MODELS = {"P0_Seed43": "..."}
     IN_DIR  = ROOT_DIR / "Unet/Analysis_ROI/Predictions_Raw"
     OUT_DIR = ROOT_DIR / "Unet/Analysis_ROI/H_K_L_Plots/Analysis_Old"
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- SERIEN CONFIGURATION (Bleibt identisch) ---
+# --- SERIEN CONFIGURATION (y_lim_raw nach deinen Vorgaben angepasst) ---
 SERIES_CONFIG = {
-    5:  {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
-    11: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (100, 119), "bg_gap": 5, "bg_h": 10, "fit_window": (43, 143),  "y_lim_raw": (3.0, 8.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
-    12: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (24, 124),  "y_lim_raw": (2.5, 4.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
-    15: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (98, 198),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
-    16: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (76, 176),  "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
-    21: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (101, 118), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (3.0, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.5)},
-    22: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (134, 234), "y_lim_raw": (2.5, 6.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
+    5:  {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
+    11: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (100, 119), "bg_gap": 5, "bg_h": 10, "fit_window": (43, 143),  "y_lim_raw": (3.0, 8.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
+    12: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (24, 124),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
+    15: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (98, 198),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
+    16: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (76, 176),  "y_lim_raw": (2.5, 7.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
+    21: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (101, 118), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (3.0, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.5)},
+    22: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (134, 234), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
     29: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (20, 120),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 99.0)},
     35: {"slice_idx": 24, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (64, 164),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
     50: {"slice_idx": 13, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 10, "bg_h": 10, "fit_window": (52, 152), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
@@ -50,7 +48,7 @@ FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
 TITLES     = ["Low Count", "Prediction", "Ground Truth"]
 
 # =====================================================
-# 2. HILFSFUNKTIONEN (Gauß-Fit & Vis-Norm)
+# 2. HILFSFUNKTIONEN
 # =====================================================
 def gaussian(x, A, mu, sigma):
     return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
@@ -78,7 +76,7 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
 # 3. PROZESS-FUNKTION
 # =====================================================
 def process_combination(model_id, s_id, cfg):
-    # Logik: Anpassung an das neue Dateiformat "Pred_Improved_V2_Best_S5.npz"
+    # Logik: Anpassung an das Dateiformat deiner neuen Inferenz
     if MODE == "TEST_BEST":
         path = IN_DIR / f"Pred_{model_id}_S{s_id}.npz"
     else:
@@ -121,29 +119,42 @@ def process_combination(model_id, s_id, cfg):
     # --- PLOTTING ---
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=150, gridspec_kw={'height_ratios': [1, 0.8, 1]})
     p_l, p_h = cfg.get("vis_p", (0.5, 99.5))
+    
     for i in range(3):
+        # 1. Bilder mit ROI und grünem FIT-Fenster
         ax = axes[0, i]
         ax.imshow(vis_norm(imgs[i], p_l, p_h), cmap="gray_r")
         ax.set_title(TITLES[i], fontsize=14, fontweight='bold')
         roi_w = rx[1]-rx[0]; roi_h = ry[1]-ry[0]
         ax.add_patch(patches.Rectangle((rx[0], ry[0]), roi_w, roi_h, lw=2, ec='blue', fc='none'))
-        ax.add_patch(patches.Rectangle((rx[0], r1_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.2))
-        ax.add_patch(patches.Rectangle((rx[0], r2_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.2))
+        ax.add_patch(patches.Rectangle((rx[0], r1_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.15))
+        ax.add_patch(patches.Rectangle((rx[0], r2_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.15))
+        
+        # --- GRÜNES FIT-FENSTER IM BILD ---
+        f_w = cfg["fit_window"]
+        ax.add_patch(patches.Rectangle((f_w[0], ry[0]), f_w[1]-f_w[0], roi_h, lw=0, fc='green', alpha=0.15))
         ax.axis('off')
 
+        # 2. Raw Profile mit grünem FIT-Fenster
         ax2 = axes[1, i]
-        ax2.plot(x_ax, results[i]['sig'], color='blue', alpha=0.7)
-        ax2.plot(x_ax, results[i]['bg'], color='red', alpha=0.7)
+        ax2.plot(x_ax, results[i]['sig'], color='blue', alpha=0.7, label='Signal')
+        ax2.plot(x_ax, results[i]['bg'], color='red', alpha=0.7, label='BG')
+        
+        # --- GRÜNES FIT-FENSTER IM PROFIL (axvspan) ---
+        ax2.axvspan(f_w[0], f_w[1], color='green', alpha=0.1)
         ax2.set_ylim(cfg["y_lim_raw"]); ax2.grid(True, alpha=0.3)
+        if i == 0: ax2.set_ylabel("Counts")
 
+        # 3. SBR Plots
         ax3 = axes[2, i]
-        ax3.errorbar(x_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', color='black', alpha=0.6)
+        ax3.errorbar(x_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', color='black', alpha=0.6, label='SRBR')
         if results[i]['fit'] is not None:
             p, e = results[i]['par'], results[i]['perr']
-            l = f"Amp={p[0]:.2f}, Peak={p[1]:.1f}, sig={p[2]:.2f}"
+            l = (f"Gauss (Amp={p[0]:.2f}$\pm${e[0]:.2f}, Peak={p[1]:.1f}$\pm${e[1]:.1f}, $\sigma$={p[2]:.2f})")
             ax3.plot(x_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
-            ax3.legend(fontsize=8)
-        ax3.set_xlim(cfg["fit_window"]); ax3.set_ylim(cfg["y_lim_sbr"]); ax3.grid(True, alpha=0.3)
+            ax3.legend(fontsize=8, loc='upper right')
+        ax3.set_xlim(f_w); ax3.set_ylim(cfg["y_lim_sbr"]); ax3.grid(True, alpha=0.3)
+        if i == 0: ax3.set_ylabel("SBR")
 
     plt.tight_layout()
     save_p = OUT_DIR / f"Serie_{s_id}" / f"Analysis_L_{model_id}_S{s_id}.png"
@@ -157,7 +168,7 @@ def process_combination(model_id, s_id, cfg):
 def main():
     matplotlib.use("Agg")
     for chosen_name in MODELS.keys():
-        print(f"Processing {chosen_name}...")
+        print(f"Processing Model: {chosen_name}...")
         for s_id, cfg in sorted(SERIES_CONFIG.items()):
             process_combination(chosen_name, s_id, cfg)
 

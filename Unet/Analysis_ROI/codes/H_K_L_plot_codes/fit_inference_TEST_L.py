@@ -15,9 +15,10 @@ MODEL_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "KERAS_MODEL" / "keras_TEST"
 H5_TEST_PATH = ROOT_DIR / "original_data" / "test_data.hdf5"
 OUT_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "Predictions_Raw"
 
-# Das Modell, das du gerade per SCP übertragen hast
+# Das Modell-Dictionary mit allen drei heute trainierten Varianten
 MODELS = {
-    "Improved_V2_Best": "unet_25d_improved_V2__seed42__bf64__D5__lossMAE_SSIM__20260227-112959_loss0.0521_val0.0585.keras"
+    # Dein neues Beast-Modell (gerade heruntergeladen)
+    "A100_Beast_P00": "A100_Beast_P00_seed42.keras"
 }
 
 SERIES_LIST = [5, 11, 12, 15, 16, 21, 22, 29, 35, 50] 

@@ -17,7 +17,22 @@ SERIES_LEN = 41
 # FIXIERTE ROI GRÖSSE (H-Richtung Standard)
 ROI_W, ROI_H = 21, 15
 
-VIS_PAIRS = [(35, 24), (5, 15), (11, 20), (12, 18), (15, 19), (16, 17), (21, 19), (22, 17), (29, 25), (50, 13)]
+VIS_PAIRS = [
+    # Bestehende Liste
+    (35, 24), (5, 15), (11, 20), (12, 18), (15, 19), 
+    (16, 17), (21, 19), (22, 17), (29, 25), (50, 13),
+    
+    # Ergänzungen aus dem Bild (Obere Reihe)
+    (1, 12), (13, 8), (17, 18), (30, 15), (32, 32), 
+    (36, 15), (38, 36), (41, 19), (42, 36), (45, 21),
+    
+    # Ergänzungen aus dem Bild (Mittlere Reihe)
+    (47, 6), (51, 23), (53, 11), (55, 21), 
+    (56, 10), (57, 23), (59, 16), (64, 6), (67, 11), (68, 21), (71, 27),
+    
+    # Ergänzungen aus dem Bild (Untere Reihe)
+    (72, 16), (73, 26), (74, 24)
+]
 
 def vis_scaling(image, p_low, p_high):
     v_l, v_h = np.percentile(image, [p_low, p_high])
