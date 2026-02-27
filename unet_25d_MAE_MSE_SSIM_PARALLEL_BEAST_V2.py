@@ -207,23 +207,26 @@ def acquire_permanent_point_claim(point_dir: Path) -> bool:
 # =====================================================
 # 2. METRIKEN & LOSS (MIT CLIPPING)
 # =====================================================
-def mae_center(y_true, y_pred):
+def mae_clipped(y_true, y_pred):
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.abs(y_true - y_pred))
 
-def mse_center(y_true, y_pred):
+def mse_clipped(y_true, y_pred):
+    y_true = tf.clip_by_value(y_true, 0.0, 1.0)
+    y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
+    return tf.reduce_mean(tf.math.squared_difference(y_true, y_pred))
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.math.squared_difference(y_true, y_pred))
 
-def psnr_center(y_true, y_pred):
+def psnr_clipped(y_true, y_pred):
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1, 2, 3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
-def ssim_center(y_true, y_pred):
+def ssim_clipped(y_true, y_pred):
     y_true = tf.clip_by_value(y_true, 0.0, 1.0)
     y_pred = tf.clip_by_value(y_pred, 0.0, 1.0)
     return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
@@ -399,7 +402,7 @@ for current_seed in SEEDS:
         term_reason = "crash_or_timeout"
 
         def check_crash(epoch, logs):
-            psnr = logs.get("val_psnr_center", 0)
+            psnr = logs.get("val_psnr_clipped", 0)
             if psnr > status["best_psnr"]:
                 status["best_psnr"] = psnr
                 status["drop_cnt"] = 0
@@ -430,7 +433,7 @@ for current_seed in SEEDS:
         ]
 
         model.compile(optimizer=optimizer, loss=get_triple_loss(MY_ALPHA, MY_BETA),
-                      metrics=["mae", "mse", mae_center, mse_center, ssim_center, psnr_center])
+                      metrics=["mae", "mse", mae_clipped, mse_clipped, ssim_clipped, psnr_clipped])
 
         history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
 
@@ -462,7 +465,7 @@ for current_seed in SEEDS:
         try:
             eval_out = model.evaluate(val_ds, verbose=0, return_dict=True)
             best_eval = {k: float(v) for k, v in eval_out.items()}
-            best_val_psnr = best_eval.get("psnr_center", None)
+            best_val_psnr = best_eval.get("psnr_clipped", None)
             best_val_loss = best_eval.get("loss", None)
         except Exception as e:
             print(f"Warnung: Evaluation fehlgeschlagen: {e}")
@@ -472,7 +475,7 @@ for current_seed in SEEDS:
         best_idx = int(np.argmin(history.history["val_loss"]))
         best_epoch = best_idx + 1
         if best_val_loss is None: best_val_loss = float(history.history["val_loss"][best_idx])
-        if best_val_psnr is None: best_val_psnr = float(history.history["val_psnr_center"][best_idx])
+        if best_val_psnr is None: best_val_psnr = float(history.history["val_psnr_clipped"][best_idx])
 
     # finalize_run mit Best-Metriken aufrufen
     if history is not None or status["aborted"]:
