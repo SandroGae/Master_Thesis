@@ -72,6 +72,8 @@ def generate_configs():
 
     # Fuege exakt EINEN Punkt fuer Alpha 1.0 hinzu (Point 42)
     configs.append((1.0, 0.0))
+    # Testpunkt 43
+    configs.append((0.6, 0.0))
     return configs
 
 
