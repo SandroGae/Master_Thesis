@@ -33,7 +33,7 @@ tf.random.set_seed(GLOBAL_INIT_SEED)
 tf.config.experimental.enable_op_determinism() # Wichtig für A100 Determinismus
 
 # Definition der Liste für die spätere Schleife
-SEEDS = range(42, 43) # range(42, 52)
+SEEDS = range(42, 52) # range(42, 43)
 
 # =====================================================
 # 1. SETUP & ARGUMENT PARSING
@@ -73,7 +73,7 @@ def generate_configs():
     # Fuege exakt EINEN Punkt fuer Alpha 1.0 hinzu (Point 42)
     configs.append((1.0, 0.0))
     # Testpunkt 43
-    configs.append((0.6, 0.0))
+    # configs.append((0.6, 0.0))
     return configs
 
 
@@ -421,7 +421,7 @@ for current_seed in SEEDS:
                 save_best_only=True,
                 save_weights_only=True,
                 mode="min",
-                verbose=0,
+                verbose=1,
             ),
             tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=25, restore_best_weights=True),
             tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
