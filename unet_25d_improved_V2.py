@@ -226,9 +226,13 @@ BATCH_SIZE = 8
 # Optimizer + callbacks
 optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
 
+CKPT_ROOT = Path.home() / "data" / "checkpoints_unet_25d"
+CKPT_DIR  = CKPT_ROOT / RUN_NAME
+CKPT_DIR.mkdir(parents=True, exist_ok=True)
+
 callbacks = [
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=2),
-    make_epoch_ckpt_callback(RUN_NAME),
+    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(CKPT_DIR)),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
 ]
