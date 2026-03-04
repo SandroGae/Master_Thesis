@@ -79,7 +79,7 @@ def get_training_callbacks(fold_name, ckpt_dir, fold_dir, status_dict, model_ref
             status_dict["best_psnr"] = psnr
             status_dict["drop_cnt"] = 0
         elif epoch >= 10:
-            if psnr < (status_dict["best_psnr"] - 4.5) or psnr < 0.0:
+            if psnr < (status_dict["best_psnr"] - 45) or psnr < 0.0:
                 status_dict["drop_cnt"] += 1
             if status_dict["drop_cnt"] >= 3:
                 status_dict["aborted"] = True
