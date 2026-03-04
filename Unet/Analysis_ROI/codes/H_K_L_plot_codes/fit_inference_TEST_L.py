@@ -17,8 +17,9 @@ OUT_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "Predictions_Raw"
 
 # Das Modell-Dictionary mit allen drei heute trainierten Varianten
 MODELS = {
-    # Dein neues Beast-Modell (gerade heruntergeladen)
-    "A100_Beast_P00": "A100_Beast_P00_seed42.keras"
+    "Beast_P00_S42": "P00_a0.0000_b0.0000_seed42_best_model.keras",
+    "Beast_P00_S43": "P00_a0.0000_b0.0000_seed43_best_model.keras",
+    "Beast_P00_S44": "P00_a0.0000_b0.0000_seed44_best_model.keras",
 }
 
 SERIES_LIST = [5, 11, 12, 15, 16, 21, 22, 29, 35, 50] 

@@ -17,8 +17,10 @@ ROOT_DIR = Path(r"C:\Users\sandr\VS_MASTER_THESIS")
 if MODE == "TEST_BEST":
     print(">>> Modus: TEST_BEST (K-Profil Vergleich...)")
     MODELS = {
-    # Dein neues Beast-Modell (gerade heruntergeladen)
-    "A100_Beast_P00": "A100_Beast_P00_seed42.keras",
+        "Beast_P00_S42": "P00_a0.0000_b0.0000_seed42_best_model.keras",
+        "Beast_P00_S43": "P00_a0.0000_b0.0000_seed43_best_model.keras",
+        "Beast_P00_S44": "P00_a0.0000_b0.0000_seed44_best_model.keras",
+        # ... deine anderen Referenzmodelle ...
     }
     IN_DIR  = ROOT_DIR / "Unet" / "Analysis_ROI" / "Predictions_Raw"
     OUT_DIR = ROOT_DIR / "Unet" / "Analysis_ROI" / "H_K_L_Plots" / "TEST_ANALYSIS_L"

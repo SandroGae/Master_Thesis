@@ -184,16 +184,47 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # 2. SERIEN-KONFIGURATION (mit individuellen Y-Achsen)
 # =====================================================
 SERIES_CONFIG = {
-    5:  {"slice_idx": 15, "roi_x": (195, 216), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    11: {"slice_idx": 20, "roi_x": (76, 97),   "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 70), "ylim_sbr": (-0.1, 0.4)},
-    12: {"slice_idx": 18, "roi_x": (60, 81),   "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    15: {"slice_idx": 19, "roi_x": (136, 157), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 70), "ylim_sbr": (-0.1, 0.4)},
-    16: {"slice_idx": 17, "roi_x": (115, 136), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    21: {"slice_idx": 19, "roi_x": (192, 213), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.5), "ylim_raw": (40, 70), "ylim_sbr": (-0.1, 0.4)},
-    22: {"slice_idx": 17, "roi_x": (176, 197), "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    29: {"slice_idx": 25, "roi_x": (50, 71),   "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 99.0), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
-    35: {"slice_idx": 24, "roi_x": (128, 149),  "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.0), "ylim_raw": (40, 60), "ylim_sbr": (-0.1, 0.4)},
-    50: {"slice_idx": 13, "roi_x": (92, 113),  "roi_y": (102, 117), "bg_gap": 5, "vis_p": (0.5, 98.5), "ylim_raw": (40, 65), "ylim_sbr": (-0.1, 0.4)},
+    # H Richtung: Block 1 (Extrahiert aus H-Tuner Screenshots | vis_p fixiert)
+    1:  {"slice_idx": 11, "roi_x": (140, 161), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    5:  {"slice_idx": 14, "roi_x": (188, 209), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 97.5), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    11: {"slice_idx": 19, "roi_x": (73, 94),  "roi_y": (102, 117), "bg_gap": 22, "bg_h": 10, "vis_p": (0.5, 97.5), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    12: {"slice_idx": 17, "roi_x": (55, 76),   "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 98.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    13: {"slice_idx": 7,  "roi_x": (120, 141), "roi_y": (99, 114), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 88.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    15: {"slice_idx": 18, "roi_x": (131, 152), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 98.5), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    16: {"slice_idx": 16, "roi_x": (117, 138), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 97.5), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    17: {"slice_idx": 17, "roi_x": (171, 192), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    21: {"slice_idx": 18, "roi_x": (187, 208), "roi_y": (101, 116), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 98.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    22: {"slice_idx": 16, "roi_x": (172, 193), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 98.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+
+    # Block 2
+    29: {"slice_idx": 24, "roi_x": (58, 79),   "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    30: {"slice_idx": 14, "roi_x": (219, 240),  "roi_y": (103, 118), "bg_gap": 30, "bg_h": 10, "vis_p": (0.5, 97.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    32: {"slice_idx": 31, "roi_x": (54, 75),   "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 92.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    35: {"slice_idx": 23, "roi_x": (106, 127), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 90.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    36: {"slice_idx": 15, "roi_x": (52, 73),   "roi_y": (102, 117), "bg_gap": 3, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    38: {"slice_idx": 35, "roi_x": (109, 130), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 90.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    41: {"slice_idx": 18, "roi_x": (33, 54),   "roi_y": (99, 114),  "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 94.5), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    42: {"slice_idx": 35, "roi_x": (158, 179), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 90.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    45: {"slice_idx": 20, "roi_x": (73, 94),   "roi_y": (99, 114),  "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 97.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    46: {"slice_idx": 37, "roi_x": (212, 233), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 90.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+
+    # Block 3
+    50: {"slice_idx": 12, "roi_x": (98, 119),  "roi_y": (101, 116), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 96.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    51: {"slice_idx": 22, "roi_x": (131, 152), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 94.0), "ylim_raw": (55.0, 90), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    53: {"slice_idx": 10, "roi_x": (140, 161), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    55: {"slice_idx": 20, "roi_x": (180, 201), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    56: {"slice_idx": 9,  "roi_x": (155, 176), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    57: {"slice_idx": 22, "roi_x": (186, 207), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 98.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    59: {"slice_idx": 15, "roi_x": (195, 216), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 96.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    64: {"slice_idx": 5,  "roi_x": (217, 238), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    67: {"slice_idx": 10, "roi_x": (29, 50),   "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+
+    # Block 4
+    68: {"slice_idx": 20, "roi_x": (27, 48),   "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    71: {"slice_idx": 26, "roi_x": (120, 141), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    72: {"slice_idx": 15, "roi_x": (43, 64),   "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 94.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    73: {"slice_idx": 25, "roi_x": (79, 100),  "roi_y": (99, 114),  "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    74: {"slice_idx": 23, "roi_x": (63, 84),   "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 96.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
 }
 
 # NEUE FIXE GEOMETRIE
