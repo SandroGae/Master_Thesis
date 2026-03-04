@@ -37,7 +37,7 @@ BETA_OPTIMAL = 3/6
 DEPTH = 5
 SERIES_LEN_ORIG = 41
 WARMUP_EPOCHS = 10
-LR_TARGET = 1e-5
+LR_TARGET = 1e-4
 BASEFILTERS = 64
 BATCH_SIZE = 8
 EPOCHS = 200 # Erhöht auf 200 analog zum Scan
@@ -216,7 +216,7 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     X_va_win, y_va_win = make_stride1_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH)
 
     model = unet_2d_stacked((192, 240, DEPTH), BASEFILTERS)
-    optimizer = tf.keras.optimizers.Adam(LR_TARGET, amsgrad=True)
+    optimizer = tf.keras.optimizers.Adam(LR_TARGET, amsgrad=True, global_clipnorm=1.0)
     
     model.compile(optimizer=optimizer, 
                   loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
