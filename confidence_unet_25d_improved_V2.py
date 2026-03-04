@@ -122,7 +122,7 @@ def unet_2d_stacked(input_shape, base_filters):
     u1 = layers.Concatenate()([u1, c1]) ; c8 = conv_block_2d(u1, base_filters, 0.0)
     x = layers.Conv2D(filters=2, kernel_size=(1, 1), activation="linear", name="output_raw")(c8) 
     mu = layers.Activation("sigmoid", name="mu_output")(x[..., 0:1]) 
-    sigma = layers.Lambda(lambda t: tf.math.softplus(t) + 1e-6, name="sigma_output")(x[..., 1:2]) 
+    sigma = layers.Lambda(lambda t: tf.math.softplus(t) + 1e-3, name="sigma_output")(x[..., 1:2]) 
     out = layers.Concatenate()([mu, sigma])
     return models.Model(inputs, out)
 
