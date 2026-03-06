@@ -6,6 +6,7 @@ import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 from pathlib import Path
 import warnings
+import matplotlib.transforms as mtransforms
 
 warnings.filterwarnings("ignore")
 
@@ -19,7 +20,7 @@ OUT_FILE = SCRIPT_DIR / "Hyperparameter_Detailed_6Plot_Analysis.png"
 # --- ZENTRALE STYLING PARAMETER ---
 STYLE_PARAMS = {
     "SUBPLOT_TITLE_SIZE": 18,
-    "TITLE_PAD": 15,
+    "TITLE_PAD": 20,
     "AXIS_LABEL_SIZE": 16,
     "TICK_LABEL_SIZE": 20,
     "COLORBAR_LABEL_SIZE": 16,
@@ -131,45 +132,47 @@ stats = pd.merge(stats, stability, on=['Alpha', 'Beta'])
 stats = stats.rename(columns={'shift_filtered_all': 'shift_all', 'shift_filtered_clean': 'shift_clean'})
 
 # --------------------------------------------------
-# 4. Plotting (EXAKT WIE GEWÜNSCHT)
+# 4. Plotting (2 Zeilen x 3 Spalten Layout)
 # --------------------------------------------------
 def plot_final_6_heatmaps(data):
-    fig, axes = plt.subplots(3, 2, figsize=(20, 26), dpi=200)
+    # Größe für Querformat angepasst (Breiter, weniger Hoch)
+    fig, axes = plt.subplots(2, 3, figsize=(28, 18.5), dpi=200)
 
     xi = np.linspace(0, 1, 100); yi = np.linspace(0, 1, 100)
     X, Y = np.meshgrid(xi, yi)
     fraction_labels = ['0', r'$\frac{1}{6}$', r'$\frac{2}{6}$', r'$\frac{3}{6}$', r'$\frac{4}{6}$', r'$\frac{5}{6}$', '1']
 
+    # Konfiguration umgeordnet für 2x3 Grid
     plot_configs = [
-        # ZEILE 1: ROHDATEN (Alle Fits)
+        # ZEILE 1: ALL SERIES (Raw, Ratio Filter, Shift)
         ('area_raw_all', 'RdYlGn', 'Area: All Series (Raw)', '(GT=1.0)', False),
-        ('area_raw_clean', 'RdYlGn', 'Area: Converged Models (Raw)', '(GT=1.0)', True),
-        
-        # ZEILE 2: QUALITÄTS-FILTER (R2/RMSE Ratios)
         ('area_penalized_all', 'RdYlGn', 'Area: All Series (Ratio Filter)', '(GT=1.0)', False),
-        ('area_penalized_clean', 'RdYlGn', 'Area: Converged (Ratio Filter)', '(GT=1.0)', True),
-        
-        # ZEILE 3: PEAK SHIFT
         ('shift_all', 'RdYlGn_r', 'Peak Shift: All Series', 'Pixels', False),
+        
+        # ZEILE 2: CONVERGED MODELS (Raw, Ratio Filter, Shift)
+        ('area_raw_clean', 'RdYlGn', 'Area: Converged Models (Raw)', '(GT=1.0)', True),
+        ('area_penalized_clean', 'RdYlGn', 'Area: Converged (Ratio Filter)', '(GT=1.0)', True),
         ('shift_clean', 'RdYlGn_r', 'Peak Shift: Converged Models', 'Pixels', True)
     ]
 
     for i, (m_col, cmap, title, cb_label, use_halo) in enumerate(plot_configs):
-        ax = axes[i // 2, i % 2]
+        # 3 Spalten Indizierung
+        ax = axes[i // 3, i % 3]
         valid = data.dropna(subset=[m_col])
         if valid.empty: continue
         
         Z = griddata((valid['Alpha'], valid['Beta']), valid[m_col], (X, Y), method='cubic')
         cp = ax.contourf(X, Y, Z, levels=15, cmap=cmap, alpha=1.0)
         
-        cb_format = '%.2f' if cb_label == 'Pixels' else '%.3f'
-        cbar = fig.colorbar(cp, ax=ax, format=cb_format, pad=STYLE_PARAMS["COLORBAR_PAD"])
+        cb_format = '%.2f' if cb_label == 'Pixels' else '%.2f'
+        cbar = fig.colorbar(cp, ax=ax, format='%.2f', pad=STYLE_PARAMS["COLORBAR_PAD"])
         cbar.set_label(cb_label, fontweight='bold', fontsize=STYLE_PARAMS["COLORBAR_LABEL_SIZE"])
         cbar.ax.tick_params(labelsize=STYLE_PARAMS["COLORBAR_TICK_SIZE"])
 
         for _, row in data.iterrows():
-            if i == 2:
-                ax.text(row['Alpha'] + 0.02, row['Beta'] + 0.01, f"{int(row['fit_rate_all'])}%", 
+            # Fit-Rate sicherstellen, dass sie beim korrekten Subplot gerendert wird
+            if m_col == 'area_penalized_all':
+                ax.text(row['Alpha'] + 0.02, row['Beta'] + 0.012, f"{int(row['fit_rate_all'])}%", 
                         color='black', fontsize=12, ha='left', va='center', fontweight='bold', zorder=10)
 
             if use_halo and row['stability_rate'] < 100:
@@ -191,24 +194,69 @@ def plot_final_6_heatmaps(data):
         ax.tick_params(axis='both', which='major', labelsize=STYLE_PARAMS["TICK_LABEL_SIZE"])
         ax.set_aspect("equal")
 
-    leg_el = [Line2D([0], [0], marker='o', color='w', label='100%', 
-                      markerfacecolor='white', markeredgecolor='black', markersize=12)]
+    # --- NEUER LEGENDE-BLOCK ---
+    leg_handles = []
+    
+    # 100% Punkt (Basis-Radius ist 10 / 2 = 5 Punkte)
+    h_100 = Line2D([0], [0], marker='o', color='w', label='100%', 
+                   markerfacecolor='white', markeredgecolor='black', 
+                   markersize=10, linewidth=0)
+    leg_handles.append(h_100)
+
     min_stable = int(np.floor(data['stability_rate'].min() / 10.0) * 10)
-    for s in range(90, min_stable - 1, -10):
-        a = (1.0 - s/100.0) * 0.65
-        leg_el.append(Line2D([0], [0], marker='o', color='none', label=f'{s}%',
-                              markerfacecolor='blue', alpha=a, markersize=15))
+    
+    base_radius = 10.0 / 2.0  # Radius des kleinsten Kreises
+    
+    for s in range(90, min_stable - 10, -10):
+        plot_s_area = (100 - s) * 110 
+        v_markersize = np.sqrt(plot_s_area) 
+        a_halo = (1.0 - s/100.0) * 0.6 
+        
+        # --- VERTIKALE ZENTRIERUNG GEFIXT ---
+        current_radius = v_markersize / 2.0
+        shift_pt = current_radius - base_radius
+        
+        # Ein "Thin Space" (\u2009) ist exakt 1/5 der Schriftgröße breit.
+        # So berechnen wir, wie viele dieser schmalen Leerzeichen wir exakt brauchen:
+        thin_space_pt = STYLE_PARAMS["LEGEND_TEXT_SIZE"] * 0.2
+        num_spaces = int(round(shift_pt / thin_space_pt))
+        
+        # Keine Mathe-Umgebung ($...$) mehr! Dadurch bleibt die Grundlinie perfekt auf Höhe der Kreise.
+        if num_spaces > 0:
+            label_text = "\u2009" * num_spaces + f"{s}%"
+        else:
+            label_text = f"{s}%"
+        
+        h_halo = Line2D([0], [0], marker='o', color='none', label=label_text,
+                        markerfacecolor='blue', alpha=a_halo, 
+                        markersize=v_markersize, linewidth=0)
+        leg_handles.append(h_halo)
 
-    fig.legend(handles=leg_el, loc='upper center', bbox_to_anchor=(0.5, 0.985), 
-                ncol=len(leg_el), fontsize=STYLE_PARAMS["LEGEND_TEXT_SIZE"], 
-                title="Model Stability Indicator", 
-                title_fontsize=STYLE_PARAMS["LEGEND_TITLE_SIZE"], frameon=True, shadow=True)
+    # --- LEGENDEN-BLOCK (Positionierung ganz unten) ---
+    # Wir nutzen bbox_to_anchor=(0.5, -0.08) um sie UNTER das rect zu schieben
+    leg = fig.legend(handles=leg_handles, loc='lower center', bbox_to_anchor=(0.48, +0.045), 
+                    ncol=len(leg_handles), fontsize=STYLE_PARAMS["LEGEND_TEXT_SIZE"], 
+                    frameon=True, shadow=True,
+                    borderpad=0.3, handleheight=4.5, handlelength=2.5, handletextpad=-0.5, columnspacing=2.0)
+    
+    leg.set_title("Model Stability Indicator")
+    plt.setp(leg.get_title(), fontsize=STYLE_PARAMS["LEGEND_TITLE_SIZE"] + 4, fontweight='bold')
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.94])
+    # Den Titelabstand und Text-Shift beibehalten
+    leg._legend_box.sep = 20 
+    shift_up = mtransforms.ScaledTranslation(0, 0.1, fig.dpi_scale_trans)
+    for text in leg.get_texts():
+        text.set_transform(text.get_transform() + shift_up)
+
+    # --- FINALES LAYOUT ---
+    # rect=[0, 0.15, 1, 1.0] gibt den Plots 85% der Höhe, 
+    # was bei figsize-Höhe 18.5 fast exakt der absoluten Höhe des 2. Skripts entspricht.
+    plt.tight_layout(rect=[0, 0.15, 1, 1.0]) 
     plt.subplots_adjust(wspace=STYLE_PARAMS["SUBPLOT_WSPACE"], hspace=STYLE_PARAMS["SUBPLOT_HSPACE"])
+    
     plt.savefig(OUT_FILE, bbox_inches='tight')
     print(f"Erfolgreich gespeichert: {OUT_FILE}")
-
+    
 plot_final_6_heatmaps(stats)
 
 # --------------------------------------------------
@@ -233,7 +281,6 @@ def print_global_failure_report(df_an, r2_ratio_limit, rmse_ratio_limit):
 
     print("\n" + "="*130)
     print(f"{'GLOBALER XRD-FIT FEHLERBERICHT & RATIOS':^130}")
-    # FIX: Hier r2_ratio_limit statt r2_limit verwenden
     print(f"{f'(Filter: R²-Ratio < {r2_ratio_limit} | RMSE-Ratio > {rmse_ratio_limit})':^130}")
     print("="*130)
     

@@ -66,6 +66,8 @@ def psnr_clipped(yt, yp):
     mse = tf.reduce_mean(tf.square(tf.clip_by_value(yt, 0, 1) - tf.clip_by_value(yp[..., 0:1], 0, 1)), axis=(1, 2, 3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 def ssim_clipped(yt, yp): return tf.reduce_mean(tf.image.ssim(tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp[..., 0:1], 0, 1), 1.0))
+def avg_sigma(yt, yp):
+    return tf.reduce_mean(yp[..., 1:2])
 
 # ROBUSTE CALLBACK-FUNKTION
 def get_training_callbacks(fold_name, ckpt_dir, fold_dir, status_dict, model_ref):
@@ -191,8 +193,11 @@ def save_uncertainty_analysis(model, sample_x, fold_id, folder, threshold=0.15):
 # --- HAUPTABLAUF ---
 X_raw, y_raw = load_split(ORIG_FILE)
 series_indices = np.arange(len(X_raw) // SERIES_LEN_ORIG)
-BASE_NAME, RUN_ID = "confidence_unet_25d_improved_V2", datetime.now().strftime("%Y%m%d-%H%M%S")
-TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
+
+# Kürzerer Basis-Name
+BASE_NAME = "confidence" 
+RUN_ID = datetime.now().strftime("%Y%m%d-%H%M") # Uhrzeit reicht oft ohne Sekunden
+TB_ROOT = Path.home() / "scratch" / "Confidence" / "models"
 
 split_idx = int(0.8 * len(series_indices))
 manual_split = [(series_indices[:split_idx], series_indices[split_idx:])]
@@ -216,11 +221,13 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     X_va_win, y_va_win = make_stride1_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH)
 
     model = unet_2d_stacked((192, 240, DEPTH), BASEFILTERS)
-    optimizer = tf.keras.optimizers.Adam(LR_TARGET, amsgrad=True) #, global_clipnorm=1.0)
+    optimizer = tf.keras.optimizers.Adam(LR_TARGET, amsgrad=True,global_clipnorm=1.0)
     
-    model.compile(optimizer=optimizer, 
-                  loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
-                  metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped])
+    model.compile(
+        optimizer=optimizer, 
+        loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
+        metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped, avg_sigma] # <- Hier avg_sigma ergänzt
+    )
 
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr_win, y_tr_win)).shuffle(len(X_tr_win), seed=SEED)
                 .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, 0.5), -1)
@@ -251,15 +258,45 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     best_weights_h5 = FOLD_DIR / f"{BASE_NAME}_fold{fold_id}_best_weights.weights.h5"
     model.save_weights(str(best_weights_h5))
 
-    meta = make_meta_dict(f"{BASE_NAME}_fold{fold_id}", BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (192,240,DEPTH),
-                          extra={"aborted": status["aborted"], "reason": status["reason"], 
-                                 "final_psnr_eval": float(final_psnr), "alpha": ALPHA_OPTIMAL, "beta": BETA_OPTIMAL})
+    # Wir prüfen dynamisch, ob Clipnorm-Attribute im Optimizer existieren
+    clip_val = getattr(optimizer, 'global_clipnorm', None)
+    has_clip = clip_val is not None
+
+    meta = make_meta_dict(
+        f"{BASE_NAME}_fold{fold_id}", BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (192,240,DEPTH),
+        extra={
+            "aborted": status["aborted"], 
+            "reason": status["reason"], 
+            "final_psnr_eval": float(final_psnr), 
+            "alpha": ALPHA_OPTIMAL, 
+            "beta": BETA_OPTIMAL,
+            "clipnorm_used": has_clip,         # Dokumentiert, ob Clipnorm aktiv war
+            "clipnorm_value": clip_val          # Speichert den exakten Wert (z.B. 1.0)
+        }
+    )
     
     finalize_run(model, history, f"{BASE_NAME}_fold{fold_id}", meta, folder_name=str(FOLD_DIR))
     
     for sx, sy in val_ds.take(1): save_uncertainty_analysis(model, sx, fold_id, FOLD_DIR)
     
     tf.keras.backend.clear_session()
+    
+    # --- AUTOMATISCHE UMBENENNUNG DES ORDNER ---
+    # Wir holen uns den besten val_loss aus dem History-Objekt
+    if history is not None and 'val_loss' in history.history:
+        best_vloss = min(history.history['val_loss'])
+        # Neuer Name: confidence_TIMESTAMP_vLoss-0.9175
+        new_name = f"{BASE_NAME}_{RUN_ID}_vLoss{best_vloss:.4f}"
+        NEW_FOLD_DIR = TB_ROOT / new_name
+        
+        try:
+            # Benennt den Ordner physikalisch um
+            FOLD_DIR.rename(NEW_FOLD_DIR)
+            print(f">>> Ordner umbenannt in: {new_name}")
+        except Exception as e:
+            print(f">>> Umbenennung fehlgeschlagen: {e}")
+
+    # Aufräumen für den nächsten Fold
     del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
 
 print(f"\nTraining abgeschlossen.")

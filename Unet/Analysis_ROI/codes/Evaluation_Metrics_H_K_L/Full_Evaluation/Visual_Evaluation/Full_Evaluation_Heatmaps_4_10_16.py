@@ -88,13 +88,13 @@ global_max = max(res['area_penalized'].max() for res in all_subset_results)
 # --------------------------------------------------
 # 4. Haupt-Plotting
 # --------------------------------------------------
-fig, axes = plt.subplots(3, 2, figsize=(20, 26), dpi=200) # figsize angepasst
+fig, axes = plt.subplots(2, 3, figsize=(28, 16), dpi=200) # figsize angepasst
 xi = np.linspace(0, 1, 150); yi = np.linspace(0, 1, 150)
 X, Y = np.meshgrid(xi, yi)
 fraction_labels = ['0', r'$\frac{1}{6}$', r'$\frac{2}{6}$', r'$\frac{3}{6}$', r'$\frac{4}{6}$', r'$\frac{5}{6}$', '1']
 
 for idx, size in enumerate(SUBSET_SIZES):
-    ax = axes[idx // 2, idx % 2]
+    ax = axes[idx // 3, idx % 3]
     plot_data = all_subset_results[idx]
     
     Z = griddata((plot_data['Alpha'], plot_data['Beta']), 
@@ -102,7 +102,7 @@ for idx, size in enumerate(SUBSET_SIZES):
     
     cp = ax.contourf(X, Y, Z, levels=20, cmap='RdYlGn', vmin=global_min, vmax=global_max)
     
-    cbar = fig.colorbar(cp, ax=ax, format='%.3f', pad=STYLE_PARAMS["COLORBAR_PAD"])
+    cbar = fig.colorbar(cp, ax=ax, format='%.2f', pad=STYLE_PARAMS["COLORBAR_PAD"])
     cbar.set_label('(GT=1.0)', fontweight='bold', fontsize=STYLE_PARAMS["COLORBAR_LABEL_SIZE"])
     cbar.ax.tick_params(labelsize=STYLE_PARAMS["COLORBAR_TICK_SIZE"])
 
@@ -111,7 +111,7 @@ for idx, size in enumerate(SUBSET_SIZES):
                edgecolors='black', s=STYLE_PARAMS["POINT_SIZE"], linewidths=1.5, zorder=5)
 
     # Titel ohne LaTeX für korrekte Abstände
-    ax.set_title(f"Average Over Random {size} Series", 
+    ax.set_title(f"Average Area Over {size} Randomly Picked Series", 
                  fontsize=STYLE_PARAMS["SUBPLOT_TITLE_SIZE"], fontweight='bold', pad=STYLE_PARAMS["TITLE_PAD"])
     
     # Achsenbeschriftung konsistent mit LaTeX-Formeln

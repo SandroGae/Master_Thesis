@@ -70,6 +70,8 @@ def psnr_clipped(yt, yp):
     mse = tf.reduce_mean(tf.square(tf.clip_by_value(yt, 0, 1) - tf.clip_by_value(yp[..., 0:1], 0, 1)), axis=(1, 2, 3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 def ssim_clipped(yt, yp): return tf.reduce_mean(tf.image.ssim(tf.clip_by_value(yt, 0, 1), tf.clip_by_value(yp[..., 0:1], 0, 1), 1.0))
+def avg_sigma(yt, yp): 
+    return tf.reduce_mean(yp[..., 1:2])
 
 # ROBUSTE CALLBACK-FUNKTION
 def get_training_callbacks(fold_name, ckpt_dir, fold_dir, status_dict, model_ref):
@@ -78,10 +80,11 @@ def get_training_callbacks(fold_name, ckpt_dir, fold_dir, status_dict, model_ref
         if psnr > status_dict["best_psnr"]: 
             status_dict["best_psnr"] = psnr
             status_dict["drop_cnt"] = 0
-        elif epoch >= 10:
-            if psnr < (status_dict["best_psnr"] - 45) or psnr < 0.0:
+        elif epoch >= 30: # Erst ab Epoche 30 scharf schalten
+            # Wir tolerieren kleine Schwankungen, aber keine Abstürze um mehr als 5 dB
+            if psnr < (status_dict["best_psnr"] - 5.0):
                 status_dict["drop_cnt"] += 1
-            if status_dict["drop_cnt"] >= 3:
+            if status_dict["drop_cnt"] >= 5: # 5 Epochen Zeit geben sich zu fangen
                 status_dict["aborted"] = True
                 status_dict["reason"] = "perf_collapse"
                 model_ref.stop_training = True
@@ -124,7 +127,7 @@ def unet_2d_stacked(input_shape, base_filters):
     u1 = layers.Concatenate()([u1, c1]) ; c8 = conv_block_2d(u1, base_filters, 0.0)
     x = layers.Conv2D(filters=2, kernel_size=(1, 1), activation="linear", name="output_raw")(c8) 
     mu = layers.Activation("sigmoid", name="mu_output")(x[..., 0:1]) 
-    sigma = layers.Lambda(lambda t: tf.math.softplus(t) + 1e-6, name="sigma_output")(x[..., 1:2]) 
+    sigma = layers.Lambda(lambda t: tf.math.softplus(t) + 1e-3, name="sigma_output")(x[..., 1:2]) 
     out = layers.Concatenate()([mu, sigma])
     return models.Model(inputs, out)
 
@@ -140,7 +143,7 @@ def get_probabilistic_triple_loss(alpha, beta):
         return (alpha * ssim_loss) + ((1.0 - alpha) * tf.reduce_mean(pixel_loss))
     return loss
 
-# --- DATA LOADING & WINDOWING (Interpolations-Logik) ---
+# --- DATA LOADING & WINDOWING ---
 
 def load_split(h5_path):
     with h5py.File(h5_path, "r") as f:
@@ -206,11 +209,13 @@ X_interp_raw, y_interp_raw = load_split(TRAIN_FILE)
 print(f"Lade Originale Daten (für Val): {ORIG_FILE}")
 X_orig_raw, y_orig_raw = load_split(ORIG_FILE)
 
-series_indices = np.arange(len(X_orig_raw) // SERIES_LEN_ORIG)
-BASE_NAME, RUN_ID = "confidence_interpolated_unet_25d_V2", datetime.now().strftime("%Y%m%d-%H%M%S")
-TB_ROOT = Path.home() / "data" / "tblogs_unet_3d_simple"
 
-# 80/20 Split analog zu V2 (Single Run Logik)
+# Kürzerer Basis-Name
+series_indices = np.arange(len(X_orig_raw) // SERIES_LEN_ORIG)
+BASE_NAME = "confidence"
+RUN_ID = datetime.now().strftime("%Y%m%d-%H%M")
+TB_ROOT = Path.home() / "scratch" / "Confidence" / "models"
+
 split_idx = int(0.8 * len(series_indices))
 manual_split = [(series_indices[:split_idx], series_indices[split_idx:])]
 
@@ -231,9 +236,9 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
         X_l, y_l = [], []
         for i in idx_list:
             s = i * SERIES_LEN_ORIG
-            X_l.append(X_raw_val[s:s+SERIES_LEN_ORIG]); y_l.append(y_raw_val[s:s+SERIES_LEN_ORIG])
-        # Kleiner Fix: X_raw_val muss X_orig_raw sein
-        return None # Siehe unten
+            X_l.append(X_orig_raw[s:s+SERIES_LEN_ORIG])
+            y_l.append(y_orig_raw[s:s+SERIES_LEN_ORIG])
+        return np.concatenate(X_l), np.concatenate(y_l)
 
     # Daten splitten
     X_tr_fold, y_tr_fold = get_data_interp(train_idx)
@@ -242,15 +247,15 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     X_va_l, y_va_l = [], []
     for i in val_idx:
         s = i * SERIES_LEN_ORIG
-        X_va_l.append(X_orig_raw[s:s+SERIES_LEN_ORIG]); y_va_l.append(y_orig_raw[s:s+SERIES_LEN_ORIG])
+        X_va_l.append(X_orig_raw[s:s+SERIES_LEN_ORIG])
+        y_va_l.append(y_orig_raw[s:s+SERIES_LEN_ORIG])
     X_va_fold, y_va_fold = np.concatenate(X_va_l), np.concatenate(y_va_l)
 
-    # Windowing für Training (Multi-Stride Logik aus dem Interpolations-Skript)
+    # Windowing für Training (Multi-Stride)
     print(f"Generiere Volumina für Training (Multi-Stride)...")
     X_tr_win_list, y_tr_win_list = [], []
     SELECTED_STRIDES = [1, 2, 4, 6, 12, 24]
     for s in SELECTED_STRIDES:
-        # Step-Logik für Ausgewogenheit
         step = 5 if s == 12 else (4 if s == 24 else 6)
         Xw, yw = make_strided_windows(X_tr_fold, y_tr_fold, SERIES_LEN_INTERP, DEPTH, stride=s, step=step)
         if len(Xw) > 0:
@@ -258,7 +263,7 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     
     X_tr_win = np.concatenate(X_tr_win_list) ; y_tr_win = np.concatenate(y_tr_win_list)
     
-    # Windowing für Validierung (Immer Stride 1 auf Original-Daten)
+    # Windowing für Validierung (Stride 1 auf Original)
     X_va_win, y_va_win = make_strided_windows(X_va_fold, y_va_fold, SERIES_LEN_ORIG, DEPTH, stride=1)
 
     # Shuffle
@@ -267,11 +272,13 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     X_tr_win, y_tr_win = X_tr_win[idx_tr], y_tr_win[idx_tr]
 
     model = unet_2d_stacked((192, 240, DEPTH), BASEFILTERS)
-    optimizer = tf.keras.optimizers.Adam(LR_TARGET, amsgrad=True)
+    optimizer = tf.keras.optimizers.Adam(LR_TARGET, amsgrad=True, global_clipnorm=1.0)
     
-    model.compile(optimizer=optimizer, 
-                  loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
-                  metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped])
+    model.compile(
+        optimizer=optimizer, 
+        loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
+        metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped, avg_sigma] # <- Hier avg_sigma ergänzt
+    )
 
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr_win, y_tr_win)).shuffle(len(X_tr_win), seed=SEED)
                 .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, 0.5), -1)
@@ -299,15 +306,42 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     best_weights_h5 = FOLD_DIR / f"{BASE_NAME}_fold{fold_id}_best_weights.weights.h5"
     model.save_weights(str(best_weights_h5))
 
-    meta = make_meta_dict(f"{BASE_NAME}_fold{fold_id}", BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (192,240,DEPTH),
-                          extra={"aborted": status["aborted"], "reason": status["reason"], 
-                                 "final_psnr_eval": float(final_psnr), "alpha": ALPHA_OPTIMAL, "beta": BETA_OPTIMAL,
-                                 "data_source": "interpolated_pois_on"})
+    # Wir prüfen dynamisch, ob Clipnorm-Attribute im Optimizer existieren
+    clip_val = getattr(optimizer, 'global_clipnorm', None)
+    has_clip = clip_val is not None
+
+    meta = make_meta_dict(
+        f"{BASE_NAME}_fold{fold_id}", BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (192,240,DEPTH),
+        extra={
+            "aborted": status["aborted"], 
+            "reason": status["reason"], 
+            "final_psnr_eval": float(final_psnr), 
+            "alpha": ALPHA_OPTIMAL, 
+            "beta": BETA_OPTIMAL,
+            "clipnorm_used": has_clip,         # Dokumentiert, ob Clipnorm aktiv war
+            "clipnorm_value": clip_val          # Speichert den exakten Wert (z.B. 1.0)
+        }
+    )
     
     finalize_run(model, history, f"{BASE_NAME}_fold{fold_id}", meta, folder_name=str(FOLD_DIR))
     for sx, sy in val_ds.take(1): save_uncertainty_analysis(model, sx, fold_id, FOLD_DIR)
     
     tf.keras.backend.clear_session()
+        # --- AUTOMATISCHE UMBENENNUNG DES ORDNER ---
+    # Wir holen uns den besten val_loss aus dem History-Objekt
+    if history is not None and 'val_loss' in history.history:
+        best_vloss = min(history.history['val_loss'])
+        # Neuer Name: confidence_TIMESTAMP_vLoss-0.9175
+        new_name = f"{BASE_NAME}_{RUN_ID}_vLoss{best_vloss:.4f}"
+        NEW_FOLD_DIR = TB_ROOT / new_name
+        
+        try:
+            # Benennt den Ordner physikalisch um
+            FOLD_DIR.rename(NEW_FOLD_DIR)
+            print(f">>> Ordner umbenannt in: {new_name}")
+        except Exception as e:
+            print(f">>> Umbenennung fehlgeschlagen: {e}")
+
     del model, train_ds, val_ds, X_tr_win, y_tr_win, X_va_win, y_va_win
 
 print(f"\nTraining mit interpolierten Daten abgeschlossen.")
