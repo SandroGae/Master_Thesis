@@ -263,9 +263,18 @@ if __name__ == "__main__":
     scenarios = [
         ([BEST_SINGLE_POINT], [BEST_SINGLE_SEED], "Single", "Best Single Model"),
         ([BEST_AVG_POINT], list(ALL_SEEDS), "Point", "Point 10-Seed Average"),
+        # MAE ONLY
         ([0], list(ALL_SEEDS), "Point00", "Point 00 10-Seed Average"),
+        #MSE ONLY
         ([6], list(ALL_SEEDS), "Point06", "Point 06 10-Seed Average"),
+        #SSIM ONLY
         ([42], list(ALL_SEEDS), "Point42", "Point 42 10-Seed Average"),
+        #BEST AREA
+        ([2], list(ALL_SEEDS), "Point2", "Point 2 10-Seed Average"),
+        #BEST QUALITY METRICS
+        ([14], list(ALL_SEEDS), "Point14", "Point 14 10-Seed Average"),
+        #BEST COMPROMISE
+        ([23], list(ALL_SEEDS), "Point23", "Point 23 10-Seed Average"),
         (list(ALL_POINTS), list(ALL_SEEDS), "All", "Global Ensemble Average")
     ]
     

@@ -64,6 +64,19 @@ def lr_warmup_scheduler(epoch, lr):
     return lr
 
 # METRIKEN FÜR DIE ANALYSE
+def mae_raw(yt, yp):
+    return tf.reduce_mean(tf.abs(yt - yp[..., 0:1]))
+
+def mse_raw(yt, yp):
+    return tf.reduce_mean(tf.square(yt - yp[..., 0:1]))
+
+def ssim_raw(yt, yp):
+    return tf.reduce_mean(tf.image.ssim(yt, yp[..., 0:1], max_val=1.0))
+
+def psnr_raw(yt, yp):
+    mse = tf.reduce_mean(tf.square(yt - yp[..., 0:1]), axis=(1, 2, 3))
+    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
+
 def mae_clipped(yt, yp): return tf.reduce_mean(tf.abs(tf.clip_by_value(yt, 0, 1) - tf.clip_by_value(yp[..., 0:1], 0, 1)))
 def mse_clipped(yt, yp): return tf.reduce_mean(tf.square(tf.clip_by_value(yt, 0, 1) - tf.clip_by_value(yp[..., 0:1], 0, 1)))
 def psnr_clipped(yt, yp):
@@ -134,7 +147,10 @@ def unet_2d_stacked(input_shape, base_filters):
 # --- LOSS ---
 def get_probabilistic_triple_loss(alpha, beta):
     def loss(y_true, y_pred):
-        mu, sigma = y_pred[..., 0:1], y_pred[..., 1:2]
+        mu = y_pred[..., 0:1]
+        sigma = y_pred[..., 1:2]
+        sigma = tf.maximum(sigma, 1e-6)
+
         y_true = tf.cast(y_true, tf.float32)
         mae_nll = (tf.abs(y_true - mu) / sigma) + tf.math.log(sigma)
         mse_nll = (tf.square(y_true - mu) / (2.0 * tf.square(sigma))) + tf.math.log(sigma)
@@ -277,7 +293,7 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     model.compile(
         optimizer=optimizer, 
         loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
-        metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped, avg_sigma] # <- Hier avg_sigma ergänzt
+        metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped,mae_raw, mse_raw, ssim_raw, psnr_raw, avg_sigma]
     )
 
     train_ds = (tf.data.Dataset.from_tensor_slices((X_tr_win, y_tr_win)).shuffle(len(X_tr_win), seed=SEED)
@@ -327,12 +343,12 @@ for fold, (train_idx, val_idx) in enumerate(manual_split):
     for sx, sy in val_ds.take(1): save_uncertainty_analysis(model, sx, fold_id, FOLD_DIR)
     
     tf.keras.backend.clear_session()
-        # --- AUTOMATISCHE UMBENENNUNG DES ORDNER ---
+    # --- AUTOMATISCHE UMBENENNUNG DES ORDNER ---
     # Wir holen uns den besten val_loss aus dem History-Objekt
     if history is not None and 'val_loss' in history.history:
         best_vloss = min(history.history['val_loss'])
         # Neuer Name: confidence_TIMESTAMP_vLoss-0.9175
-        new_name = f"{BASE_NAME}_{RUN_ID}_vLoss{best_vloss:.4f}"
+        new_name = f"{BASE_NAME}_fold{fold_id}_{RUN_ID}_vLoss{best_vloss:.4f}"
         NEW_FOLD_DIR = TB_ROOT / new_name
         
         try:
