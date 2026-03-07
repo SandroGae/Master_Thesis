@@ -194,7 +194,6 @@ FIT_WINDOW = (90, 130)
 
 SERIES_CONFIG = {
     # K Richtung: Block 1 (H/K-Tuner Parameter | vis_p fixiert | slice_idx unangetastet)
-    1:  {"slice_idx": 11, "roi_x": (138, 159), "roi_y": (0, 192), "bg_gap": 43,   "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     5:  {"slice_idx": 14, "roi_x": (186, 207), "roi_y": (0, 192), "bg_gap": -176, "vis_p": (0.5, 97.5), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     11: {"slice_idx": 19, "roi_x": (81, 102),  "roi_y": (0, 192), "bg_gap": 51,   "vis_p": (0.5, 97.5), "ylim_raw": (3.5, 7.5), "ylim_sbr": (-0.2, 0.7), "fit_window": (90, 130)},
     12: {"slice_idx": 17, "roi_x": (58, 79),   "roi_y": (0, 192), "bg_gap": 73,   "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.6), "fit_window": (90, 130)},
@@ -202,7 +201,6 @@ SERIES_CONFIG = {
     15: {"slice_idx": 18, "roi_x": (132, 153), "roi_y": (0, 192), "bg_gap": 67, "vis_p": (0.5, 98.5), "ylim_raw": (3.5, 7.0), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     16: {"slice_idx": 16, "roi_x": (118, 139), "roi_y": (0, 192), "bg_gap": 81,   "vis_p": (0.5, 97.5), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     17: {"slice_idx": 17, "roi_x": (186, 207), "roi_y": (0, 192), "bg_gap": -70,  "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.6), "fit_window": (90, 130)},
-    21: {"slice_idx": 18, "roi_x": (195, 216), "roi_y": (0, 192), "bg_gap": -216, "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 7.0), "ylim_sbr": (-0.2, 0.6), "fit_window": (90, 130)},
     22: {"slice_idx": 16, "roi_x": (170, 191), "roi_y": (0, 192), "bg_gap": -177, "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
 
     # Block 2
@@ -220,7 +218,6 @@ SERIES_CONFIG = {
     # Block 3
     50: {"slice_idx": 12, "roi_x": (96, 117),  "roi_y": (0, 192), "bg_gap": 40,   "vis_p": (0.5, 96.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     51: {"slice_idx": 22, "roi_x": (137, 158), "roi_y": (0, 192), "bg_gap": 56,   "vis_p": (0.5, 94.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
-    53: {"slice_idx": 10, "roi_x": (134, 155), "roi_y": (0, 192), "bg_gap": -72,  "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     55: {"slice_idx": 20, "roi_x": (177, 198), "roi_y": (0, 192), "bg_gap": -76,  "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 5.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     56: {"slice_idx": 9,  "roi_x": (151, 172), "roi_y": (0, 192), "bg_gap": 48,   "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     57: {"slice_idx": 22, "roi_x": (180, 201), "roi_y": (0, 192), "bg_gap": -201, "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (87, 127)},
@@ -230,7 +227,6 @@ SERIES_CONFIG = {
     68: {"slice_idx": 20, "roi_x": (27, 48),   "roi_y": (0, 192), "bg_gap": 39,   "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
 
     # Block 4
-    71: {"slice_idx": 26, "roi_x": (122, 143), "roi_y": (0, 192), "bg_gap": 77,   "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (89, 129)},
     72: {"slice_idx": 15, "roi_x": (43, 64),   "roi_y": (0, 192), "bg_gap": -64,  "vis_p": (0.5, 94.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (88, 128)},
     73: {"slice_idx": 25, "roi_x": (81, 102),  "roi_y": (0, 192), "bg_gap": 30,   "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (87, 127)},
     74: {"slice_idx": 23, "roi_x": (65, 86),   "roi_y": (0, 192), "bg_gap": 113,  "vis_p": (0.5, 96.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (87, 127)},

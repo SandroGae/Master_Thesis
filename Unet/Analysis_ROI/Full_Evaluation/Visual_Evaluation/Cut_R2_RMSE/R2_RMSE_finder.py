@@ -9,10 +9,10 @@ from pathlib import Path
 # =====================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
 CSV_FILE = SCRIPT_DIR / "Full_Evaluation_Results_Extended.csv" 
-OUT_DIR = SCRIPT_DIR / "Sandra_Test_Results"
+OUT_DIR = SCRIPT_DIR
 OUT_DIR.mkdir(exist_ok=True)
 
-CUT_PERCENT = 2.0 
+CUT_PERCENT = 5.0 
 
 if not CSV_FILE.exists():
     raise FileNotFoundError(f"Datei nicht gefunden: {CSV_FILE}")

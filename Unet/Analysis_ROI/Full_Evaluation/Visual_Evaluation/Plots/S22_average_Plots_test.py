@@ -263,6 +263,9 @@ if __name__ == "__main__":
     scenarios = [
         ([BEST_SINGLE_POINT], [BEST_SINGLE_SEED], "Single", "Best Single Model"),
         ([BEST_AVG_POINT], list(ALL_SEEDS), "Point", "Point 10-Seed Average"),
+        ([0], list(ALL_SEEDS), "Point00", "Point 00 10-Seed Average"),
+        ([6], list(ALL_SEEDS), "Point06", "Point 06 10-Seed Average"),
+        ([42], list(ALL_SEEDS), "Point42", "Point 42 10-Seed Average"),
         (list(ALL_POINTS), list(ALL_SEEDS), "All", "Global Ensemble Average")
     ]
     

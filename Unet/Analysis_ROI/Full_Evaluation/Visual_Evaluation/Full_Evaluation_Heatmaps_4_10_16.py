@@ -29,18 +29,30 @@ STYLE_PARAMS = {
     "SUBPLOT_HSPACE": 0.25,
 }
 
-RANDOM_SEED = 42
+RANDOM_SEED = 43
 random.seed(RANDOM_SEED)
 SUBSET_SIZES = [5, 10, 15, 20, 25, 30]
 
 if not CSV_FILE.exists():
     raise FileNotFoundError(f"Datei nicht gefunden: {CSV_FILE}")
 
+# --- 1. Daten laden ---
 df_master = pd.read_csv(CSV_FILE)
 
-# Ratios berechnen
+# --- 2. Zuerst alles in Zahlen umwandeln (Schritt B vorziehen) ---
+cols_to_fix = ["Alpha", "Beta", "Amp_pr_H", "Sig_pr_H", "Amp_gt_H", "Sig_gt_H",
+               "Amp_pr_K", "Sig_pr_K", "Amp_gt_K", "Sig_gt_K",
+               "Amp_pr_L", "Sig_pr_L", "Amp_gt_L", "Sig_gt_L"]
+
+for col in cols_to_fix:
+    if col in df_master.columns:
+        df_master[col] = pd.to_numeric(df_master[col], errors="coerce")
+
+# --- 3. Dann die Fläche berechnen (Schritt A) ---
 for d in ["H", "K", "L"]:
-    df_master[f"Area_{d}"] = df_master[f"Amp_pr_{d}"] / df_master[f"Amp_gt_{d}"]
+    # Jetzt sind Amp und Sig garantiert Zahlen -> Multiplikation sicher
+    df_master[f"Area_{d}"] = (df_master[f"Amp_pr_{d}"] * df_master[f"Sig_pr_{d}"]) / \
+                             (df_master[f"Amp_gt_{d}"] * df_master[f"Sig_gt_{d}"])
 
 df_master["Alpha"] = df_master["Alpha"].round(4)
 df_master["Beta"] = df_master["Beta"].round(4)

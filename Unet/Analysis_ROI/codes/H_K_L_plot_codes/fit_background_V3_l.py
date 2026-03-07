@@ -193,14 +193,12 @@ SERIES_CONFIG = {
     12: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (27, 127),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
     15: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (95, 195),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.5)},
     16: {"slice_idx": 16, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (81, 181),  "y_lim_raw": (2.5, 7.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 97.5)},
-    21: {"slice_idx": 18, "roi_x": (0, 240), "roi_y": (101, 116), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
     22: {"slice_idx": 16, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
     29: {"slice_idx": 24, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (23, 123),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     35: {"slice_idx": 23, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (67, 167),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 90.0)},
     50: {"slice_idx": 12, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (59, 159),  "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 96.0)},
 
     # Block 2
-    1:  {"slice_idx": 11, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (106, 206), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     13: {"slice_idx": 7,  "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 0, "bg_h": 10, "fit_window": (80, 180),  "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 88.0)},
     17: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (136, 236), "y_lim_raw": (2.5, 6.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     30: {"slice_idx": 14, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (160, 240),   "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 97.0)},
@@ -214,7 +212,6 @@ SERIES_CONFIG = {
     # Block 3
     46: {"slice_idx": 37, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 90.0)},
     51: {"slice_idx": 22, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "fit_window": (108, 208), "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 94.0)},
-    53: {"slice_idx": 10, "roi_x": (0, 240), "roi_y": (101, 116), "bg_gap": 0, "bg_h": 10, "fit_window": (100, 200), "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     55: {"slice_idx": 21, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (122, 222), "y_lim_raw": (2.5, 4.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     56: {"slice_idx": 9,  "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (106, 206), "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     57: {"slice_idx": 22, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "fit_window": (136, 236), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
@@ -224,7 +221,6 @@ SERIES_CONFIG = {
 
     # Block 4
     68: {"slice_idx": 20, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (5, 105),   "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
-    71: {"slice_idx": 26, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (85, 185), "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     72: {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (4, 104),   "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 94.0)},
     73: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "fit_window": (42, 142), "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     74: {"slice_idx": 23, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 0, "bg_h": 10, "fit_window": (32, 132), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 96.0)},

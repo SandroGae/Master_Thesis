@@ -38,11 +38,14 @@ if not CSV_FILE.exists():
 
 df = pd.read_csv(CSV_FILE)
 
-# --- SCHRITT A: SPALTEN ERSTELLEN (Inkl. Ratios) ---
+# --- SCHRITT A: PHYSIKALISCHE FLÄCHE BERECHNEN ---
 for d in ["H", "K", "L"]:
-    df[f"Area_{d}"] = df[f"Amp_pr_{d}"] / df[f"Amp_gt_{d}"]
+    # Fläche = Amplitude * Sigma
+    # Wir vergleichen die Fläche der Vorhersage mit der Fläche der Ground Truth
+    df[f"Area_{d}"] = (df[f"Amp_pr_{d}"] * df[f"Sig_pr_{d}"]) / (df[f"Amp_gt_{d}"] * df[f"Sig_gt_{d}"])
+    
+    # Der Rest bleibt gleich
     df[f"Shift_{d}"] = (df[f"Mu_pr_{d}"] - df[f"Mu_gt_{d}"]).abs()
-    # Ratios für den Report berechnen
     df[f"R2_Ratio_{d}"] = df[f"R2_pr_{d}"] / df[f"R2_gt_{d}"]
     df[f"RMSE_Ratio_{d}"] = df[f"RMSE_pr_{d}"] / df[f"RMSE_gt_{d}"]
 
@@ -80,9 +83,9 @@ df = apply_alpha_fix(df)
 # --------------------------------------------------
 # 3. Aggregation & Ratio-basierte Filter-Definition
 # --------------------------------------------------
-# Diese Werte wurden durch den 2% cutoff gefunden
-R2_RATIO_MIN = 0.5058
-RMSE_RATIO_MAX = 1.1476
+# Diese Werte wurden durch den 5% cutoff gefunden
+R2_RATIO_MIN = 0.6269
+RMSE_RATIO_MAX = 1.0949
 
 def get_stats(data_subset):
     # Logik für den Qualitäts-Filter (Sandra-Test)
@@ -144,14 +147,14 @@ def plot_final_6_heatmaps(data):
 
     # Konfiguration umgeordnet für 2x3 Grid
     plot_configs = [
-        # ZEILE 1: ALL SERIES (Raw, Ratio Filter, Shift)
+        # ZEILE 1: ALL SERIES
         ('area_raw_all', 'RdYlGn', 'Area: All Series (Raw)', '(GT=1.0)', False),
-        ('area_penalized_all', 'RdYlGn', 'Area: All Series (Ratio Filter)', '(GT=1.0)', False),
+        ('area_penalized_all', 'RdYlGn', r'Area: All Series (5% Quality Cut)', '(GT=1.0)', False),
         ('shift_all', 'RdYlGn_r', 'Peak Shift: All Series', 'Pixels', False),
         
-        # ZEILE 2: CONVERGED MODELS (Raw, Ratio Filter, Shift)
+        # ZEILE 2: CONVERGED MODELS
         ('area_raw_clean', 'RdYlGn', 'Area: Converged Models (Raw)', '(GT=1.0)', True),
-        ('area_penalized_clean', 'RdYlGn', 'Area: Converged (Ratio Filter)', '(GT=1.0)', True),
+        ('area_penalized_clean', 'RdYlGn', r'Area: Converged (5% Quality Cut)', '(GT=1.0)', True),
         ('shift_clean', 'RdYlGn_r', 'Peak Shift: Converged Models', 'Pixels', True)
     ]
 
@@ -170,17 +173,22 @@ def plot_final_6_heatmaps(data):
         cbar.ax.tick_params(labelsize=STYLE_PARAMS["COLORBAR_TICK_SIZE"])
 
         for _, row in data.iterrows():
-            # Fit-Rate sicherstellen, dass sie beim korrekten Subplot gerendert wird
-            if m_col == 'area_penalized_all':
-                ax.text(row['Alpha'] + 0.02, row['Beta'] + 0.012, f"{int(row['fit_rate_all'])}%", 
+            # Check, ob wir uns in einem der "Penalized" Subplots befinden (Spalte 2 in beiden Zeilen)
+            if m_col in ['area_penalized_all', 'area_penalized_clean']:
+                # Wähle die passende Spalte für die Prozentzahl (all vs clean)
+                rate_key = 'fit_rate_all' if 'all' in m_col else 'fit_rate_clean'
+                
+                ax.text(row['Alpha'] + 0.02, row['Beta'] + 0.012, f"{int(row[rate_key])}%", 
                         color='black', fontsize=12, ha='left', va='center', fontweight='bold', zorder=10)
 
+            # --- Stabilitäts-Halos (Blau) ---
             if use_halo and row['stability_rate'] < 100:
                 halo_size = (100 - row['stability_rate']) * 110 
                 dynamic_alpha = (1.0 - row['stability_rate']/100.0) * 0.6
                 ax.scatter(row['Alpha'], row['Beta'], s=halo_size, color='blue', 
                             alpha=dynamic_alpha, edgecolors='none', zorder=3)
 
+            # --- Zentrierter Punkt ---
             p_color = 'white' if (row['stability_rate'] == 100) else '#dcdcdc'
             ax.scatter(row['Alpha'], row['Beta'], c=p_color, edgecolors='black', 
                         s=STYLE_PARAMS["POINT_SIZE"], linewidths=1.5, zorder=5)
