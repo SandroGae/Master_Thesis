@@ -7,9 +7,12 @@ import gc
 import shutil
 import json
 import time
+import argparse
 from datetime import datetime
 from pathlib import Path
 
+# HDF5 Locking für HPCs deaktivieren, um den Errno 11 zu vermeiden
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 import h5py
@@ -26,31 +29,57 @@ from unet_3d_simple_checkpoints import finalize_run, make_meta_dict
 from tb_utils import tb_callbacks
 
 # =====================================================
-# 1. KONFIGURATION & SETUP
+# 1. SETUP & ARGUMENT PARSING
 # =====================================================
-GLOBAL_INIT_SEED = 42
-os.environ['PYTHONHASHSEED'] = str(GLOBAL_INIT_SEED)
-random.seed(GLOBAL_INIT_SEED)
-np.random.seed(GLOBAL_INIT_SEED)
-tf.random.set_seed(GLOBAL_INIT_SEED)
+# Definiere die 3 gewünschten Punkte als Liste von Dictionaries
+# Index 0: Punkt 2, Index 1: Punkt 14, Index 2: Punkt 23
+CONFIGS = [
+    {"point_id": 2,  "alpha": 0.0, "beta": 2/6},
+    {"point_id": 14, "alpha": 2/6, "beta": 0.0},
+    {"point_id": 23, "alpha": 3/6, "beta": 2/6}
+]
+
+# Wir erzeugen 30 Runs (3 Punkte * 10 Seeds). 
+# Der run_idx geht von 0 bis 29.
+parser = argparse.ArgumentParser()
+parser.add_argument("--run_idx", type=int, required=True, help="Index von 0 bis 29 (3 Punkte * 10 Seeds)")
+args = parser.parse_args()
+
+run_idx = args.run_idx
+if not (0 <= run_idx < 30):
+    print(f"Fehler: run_idx {run_idx} ist außerhalb des gültigen Bereichs (0-29).")
+    sys.exit(1)
+
+# Aus dem run_idx berechnen wir, welcher Punkt und welcher Seed dran ist
+config_idx = run_idx // 10
+seed_offset = run_idx % 10
+
+CURRENT_CONFIG = CONFIGS[config_idx]
+POINT_ID = CURRENT_CONFIG["point_id"]
+ALPHA_OPTIMAL = CURRENT_CONFIG["alpha"]
+BETA_OPTIMAL = CURRENT_CONFIG["beta"]
+CURRENT_SEED = 42 + seed_offset # Seeds 42 bis 51
+
+# Reproduzierbarkeit für diesen spezifischen Seed setzen
+os.environ['PYTHONHASHSEED'] = str(CURRENT_SEED)
+random.seed(CURRENT_SEED)
+np.random.seed(CURRENT_SEED)
+tf.random.set_seed(CURRENT_SEED)
 tf.config.experimental.enable_op_determinism()
 
-# Die Parameter deines besten Modells
-ALPHA_OPTIMAL = 0.0
-BETA_OPTIMAL = 2/6
-SEEDS = range(42, 52)  # Schleife über die 10 Seeds
-
+# Konfiguration
 DEPTH = 5
 SERIES_LEN_ORIG = 41
 BATCH_SIZE = 8
-EPOCHS = 200
+EPOCHS = 250 # Auf 250 erhöht
 LR_TARGET = 5e-4
 WARMUP_EPOCHS = 10
 BASEFILTERS = 64
 AUTOTUNE = tf.data.AUTOTUNE
 
 DATA_ROOT = Path.home() / "data" / "original_data"
-SCRATCH_ROOT = Path.home() / "scratch" / "Confidence_10_Seeds"
+# Eigener Ordner für dieses spezifische Experiment
+SCRATCH_ROOT = Path.home() / "scratch" / "Final_3_Points_Experiment"
 TB_ROOT = SCRATCH_ROOT / "tensorboard_logs"
 MODEL_DIR = SCRATCH_ROOT / "models"
 
@@ -190,155 +219,181 @@ def prepare_25d_input(x, y):
     return tf.transpose(tf.squeeze(x, -1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
 
 # =====================================================
-# 4. MAIN LOOP FÜR 10 SEEDS
+# 4. TRAINING EXECUTION
 # =====================================================
-print(f"--- STARTE PROBABILISTIC TRAINING FÜR 10 SEEDS (a={ALPHA_OPTIMAL:.4f}, b={BETA_OPTIMAL:.4f}) ---")
+print(f"\n{'='*80}")
+print(f">>> STARTING JOB {run_idx+1}/30")
+print(f">>> POINT {POINT_ID}: a={ALPHA_OPTIMAL:.4f}, b={BETA_OPTIMAL:.4f} | SEED {CURRENT_SEED}")
+print(f"{'='*80}\n")
 
+# Wir haben die Schleife entfernt. Dieser Job macht exakt EINEN Seed!
+RUN_NAME = f"P{POINT_ID:02d}_a{ALPHA_OPTIMAL:.4f}_b{BETA_OPTIMAL:.4f}_seed{CURRENT_SEED}"
+SEED_DIR = MODEL_DIR / RUN_NAME
+SEED_DIR.mkdir(parents=True, exist_ok=True)
+
+csv_file = SEED_DIR / f"{RUN_NAME}_metrics.csv"
+best_keras_file = SEED_DIR / f"{RUN_NAME}_best_model.keras"
+best_h5_file = SEED_DIR / f"{RUN_NAME}_best_weights.weights.h5"
+
+# Lock und State Mechanismus (für Array Jobs immer noch nützlich, falls man denselben Job zweimal startet)
+lock_file = SEED_DIR / f"{RUN_NAME}.lock"
+state_file = SEED_DIR / f"{RUN_NAME}__state.json"
+
+if state_file.exists():
+    try:
+        with open(state_file, "r") as f: state = json.load(f)
+        if state.get("status") == "finished":
+            print(f"Skipping {RUN_NAME}: bereits erfolgreich abgeschlossen.")
+            sys.exit(0)
+    except Exception: pass
+
+# Lockfile checken
+if lock_file.exists():
+    try:
+        age = time.time() - lock_file.stat().st_mtime
+        if age < 2 * 60 * 60: # jünger als 2h
+            print(f"Skipping {RUN_NAME}: Lock aktiv (Job läuft vermutlich woanders).")
+            sys.exit(0)
+        else: lock_file.unlink(missing_ok=True)
+    except Exception: pass
+
+# Lock setzen
+lock_file.touch()
+
+# Laden der Daten erst hier, falls der Job geskippt wird, sparen wir RAM und IO
 lc_t, hc_t = load_split(DATA_ROOT / "training_data.hdf5")
 X_train_win, y_train_win = make_stride1_windows(lc_t, hc_t, SERIES_LEN_ORIG, DEPTH)
 
 lc_v, hc_v = load_split(DATA_ROOT / "validation_data.hdf5")
 X_val_win, y_val_win = make_stride1_windows(lc_v, hc_v, SERIES_LEN_ORIG, DEPTH)
 
-for current_seed in SEEDS:
-    RUN_NAME = f"Confidence_a{ALPHA_OPTIMAL:.4f}_b{BETA_OPTIMAL:.4f}_seed{current_seed}"
-    SEED_DIR = MODEL_DIR / RUN_NAME
-    SEED_DIR.mkdir(parents=True, exist_ok=True)
+train_ds = (tf.data.Dataset.from_tensor_slices((X_train_win, y_train_win))
+            .shuffle(len(X_train_win), seed=CURRENT_SEED)
+            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, 0.5), num_parallel_calls=AUTOTUNE)
+            .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
+            .batch(BATCH_SIZE).prefetch(AUTOTUNE))
+
+val_ds = (tf.data.Dataset.from_tensor_slices((X_val_win, y_val_win))
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10000.0, 0), num_parallel_calls=AUTOTUNE)
+          .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
+          .cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
+
+model = unet_2d_stacked((192, 240, DEPTH), BASEFILTERS)
+optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True, global_clipnorm=1.0)
+
+model.compile(
+    optimizer=optimizer, 
+    loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
+    metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped, mae_raw, mse_raw, ssim_raw, psnr_raw, avg_sigma]
+)
+
+status = {"best_psnr": -1.0, "drop_cnt": 0, "aborted": False, "reason": "none"}
+term_reason = "crash_or_timeout"
+
+def check_crash(epoch, logs):
+    psnr = logs.get('val_psnr_clipped', 0)
+    if psnr > status["best_psnr"]: 
+        status["best_psnr"] = psnr
+        status["drop_cnt"] = 0
+    elif epoch >= 10:
+        if psnr < (status["best_psnr"] - 4.5) or psnr < 24.0:
+            status["drop_cnt"] += 1
+        if status["drop_cnt"] >= 3:
+            status["aborted"] = True
+            status["reason"] = "perf_collapse"
+            model.stop_training = True
+    lock_file.touch()
+
+temp_checkpoint_file = SEED_DIR / f"{RUN_NAME}_TEMP.weights.h5"
+
+callbacks = [
+    tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
+    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
+    tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(temp_checkpoint_file), monitor='val_loss', 
+        save_best_only=True, save_weights_only=True, mode='min', verbose=1
+    ),
+    tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True, verbose=1),
+    tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
+    tf.keras.callbacks.CSVLogger(str(csv_file)),
+    *tb_callbacks(TB_ROOT / RUN_NAME)
+]
+
+history = None
+try:
+    with open(state_file, "w") as f: json.dump({"status": "running"}, f)
+
+    history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
     
-    csv_file = SEED_DIR / f"{RUN_NAME}_metrics.csv"
-    best_keras_file = SEED_DIR / f"{RUN_NAME}_best_model.keras"
-    best_h5_file = SEED_DIR / f"{RUN_NAME}_best_weights.weights.h5"
+    if status["aborted"]:
+        term_reason = "psnr_safety_net"
+    else:
+        term_reason = "early_stopping" if len(history.history["loss"]) < EPOCHS else "max_epochs_250"
+except Exception as e:
+    status["aborted"] = True
+    status["reason"] = f"crash_{str(e)[:20]}"
+    term_reason = "crash"
 
-    print(f"\n{'='*60}")
-    print(f">>> STARTING SEED {current_seed}")
-    print(f"{'='*60}")
+# --- FINALISIERUNG ---
+best_epoch = None
+best_val_loss = None
+best_val_psnr = None
 
-    # Reproduzierbarkeit für diesen spezifischen Lauf setzen
-    random.seed(current_seed)
-    np.random.seed(current_seed)
-    tf.random.set_seed(current_seed)
-
-    # Datasets aufbauen
-    train_ds = (tf.data.Dataset.from_tensor_slices((X_train_win, y_train_win))
-                .shuffle(len(X_train_win), seed=current_seed)
-                .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, 0.5), num_parallel_calls=AUTOTUNE)
-                .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
-                .batch(BATCH_SIZE).prefetch(AUTOTUNE))
-
-    val_ds = (tf.data.Dataset.from_tensor_slices((X_val_win, y_val_win))
-              .map(augment_and_normalize_3d_per_slice(10000.0, 10000.0, 0), num_parallel_calls=AUTOTUNE)
-              .map(prepare_25d_input, num_parallel_calls=AUTOTUNE)
-              .cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
-
-    # Modell & Optimizer initialisieren
-    model = unet_2d_stacked((192, 240, DEPTH), BASEFILTERS)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True, global_clipnorm=1.0)
-    
-    model.compile(
-        optimizer=optimizer, 
-        loss=get_probabilistic_triple_loss(ALPHA_OPTIMAL, BETA_OPTIMAL), 
-        metrics=[mae_clipped, mse_clipped, ssim_clipped, psnr_clipped, mae_raw, mse_raw, ssim_raw, psnr_raw, avg_sigma]
-    )
-
-    status = {"best_psnr": -1.0, "drop_cnt": 0, "aborted": False, "reason": "none"}
-    term_reason = "crash_or_timeout"
-
-    # Dein PSNR Sicherheitsnetz
-    def check_crash(epoch, logs):
-        psnr = logs.get('val_psnr_clipped', 0)
-        if psnr > status["best_psnr"]: 
-            status["best_psnr"] = psnr
-            status["drop_cnt"] = 0
-        elif epoch >= 10:
-            if psnr < (status["best_psnr"] - 4.5) or psnr < 24.0:
-                status["drop_cnt"] += 1
-            if status["drop_cnt"] >= 3:
-                status["aborted"] = True
-                status["reason"] = "perf_collapse"
-                model.stop_training = True
-
-    temp_checkpoint_file = SEED_DIR / f"{RUN_NAME}_TEMP.weights.h5"
-
-    callbacks = [
-        tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=1),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(temp_checkpoint_file), monitor='val_loss', 
-            save_best_only=True, save_weights_only=True, mode='min', verbose=1
-        ),
-        tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True, verbose=1),
-        tf.keras.callbacks.LambdaCallback(on_epoch_end=check_crash),
-        tf.keras.callbacks.CSVLogger(str(csv_file)),
-        *tb_callbacks(TB_ROOT / RUN_NAME)
-    ]
-
-    history = None
+if temp_checkpoint_file.exists():
+    print(f">>> Lade beste Gewichte zur Speicherung nach: {temp_checkpoint_file.name}")
     try:
-        history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
-        if status["aborted"]:
-            term_reason = "psnr_safety_net"
-        else:
-            term_reason = "early_stopping" if len(history.history["loss"]) < EPOCHS else "max_epochs_200"
-    except Exception as e:
-        status["aborted"] = True
-        status["reason"] = f"crash_{str(e)[:20]}"
-        term_reason = "crash"
-
-    # --- FINALISIERUNG ---
-    best_epoch = None
-    best_val_loss = None
-    best_val_psnr = None
-
-    if temp_checkpoint_file.exists():
-        print(f">>> Lade beste Gewichte zur Speicherung nach: {temp_checkpoint_file.name}")
         model.load_weights(str(temp_checkpoint_file))
-        
-        # Exakte doppelte Speicherung (Dein Wunsch!)
-        model.save(str(best_keras_file))
-        model.save_weights(str(best_h5_file))
-        
-        # Evaluierung für die finalen Werte im Meta-Dict
-        try:
-            eval_out = model.evaluate(val_ds, verbose=0, return_dict=True)
-            best_val_psnr = eval_out.get("psnr_clipped", status["best_psnr"])
-            best_val_loss = eval_out.get("loss", None)
-        except Exception as e:
-            print(f"Warnung: Evaluation fehlgeschlagen: {e}")
-
-    if history is not None and "val_loss" in history.history:
-        best_idx = int(np.argmin(history.history["val_loss"]))
-        best_epoch = best_idx + 1
-        if best_val_loss is None: best_val_loss = float(history.history["val_loss"][best_idx])
-        if best_val_psnr is None: best_val_psnr = float(history.history["val_psnr_clipped"][best_idx])
-
-    final_psnr_for_meta = float(best_val_psnr) if best_val_psnr is not None else float("nan")
+    except Exception as e:
+        print(f"Warnung: Konnte TEMP Gewichte nicht laden: {e}. Versuche kurzen Sleep...")
+        time.sleep(5)
+        model.load_weights(str(temp_checkpoint_file))
     
-    meta = make_meta_dict(
-        RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (192, 240, DEPTH),
-        extra={
-            "aborted": status["aborted"], 
-            "reason": status["reason"], 
-            "termination_reason": term_reason,
-            "final_psnr_eval": final_psnr_for_meta, 
-            "alpha": ALPHA_OPTIMAL, 
-            "beta": BETA_OPTIMAL,
-            "seed": current_seed,
-            "best_epoch": best_epoch,
-            "best_val_loss": best_val_loss
-        }
-    )
+    model.save(str(best_keras_file))
+    model.save_weights(str(best_h5_file))
     
-    finalize_run(model, history, RUN_NAME, meta, folder_name=str(SEED_DIR))
-    
-    # 1 Image für die schnelle visuelle Kontrolle plotten
-    for sx, sy in val_ds.take(1): 
-        save_uncertainty_analysis(model, sx, current_seed, SEED_DIR)
-    
-    # Temp-Checkpoint löschen
-    if temp_checkpoint_file.exists(): 
-        temp_checkpoint_file.unlink()
+    try:
+        eval_out = model.evaluate(val_ds, verbose=0, return_dict=True)
+        best_val_psnr = eval_out.get("psnr_clipped", status["best_psnr"])
+        best_val_loss = eval_out.get("loss", None)
+    except Exception as e:
+        print(f"Warnung: Evaluation fehlgeschlagen: {e}")
 
-    tf.keras.backend.clear_session()
-    gc.collect()
+if history is not None and "val_loss" in history.history:
+    best_idx = int(np.argmin(history.history["val_loss"]))
+    best_epoch = best_idx + 1
+    if best_val_loss is None: best_val_loss = float(history.history["val_loss"][best_idx])
+    if best_val_psnr is None: best_val_psnr = float(history.history["val_psnr_clipped"][best_idx])
 
-print(f"\n--- TRAINING ALLER 10 SEEDS ABGESCHLOSSEN ---")
+final_psnr_for_meta = float(best_val_psnr) if best_val_psnr is not None else float("nan")
+
+meta = make_meta_dict(
+    RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (192, 240, DEPTH),
+    extra={
+        "aborted": status["aborted"], 
+        "reason": status["reason"], 
+        "termination_reason": term_reason,
+        "final_psnr_eval": final_psnr_for_meta, 
+        "alpha": ALPHA_OPTIMAL, 
+        "beta": BETA_OPTIMAL,
+        "seed": CURRENT_SEED,
+        "point_id": POINT_ID,
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val_loss
+    }
+)
+
+finalize_run(model, history, RUN_NAME, meta, folder_name=str(SEED_DIR))
+
+for sx, sy in val_ds.take(1): 
+    save_uncertainty_analysis(model, sx, CURRENT_SEED, SEED_DIR)
+
+with open(state_file, "w") as f: 
+    json.dump({"status": "finished" if term_reason != "crash" else "crash", "reason": term_reason}, f)
+
+if temp_checkpoint_file.exists(): temp_checkpoint_file.unlink()
+if lock_file.exists(): lock_file.unlink()
+
+tf.keras.backend.clear_session()
+gc.collect()
+
+print(f"\n--- TRAINING ABGESCHLOSSEN FÜR RUN_IDX {run_idx} ---")
