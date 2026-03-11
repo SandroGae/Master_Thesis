@@ -209,7 +209,7 @@ SERIES_CONFIG = {
     # Block 3
     50: {"slice_idx": 12, "roi_x": (98, 119),  "roi_y": (101, 116), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 96.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
     51: {"slice_idx": 22, "roi_x": (131, 152), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 94.0), "ylim_raw": (55.0, 90), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
-    55: {"slice_idx": 20, "roi_x": (180, 201), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
+    55: {"slice_idx": 21, "roi_x": (180, 201), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
     56: {"slice_idx": 9,  "roi_x": (155, 176), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 95.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
     57: {"slice_idx": 22, "roi_x": (186, 207), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 98.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},
     59: {"slice_idx": 15, "roi_x": (195, 216), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "vis_p": (0.5, 96.0), "ylim_raw": (55.0, 90.0), "ylim_sbr": (-0.1, 0.4), "fit_win": (2, 38)},

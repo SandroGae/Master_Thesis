@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from scipy.optimize import curve_fit
 from pathlib import Path
-import os
 import re
+from collections import defaultdict
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # =====================================================
-# 1. KONFIGURATION
+# 1. SETUP & CONFIGURATION
 # =====================================================
 EXP_NAME = "CARE_10_SEEDS"
-
-
 BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Confidence")
-IN_DIR   = BASE_DIR / "npz_files" / EXP_NAME
-OUT_DIR  = BASE_DIR / "Plots_L_Scan" / EXP_NAME
+NPZ_DIR = BASE_DIR / "npz_files" / EXP_NAME
+OUT_DIR = BASE_DIR / "Thesis_Plots" / EXP_NAME
 
-# Deine bewährte Serien-Konfiguration (L-Richtung / Horizontal)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Deine bewährte Serien-Konfiguration
 SERIES_CONFIG = {
-    # Block 1 (Extrahiert aus den Tuner-Screenshots)
+    # Block 1
     5:  {"slice_idx": 14, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 97.5)},
     11: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (40, 140),  "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 97.5)},
     12: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (27, 127),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
@@ -54,141 +55,131 @@ SERIES_CONFIG = {
     72: {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (4, 104),   "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 94.0)},
     73: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "fit_window": (42, 142), "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     74: {"slice_idx": 23, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 0, "bg_h": 10, "fit_window": (32, 132), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 96.0)},
-
 }
-
-FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
-TITLES     = ["Low Count", "Confidence Reconstruction (mu)", "Ground Truth"]
 
 # =====================================================
 # 2. HILFSFUNKTIONEN
 # =====================================================
-def gaussian(x, A, mu, sigma):
-    return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
-
 def vis_norm(image, p_low=0.5, p_high=99.5):
     vmin, vmax = np.percentile(image, [p_low, p_high])
     if vmax - vmin == 0: return image
     return np.clip((image - vmin) / (vmax - vmin), 0, 1)
 
-def perform_gaussian_fit(x, y, y_err, fit_window):
-    mask = (x >= fit_window[0]) & (x <= fit_window[1])
-    x_f, y_f, s_f = x[mask], y[mask], y_err[mask]
-    if len(y_f) < 5: return None, None, None
-    win_w = fit_window[1] - fit_window[0]
-    p0 = [np.max(y_f) - np.median(y_f), x_f[np.argmax(y_f)], win_w * 0.15]
-    bounds = ((0, fit_window[0], 0.5), (np.inf, fit_window[1], win_w * 0.4))
-    try:
-        popt, pcov = curve_fit(gaussian, x_f, y_f, p0=p0, sigma=s_f, absolute_sigma=True, bounds=bounds, maxfev=5000)
-        perr = np.sqrt(np.diag(pcov))
-        return gaussian(x, *popt), popt, perr
-    except:
-        return None, None, None
+# =====================================================
+# 3. GENERIERUNG DES THESIS-PLOTS
+# =====================================================
+def create_thesis_plots(s_id, file_paths):
+    if s_id not in SERIES_CONFIG:
+        print(f"-> Überspringe Serie {s_id} (nicht in SERIES_CONFIG).")
+        return
 
-# =====================================================
-# 3. PROZESS-FUNKTION
-# =====================================================
-def process_combination(npz_path, s_id, cfg):
-    data = np.load(npz_path)
+    print(f"\n>>> Erstelle kombinierten Plot für Serie {s_id}...")
     
-    # Extrahiert den Modellnamen (z.B. Confidence_V2_200945)
-    model_name_match = re.search(r"Eval_(.*)_S\d+", npz_path.stem)
-    model_label = model_name_match.group(1) if model_name_match else "Unknown_Model"
+    config = SERIES_CONFIG[s_id]
+    original_slice_idx = config["slice_idx"]
+    vis_p_low, vis_p_high = config["vis_p"]
+    
+    mus, sigmas = [], []
+    raw_input, ground_truth = None, None
+    
+    for idx, path in enumerate(file_paths):
+        data = np.load(path)
+        mus.append(data['pred'])
+        sigmas.append(data['sigma'])
+        
+        if idx == 0:
+            raw_input = data['lc']  
+            ground_truth = data['gt'] 
 
-    idx = cfg["slice_idx"]
-    # 'pred' ist in den neuen NPZs der mu-Kanal
-    imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
+    # Slicing: Entferne Ränder (0,1 und 39,40)
+    mus = np.stack(mus)[:, 2:-2, :, :]
+    sigmas = np.stack(sigmas)[:, 2:-2, :, :]
+    raw_input = raw_input[2:-2, :, :]
+    ground_truth = ground_truth[2:-2, :, :]
+    
+    # Berechne den neuen Z-Index aufgrund des Beschnitts (2:-2)
+    z = original_slice_idx - 2 
 
-    rx, ry, bg_h = cfg["roi_x"], cfg["roi_y"], cfg["bg_h"]
-    r1_t = max(0, ry[0] - cfg["bg_gap"] - bg_h); r1_b = r1_t + bg_h
-    r2_t = min(192, ry[1] + cfg["bg_gap"]); r2_b = min(192, r2_t + bg_h)
+    if z < 0 or z >= mus.shape[1]:
+        print(f"Warnung: Der berechnete Slice {z} liegt außerhalb des Arrays. Überspringe.")
+        return
 
-    gt_bg_area = np.concatenate([imgs[2][r1_t:r1_b, rx[0]:rx[1]], imgs[2][r2_t:r2_b, rx[0]:rx[1]]])
-    gt_std = np.std(gt_bg_area)
+    # Metriken berechnen
+    mu_ens = np.mean(mus, axis=0)
+    sigma_aleatoric = np.sqrt(np.mean(sigmas**2, axis=0))
+    sigma_epistemic = np.std(mus, axis=0)
+    sigma_relative = sigma_epistemic / (mu_ens + 1e-6)
 
-    results = []
-    x_ax = np.arange(rx[0], rx[1])
-
-    for i, img in enumerate(imgs):
-        sig_s = img[ry[0]:ry[1], rx[0]:rx[1]]
-        bg_s  = np.concatenate([img[r1_t:r1_b, rx[0]:rx[1]], img[r2_t:r2_b, rx[0]:rx[1]]])
-
-        prof_sig = np.sum(sig_s, axis=0)
-        scale = sig_s.shape[0] / bg_s.shape[0]
-        prof_bg = np.sum(bg_s, axis=0) * scale
-
-        denom = np.where(prof_bg == 0, 1e-9, prof_bg)
-        sbr = (prof_sig - prof_bg) / denom
-        p_std = (gt_std if i == 1 else np.std(bg_s)) + 1e-9
-
-        # Gaußsche Fehlerfortpflanzung
-        n_sig_px = sig_s.shape[0] * sig_s.shape[1]
-        n_bg_px = bg_s.shape[0] * bg_s.shape[1]
-        err_net = np.sqrt((p_std * np.sqrt(n_sig_px/sig_s.shape[1]))**2 + (p_std * np.sqrt(n_bg_px/bg_s.shape[1]) * scale)**2)
-        diff = np.where(prof_sig - prof_bg == 0, 1, prof_sig - prof_bg)
-        sbr_err = np.abs(sbr) * np.sqrt((err_net/np.abs(diff))**2 + (p_std * np.sqrt(n_bg_px/bg_s.shape[1]) * scale / np.abs(denom))**2)
-
-        fit_y, par, perr = (None, None, None) if i == 0 else perform_gaussian_fit(x_ax, sbr, sbr_err, cfg["fit_window"])
-        results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
-
-    fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=100, gridspec_kw={'height_ratios': [1, 0.8, 1]})
-    fig.suptitle(f"L-Scan (Horizontal) - Model: {model_label} - Serie {s_id}", fontsize=16, fontweight='bold')
-
-    p_l, p_h = cfg.get("vis_p", (0.5, 99.5))
+    # ---------------------------------------------------------
+    # DER 2x3 KOMBINIERTE PLOT
+    # ---------------------------------------------------------
+    fig, axes = plt.subplots(2, 3, figsize=(24, 12), dpi=300)
+    fig.suptitle(f"Uncertainty Decomposition - Series {s_id} | Slice {original_slice_idx}", fontsize=22, y=1.02)
+    
+    # Definition der Inhalte für die OBERE REIHE (Keine Colorbars, invertiertes Grau)
+    images_top = [raw_input[z], ground_truth[z], mu_ens[z]]
+    titles_top = ["Low Count (Input)", "Ground Truth", "Ensemble $\mu_{ens}$"]
+    
     for i in range(3):
         ax = axes[0, i]
-        ax.imshow(vis_norm(imgs[i], p_l, p_h), cmap="gray_r")
-        ax.set_title(TITLES[i], fontsize=14, fontweight='bold')
-        roi_w, roi_h = rx[1]-rx[0], ry[1]-ry[0]
-        ax.add_patch(patches.Rectangle((rx[0], ry[0]), roi_w, roi_h, lw=2, ec='blue', fc='none'))
-        ax.add_patch(patches.Rectangle((rx[0], r1_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.2))
-        ax.add_patch(patches.Rectangle((rx[0], r2_t), roi_w, bg_h, lw=1, ec='red', fc='red', alpha=0.2))
-        ax.add_patch(patches.Rectangle((cfg["fit_window"][0], ry[0]), cfg["fit_window"][1]-cfg["fit_window"][0], roi_h, lw=0, fc='green', alpha=0.2))
-        ax.axis('off')
+        # Bild normieren mit deinen perfekten vis_p Werten
+        img_norm = vis_norm(images_top[i], vis_p_low, vis_p_high)
+        ax.imshow(img_norm, cmap='gray_r')
+        ax.set_title(titles_top[i], fontsize=18)
+        # Nur ganz links die Y-Achse beschriften
+        if i == 0: 
+            ax.set_ylabel("Detector Y", fontsize=14)
 
-        ax2 = axes[1, i]
-        ax2.plot(x_ax, results[i]['sig'], color='blue', alpha=0.7, label='Raw Sum')
-        ax2.plot(x_ax, results[i]['bg'], color='red', alpha=0.7, label='Background Sum')
-        ax2.axvspan(cfg["fit_window"][0], cfg["fit_window"][1], color='green', alpha=0.1)
-        ax2.set_ylim(cfg["y_lim_raw"])
-        ax2.grid(True, alpha=0.3)
-        if i == 0: ax2.set_ylabel("Counts")
-        if i == 1: ax2.legend(loc='upper right', fontsize=8)
+# Definition der Inhalte für die UNTERE REIHE (Mit Colorbars, Inferno Colormap)
+    images_bottom = [sigma_aleatoric[z], sigma_epistemic[z], sigma_relative[z]]
+    titles_bottom = ["Aleatoric Uncertainty", "Epistemic Uncertainty (Disagreement)", "Relative Epistemic Uncertainty"]
+    
+    for i in range(3):
+        ax = axes[1, i]
+        
+        # Anti-Überbelichtungs-Fix für die Aleatoric Uncertainty (Index 0)
+        if i == 0:
+            # 99.9% nimmt fast das absolute Maximum, das dunkelt das Bild schön ab
+            vmax_val = np.percentile(images_bottom[i], 99.0) 
+        else:
+            # Für die anderen beiden nutzen wir weiterhin deine perfekte Config
+            vmax_val = np.percentile(images_bottom[i], vis_p_high)
+            
+        im = ax.imshow(images_bottom[i], cmap='inferno', vmin=0, vmax=vmax_val)
+        ax.set_title(titles_bottom[i], fontsize=18)
+        ax.set_xlabel("Detector X", fontsize=14)
+        if i == 0: 
+            ax.set_ylabel("Detector Y", fontsize=14)
+        
+        # Colorbar anfügen
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        ax3 = axes[2, i]
-        ax3.errorbar(x_ax, results[i]['sbr'], yerr=results[i]['err'], fmt='.', markersize=5, color='black', alpha=0.6, label='SRBR')
-        ax3.axhline(0, color='gray', ls=':', alpha=0.5)
-
-        if results[i]['fit'] is not None:
-            p, e = results[i]['par'], results[i]['perr']
-            l = (f"Gauss (Amp={p[0]:.2f}$\pm${e[0]:.2f}, Peak={p[1]:.1f}$\pm${e[1]:.1f}, $\sigma$={p[2]:.2f})")
-            ax3.plot(x_ax, results[i]['fit'], color=FIT_COLORS[i], ls='--', lw=2.5, label=l)
-
-        ax3.set_xlim(cfg["fit_window"])
-        ax3.set_ylim(cfg["y_lim_sbr"])
-        ax3.set_xlabel("Pixel X")
-        ax3.grid(True, alpha=0.3)
-        ax3.legend(loc='upper right', fontsize=8)
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    fig.savefig(OUT_DIR / f"L_Scan_S{s_id}_{model_label}.png", bbox_inches='tight')
+    plt.tight_layout()
+    fig.savefig(OUT_DIR / f"Plot_Combined_S{s_id}.png", bbox_inches='tight')
     plt.close(fig)
 
-def main():
-    # Sucht alle neuen NPZ-Dateien
-    all_npzs = sorted(list(IN_DIR.glob("Eval_Confidence*.npz")))
-    print(f"Gefunden: {len(all_npzs)} NPZ-Dateien. Starte Plotting...")
-    
-    for i, npz_path in enumerate(all_npzs):
-        try:
-            # Extrahiere S-Nummer (z.B. S5)
-            s_id = int(re.search(r"_S(\d+)", npz_path.name).group(1))
-            if s_id in SERIES_CONFIG:
-                process_combination(npz_path, s_id, SERIES_CONFIG[s_id])
-                print(f" -> Serie {s_id} fertig ({i+1}/{len(all_npzs)})")
-        except Exception as e:
-            print(f"Fehler bei {npz_path.name}: {e}")
+    print(f"   -> 2x3 Plot erfolgreich gespeichert!")
 
+# =====================================================
+# 4. RUNNER LOGIK
+# =====================================================
 if __name__ == "__main__":
-    main()
+    all_npzs = sorted(list(NPZ_DIR.glob("*.npz")))
+    ensembles = defaultdict(list)
+
+    target_series = [s for s in [5, 12, 13] if s in SERIES_CONFIG]
+
+    for f in all_npzs:
+        match = re.search(r"_S(\d+)\.npz", f.name)
+        if match:
+            s_id = int(match.group(1))
+            if s_id in target_series:
+                ensembles[s_id].append(f)
+
+    for s_id, file_paths in ensembles.items():
+        if len(file_paths) == 10:
+            create_thesis_plots(s_id, file_paths)
+        else:
+            print(f"Warnung: Serie {s_id} hat {len(file_paths)} Seeds statt 10. Überspringe...")
+
+    print("\n>>> Alle Master-Thesis Plots wurden erfolgreich erstellt!")

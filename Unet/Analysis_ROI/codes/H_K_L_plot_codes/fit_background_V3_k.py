@@ -218,7 +218,7 @@ SERIES_CONFIG = {
     # Block 3
     50: {"slice_idx": 12, "roi_x": (96, 117),  "roi_y": (0, 192), "bg_gap": 40,   "vis_p": (0.5, 96.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     51: {"slice_idx": 22, "roi_x": (137, 158), "roi_y": (0, 192), "bg_gap": 56,   "vis_p": (0.5, 94.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
-    55: {"slice_idx": 20, "roi_x": (177, 198), "roi_y": (0, 192), "bg_gap": -76,  "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 5.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
+    55: {"slice_idx": 21, "roi_x": (177, 198), "roi_y": (0, 192), "bg_gap": -76,  "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 5.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     56: {"slice_idx": 9,  "roi_x": (151, 172), "roi_y": (0, 192), "bg_gap": 48,   "vis_p": (0.5, 95.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (90, 130)},
     57: {"slice_idx": 22, "roi_x": (180, 201), "roi_y": (0, 192), "bg_gap": -201, "vis_p": (0.5, 98.0), "ylim_raw": (3.5, 6.5), "ylim_sbr": (-0.2, 0.5), "fit_window": (87, 127)},
     59: {"slice_idx": 15, "roi_x": (190, 211), "roi_y": (0, 192), "bg_gap": -211, "vis_p": (0.5, 96.0), "ylim_raw": (3.5, 7.0), "ylim_sbr": (-0.2, 0.5), "fit_window": (93, 133)},
