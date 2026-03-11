@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 # =====================================================
 # 1. SETUP & CONFIGURATION
 # =====================================================
-EXP_NAME = "CARE_10_SEEDS"
+EXP_NAME = "Best_3_Points"
 BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Confidence")
 NPZ_DIR = BASE_DIR / "npz_files" / EXP_NAME
 OUT_DIR = BASE_DIR / "Thesis_Plots" / EXP_NAME
@@ -68,12 +68,12 @@ def vis_norm(image, p_low=0.5, p_high=99.5):
 # =====================================================
 # 3. GENERIERUNG DES THESIS-PLOTS
 # =====================================================
-def create_thesis_plots(s_id, file_paths):
+def create_thesis_plots(s_id, file_paths, p_id):
     if s_id not in SERIES_CONFIG:
         print(f"-> Überspringe Serie {s_id} (nicht in SERIES_CONFIG).")
         return
 
-    print(f"\n>>> Erstelle kombinierten Plot für Serie {s_id}...")
+    print(f"\n>>> Erstelle kombinierten Plot für Serie {s_id} ({p_id})...")
     
     config = SERIES_CONFIG[s_id]
     original_slice_idx = config["slice_idx"]
@@ -114,7 +114,7 @@ def create_thesis_plots(s_id, file_paths):
     # DER 2x3 KOMBINIERTE PLOT
     # ---------------------------------------------------------
     fig, axes = plt.subplots(2, 3, figsize=(24, 12), dpi=300)
-    fig.suptitle(f"Uncertainty Decomposition - Series {s_id} | Slice {original_slice_idx}", fontsize=22, y=1.02)
+    fig.suptitle(f"Uncertainty Decomposition - {p_id} Series {s_id} | Slice {original_slice_idx}", fontsize=22, y=1.02)
     
     # Definition der Inhalte für die OBERE REIHE (Keine Colorbars, invertiertes Grau)
     images_top = [raw_input[z], ground_truth[z], mu_ens[z]]
@@ -130,7 +130,7 @@ def create_thesis_plots(s_id, file_paths):
         if i == 0: 
             ax.set_ylabel("Detector Y", fontsize=14)
 
-# Definition der Inhalte für die UNTERE REIHE (Mit Colorbars, Inferno Colormap)
+    # Definition der Inhalte für die UNTERE REIHE (Mit Colorbars, Inferno Colormap)
     images_bottom = [sigma_aleatoric[z], sigma_epistemic[z], sigma_relative[z]]
     titles_bottom = ["Aleatoric Uncertainty", "Epistemic Uncertainty (Disagreement)", "Relative Epistemic Uncertainty"]
     
@@ -155,7 +155,8 @@ def create_thesis_plots(s_id, file_paths):
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     plt.tight_layout()
-    fig.savefig(OUT_DIR / f"Plot_Combined_S{s_id}.png", bbox_inches='tight')
+    # HIER: Dateiname mit p_id
+    fig.savefig(OUT_DIR / f"Plot_{p_id}_Combined_S{s_id:02d}.png", bbox_inches='tight')
     plt.close(fig)
 
     print(f"   -> 2x3 Plot erfolgreich gespeichert!")
@@ -165,21 +166,30 @@ def create_thesis_plots(s_id, file_paths):
 # =====================================================
 if __name__ == "__main__":
     all_npzs = sorted(list(NPZ_DIR.glob("*.npz")))
+    # Wir gruppieren jetzt nach einem Tupel aus (P-Name, Serie)
     ensembles = defaultdict(list)
 
-    target_series = [s for s in [5, 12, 13] if s in SERIES_CONFIG]
+    # Nimm alle Serien aus deiner Config
+    target_series = list(SERIES_CONFIG.keys()) 
 
     for f in all_npzs:
-        match = re.search(r"_S(\d+)\.npz", f.name)
+        # Sucht nach P02/P14/P23 UND der Serie Sxx
+        match = re.search(r"(P\d+).*_S(\d+)\.npz", f.name)
         if match:
-            s_id = int(match.group(1))
+            p_id = match.group(1)   # z.B. "P02"
+            s_id = int(match.group(2)) # z.B. 5
+            
             if s_id in target_series:
-                ensembles[s_id].append(f)
+                # Der Key ist jetzt z.B. ("P02", 5)
+                ensembles[(p_id, s_id)].append(f)
 
-    for s_id, file_paths in ensembles.items():
+    # Plotting-Schleife
+    for (p_id, s_id), file_paths in ensembles.items():
         if len(file_paths) == 10:
-            create_thesis_plots(s_id, file_paths)
+            # Wir übergeben p_id, damit wir es im Dateinamen nutzen können
+            print(f"\n>>> Erstelle Plot für {p_id} | Serie {s_id}...")
+            
+            # Hier passen wir den Aufruf leicht an (siehe unten für die Funktion)
+            create_thesis_plots(s_id, file_paths, p_id)
         else:
-            print(f"Warnung: Serie {s_id} hat {len(file_paths)} Seeds statt 10. Überspringe...")
-
-    print("\n>>> Alle Master-Thesis Plots wurden erfolgreich erstellt!")
+            print(f"Hinweis: {p_id} S{s_id} hat nur {len(file_paths)}/10 Seeds. Überspringe.")

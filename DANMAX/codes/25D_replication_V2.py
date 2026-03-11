@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+
+import os
+import random
+from datetime import datetime
+from pathlib import Path
+
+import h5py
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, models
+
+from unet_3d_simple_checkpoints import make_epoch_ckpt_callback, finalize_run, make_meta_dict
+from tb_utils import make_run_dir, tb_callbacks
+
+# =====================================================
+# PARAMETER CONFIGURATION
+# =====================================================
+# Reproduzierbarkeit des Modells
+SEED = 42
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+tf.config.experimental.enable_op_determinism()
+
+# Absolut statischer Seed für den Daten-Split (verhindert Data-Leakage zwischen Runs)
+DATA_SPLIT_SEED = 42 
+
+# Architektur & Daten Dimensionen
+DEPTH = 5
+SERIES_LEN = 40  # 2000 Bilder glatt durch 40 teilbar
+BASEFILTERS = 64
+CROP_SIZE = (512, 512)
+
+# Training Hyperparameter
+EPOCHS = 200
+LR_TARGET = 5e-4
+WARMUP_EPOCHS = 10
+EARLY_STOPPING_PATIENCE = 25
+RLROP_PATIENCE = 15
+BATCH_SIZE = 8
+
+# =====================================================
+# ARCHITEKTUR & FUNKTIONEN (UNVERÄNDERT)
+# =====================================================
+def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
+    ki = "he_normal"
+    for _ in range(4):
+        x = layers.Conv2D(filters, kernel_size, padding=padding, kernel_initializer=ki, use_bias=True)(x)
+        x = layers.ReLU()(x)
+    return x
+
+def unet_2d_stacked(input_shape=(512, 512, DEPTH), base_filters=BASEFILTERS, output_activation="sigmoid"):
+    inputs = layers.Input(shape=input_shape, name="input")
+
+    # Encoder
+    c1 = conv_block_2d(inputs, base_filters)          ; p1 = layers.MaxPooling2D((2, 2))(c1)
+    c2 = conv_block_2d(p1, base_filters * 2)          ; p2 = layers.MaxPooling2D((2, 2))(c2)
+    c3 = conv_block_2d(p2, base_filters * 4)          ; p3 = layers.MaxPooling2D((2, 2))(c3)
+    c4 = conv_block_2d(p3, base_filters * 8)          ; p4 = layers.MaxPooling2D((2, 2))(c4)
+
+    # Bottleneck
+    bn = conv_block_2d(p4, base_filters * 16)
+
+    # Decoder
+    u4 = layers.Conv2DTranspose(base_filters * 8, (2, 2), strides=(2, 2), padding="same")(bn)
+    u4 = layers.Concatenate()([u4, c4])               ; c5 = conv_block_2d(u4, base_filters * 8)
+    u3 = layers.Conv2DTranspose(base_filters * 4, (2, 2), strides=(2, 2), padding="same")(c5)
+    u3 = layers.Concatenate()([u3, c3])               ; c6 = conv_block_2d(u3, base_filters * 4)
+    u2 = layers.Conv2DTranspose(base_filters * 2, (2, 2), strides=(2, 2), padding="same")(c6)
+    u2 = layers.Concatenate()([u2, c2])               ; c7 = conv_block_2d(u2, base_filters * 2)
+    u1 = layers.Conv2DTranspose(base_filters, (2, 2), strides=(2, 2), padding="same")(c7)
+    u1 = layers.Concatenate()([u1, c1])               ; c8 = conv_block_2d(u1, base_filters)
+
+    out = layers.Conv2D(1, (1, 1), activation=output_activation, name="output")(c8) 
+    
+    return models.Model(inputs, out, name="unet_25d_stacked")
+
+# --- OOM-SICHERES LADEN FÜR DANMAX ---
+def load_and_correct_danmax(base_path, scan_id, crop_size=CROP_SIZE):
+    ct_file    = os.path.join(base_path, f"scan-{scan_id:04d}_orca.h5")
+    white_file = os.path.join(base_path, f"scan-{scan_id-1:04d}_orca.h5")
+    dark_file  = os.path.join(base_path, f"scan-{scan_id-2:04d}_orca.h5")
+    data_path  = 'entry/instrument/orca/data'
+    
+    with h5py.File(dark_file, 'r') as f_d, h5py.File(white_file, 'r') as f_w, h5py.File(ct_file, 'r') as f_ct:
+        m_dark  = np.mean(f_d[data_path][:], axis=0).astype(np.float32)
+        m_white = np.mean(f_w[data_path][:], axis=0).astype(np.float32)
+        
+        # Slicing, um OOM zu verhindern
+        full_h, full_w = f_ct[data_path].shape[1], f_ct[data_path].shape[2]
+        h_s = (full_h - crop_size[0]) // 2
+        w_s = (full_w - crop_size[1]) // 2
+        
+        projs = f_ct[data_path][:2000, h_s:h_s+crop_size[0], w_s:w_s+crop_size[1]].astype(np.float32)
+        
+        m_dark_c  = m_dark[h_s:h_s+crop_size[0], w_s:w_s+crop_size[1]]
+        m_white_c = m_white[h_s:h_s+crop_size[0], w_s:w_s+crop_size[1]]
+        
+        denom = m_white_c - m_dark_c
+        denom[denom < 1e-6] = 1e-6
+        corrected = (projs - m_dark_c) / denom
+        return np.clip(corrected, 0, 1)
+
+def load_split_danmax(base_path, gt_id, low_id):
+    high_count = load_and_correct_danmax(base_path, gt_id)
+    low_count  = load_and_correct_danmax(base_path, low_id)
+    return low_count[..., np.newaxis], high_count[..., np.newaxis]
+
+def make_sliding_windows(X, y, series_len=None, depth=None):
+    N, H, W, C = X.shape
+    assert N % series_len == 0, f"N={N} nicht durch series_len={series_len} teilbar"
+    n_series = N // series_len
+    n_vols_per_series = series_len - depth + 1
+    X_vols, y_vols = [], []
+    for i in range(n_series):
+        start = i * series_len
+        bx, by = X[start:start+series_len], y[start:start+series_len]
+        for s_idx in range(n_vols_per_series):
+            X_vols.append(bx[s_idx : s_idx + depth])
+            y_vols.append(by[s_idx : s_idx + depth])
+    return np.stack(X_vols, axis=0), np.stack(y_vols, axis=0)
+
+def shuffle_initial(X, y, seed):
+    rng = np.random.default_rng(seed)
+    indices = np.arange(len(X))
+    rng.shuffle(indices)
+    return X[indices], y[indices]
+
+def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: float = 0.5):
+    def map_volume(x, y):
+        flip = tf.random.uniform([], 0, 1) < p
+        x = tf.cond(flip, lambda: tf.reverse(x, axis=[2]), lambda: x)
+        y = tf.cond(flip, lambda: tf.reverse(y, axis=[2]), lambda: y)
+        x = tf.nn.relu(x); y = tf.nn.relu(y)
+        sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
+        sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
+        x = x / sum_x; y = y / sum_y
+        scale = tf.random.uniform([], scale_min, scale_max)
+        return x * scale, y * scale
+    return map_volume
+
+def prepare_25d_input(x, y):
+    x = tf.transpose(tf.squeeze(x, axis=-1), [1, 2, 0])
+    y_center = y[tf.shape(y)[0] // 2]
+    return x, y_center
+
+# Metriken & Loss
+def mae_ssim_2d(y_true, y_pred, alpha=0.6):
+    y_true = tf.cast(y_true, tf.float32); y_pred = tf.cast(y_pred, tf.float32)
+    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
+    ssim_m = tf.reduce_mean(tf.image.ssim(y_true, y_pred, 1.0))
+    return (1.0 - alpha) * mae + alpha * (1.0 - ssim_m)
+
+def mae_center(y_true, y_pred):
+    return tf.reduce_mean(tf.abs(tf.clip_by_value(y_true, 0, 1) - tf.clip_by_value(y_pred, 0, 1)))
+def mse_center(y_true, y_pred):
+    return tf.reduce_mean(tf.math.square(tf.clip_by_value(y_true, 0, 1) - tf.clip_by_value(y_pred, 0, 1)))
+def psnr_center(y_true, y_pred):
+    y_t = tf.clip_by_value(y_true, 0, 1); y_p = tf.clip_by_value(y_pred, 0, 1)
+    mse = tf.reduce_mean(tf.math.squared_difference(y_t, y_p), axis=(1,2,3))
+    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
+def ssim_center(y_true, y_pred):
+    return tf.reduce_mean(tf.image.ssim(tf.clip_by_value(y_true, 0, 1), tf.clip_by_value(y_pred, 0, 1), 1.0))
+
+def display_loss(y_true, y_pred):
+    # Exakt dein Loss, aber nur für die Anzeige um Faktor 10.000 vergrößert
+    return mae_ssim_2d(y_true, y_pred) * 10000.0
+
+# LR Warmup
+def lr_warmup_scheduler(epoch, lr):
+    if epoch < WARMUP_EPOCHS:
+        return LR_TARGET * (epoch + 1) / WARMUP_EPOCHS
+    return lr
+
+# =====================================================
+# DATEN LADEN & 60/20/20 SPLIT LOGIK
+# =====================================================
+print("Lade Daten von DanMAX (Bamboo)...")
+BAMBOO_RAW = "../../DATA_DANMAX/2026020508/raw/bamboo/"
+
+X_all, y_all = load_split_danmax(BAMBOO_RAW, gt_id=32, low_id=57)
+
+print("Erstelle reproduzierbaren 60/20/20 Split auf Basis von 40er Serien...")
+N_SERIES = len(X_all) // SERIES_LEN # 2000 // 40 = 50 Serien
+
+# Umformen in Serien-Blöcke
+X_series = np.reshape(X_all, (N_SERIES, SERIES_LEN, CROP_SIZE[0], CROP_SIZE[1], 1))
+y_series = np.reshape(y_all, (N_SERIES, SERIES_LEN, CROP_SIZE[0], CROP_SIZE[1], 1))
+
+# Shuffeln der 50 Serien mit statischem DATA_SPLIT_SEED
+rng = np.random.default_rng(DATA_SPLIT_SEED)
+indices = np.arange(N_SERIES)
+rng.shuffle(indices)
+
+X_series = X_series[indices]
+y_series = y_series[indices]
+
+# Split definieren: 60% Train (30), 20% Val (10), 20% Test (10)
+n_train = int(0.6 * N_SERIES)
+n_val = int(0.2 * N_SERIES)
+
+X_train_raw = np.reshape(X_series[:n_train], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
+y_train_raw = np.reshape(y_series[:n_train], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
+
+X_val_raw = np.reshape(X_series[n_train:n_train+n_val], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
+y_val_raw = np.reshape(y_series[n_train:n_train+n_val], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
+
+X_test_raw = np.reshape(X_series[n_train+n_val:], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
+y_test_raw = np.reshape(y_series[n_train+n_val:], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
+
+# Sliding Windows generieren
+X_train, y_train = make_sliding_windows(X_train_raw, y_train_raw, SERIES_LEN, DEPTH)
+X_val,   y_val   = make_sliding_windows(X_val_raw,   y_val_raw,   SERIES_LEN, DEPTH)
+X_test,  y_test  = make_sliding_windows(X_test_raw,  y_test_raw,  SERIES_LEN, DEPTH)
+
+# Initiales Mischen innerhalb der fertigen Windows (mit dynamischem SEED pro Modell)
+X_train, y_train = shuffle_initial(X_train, y_train, SEED)
+X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
+X_test,  y_test  = shuffle_initial(X_test,  y_test,  SEED)
+
+# =====================================================
+# TRAINING START
+# =====================================================
+BASE_NAME = "unet_25d_V1_baseline_danmax"
+RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
+RUN_NAME  = f"{BASE_NAME}__seed{SEED}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
+
+TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
+TB_RUN_DIR = TB_ROOT / RUN_NAME
+TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True)
+CKPT_ROOT = Path.home() / "data" / "checkpoints_unet_25d"
+CKPT_DIR  = CKPT_ROOT / RUN_NAME
+CKPT_DIR.mkdir(parents=True, exist_ok=True)
+
+callbacks = [
+    tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
+    tf.keras.callbacks.ReduceLROnPlateau(
+        monitor="val_display_loss", # <-- HIER ÄNDERN
+        factor=0.5, patience=RLROP_PATIENCE, min_lr=1e-6, verbose=2
+    ),
+    tf.keras.callbacks.EarlyStopping(
+        monitor="val_display_loss", # <-- HIER ÄNDERN
+        patience=EARLY_STOPPING_PATIENCE, restore_best_weights=True, verbose=1
+    ),
+    # Falls dein make_epoch_ckpt_callback intern val_loss nutzt, 
+    # kannst du das so lassen, er speichert dann halt stumm im Hintergrund.
+    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(CKPT_DIR)),
+    tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
+    *tb_callbacks(TB_RUN_DIR),
+]
+
+model = unet_2d_stacked(input_shape=(CROP_SIZE[0], CROP_SIZE[1], DEPTH)) 
+model.compile(
+    optimizer=optimizer, 
+    loss=mae_ssim_2d,  # <-- Die Mathematik bleibt sicher und unangetastet!
+    metrics=[display_loss, mae_center, mse_center, psnr_center, ssim_center]
+)
+
+train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
+            .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
+            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=tf.data.AUTOTUNE)
+            .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+            .batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
+
+val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
+          .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+          .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
+
+test_ds = (tf.data.Dataset.from_tensor_slices((X_test, y_test))
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
+          .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+          .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
+
+print("Training beginnt...")
+history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
+
+print("Evaluation auf dem Test-Set...")
+test_results = model.evaluate(test_ds, verbose=1, return_dict=True)
+
+# Parameter & Test-Resultate direkt im Meta-Dict speichern
+meta = make_meta_dict(
+    script_name=RUN_NAME, 
+    batch_size=BATCH_SIZE, 
+    epochs=EPOCHS, 
+    optimizer=optimizer,
+    learning_rate=LR_TARGET, 
+    input_shape=(CROP_SIZE[0], CROP_SIZE[1], DEPTH),
+    extra={
+        "warmup_epochs": WARMUP_EPOCHS,
+        "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+        "rlrop_patience": RLROP_PATIENCE,
+        "data_split_seed": DATA_SPLIT_SEED,
+        "test_loss": float(test_results.get("loss", -1)),
+        "test_psnr": float(test_results.get("psnr_center", -1))
+    }
+)
+
+finalize_run(model, history, RUN_NAME, meta)
