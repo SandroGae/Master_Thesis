@@ -4,22 +4,27 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.optimize import curve_fit
 from pathlib import Path
-import os
 import re
+from collections import defaultdict
+import warnings
+
+warnings.filterwarnings("ignore")
 
 # =====================================================
-# 1. KONFIGURATION
+# 1. KONFIGURATION & PFADE
 # =====================================================
-EXP_NAME = "CARE_10_SEEDS"
-
-
 BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Confidence")
-IN_DIR   = BASE_DIR / "npz_files" / EXP_NAME
-OUT_DIR  = BASE_DIR / "Plots_L_Scan" / EXP_NAME
+
+# BEIDE Input-Ordner definieren
+CARE_DIR  = BASE_DIR / "npz_files" / "CARE_10_SEEDS"
+MIXED_DIR = BASE_DIR / "npz_files" / "Best_3_Points"
+
+# Übergeordneter Output-Ordner
+OUT_DIR_BASE = BASE_DIR / "Plots_L_Scan"
 
 # Deine bewährte Serien-Konfiguration (L-Richtung / Horizontal)
 SERIES_CONFIG = {
-    # Block 1 (Extrahiert aus den Tuner-Screenshots)
+    # Block 1
     5:  {"slice_idx": 14, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (140, 240), "y_lim_raw": (2.5, 7.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 97.5)},
     11: {"slice_idx": 19, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 0, "bg_h": 10, "fit_window": (40, 140),  "y_lim_raw": (2.5, 7.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 97.5)},
     12: {"slice_idx": 17, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (27, 127),  "y_lim_raw": (2.5, 5.5), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 98.0)},
@@ -54,11 +59,10 @@ SERIES_CONFIG = {
     72: {"slice_idx": 15, "roi_x": (0, 240), "roi_y": (102, 117), "bg_gap": 5, "bg_h": 10, "fit_window": (4, 104),   "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 94.0)},
     73: {"slice_idx": 25, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 5, "bg_h": 10, "fit_window": (42, 142), "y_lim_raw": (2.5, 6.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 95.0)},
     74: {"slice_idx": 23, "roi_x": (0, 240), "roi_y": (100, 115), "bg_gap": 0, "bg_h": 10, "fit_window": (32, 132), "y_lim_raw": (2.5, 5.0), "y_lim_sbr": (-0.1, 0.5), "vis_p": (0.5, 96.0)},
-
 }
 
 FIT_COLORS = ['darkorange', 'mediumseagreen', 'darkviolet']
-TITLES     = ["Low Count", "Confidence Reconstruction (mu)", "Ground Truth"]
+TITLES     = ["Low Count", "Ensemble Reconstruction ($\mu_{ens}$)", "Ground Truth"]
 
 # =====================================================
 # 2. HILFSFUNKTIONEN
@@ -86,18 +90,28 @@ def perform_gaussian_fit(x, y, y_err, fit_window):
         return None, None, None
 
 # =====================================================
-# 3. PROZESS-FUNKTION
+# 3. ENSEMBLE-PROZESS-FUNKTION
 # =====================================================
-def process_combination(npz_path, s_id, cfg):
-    data = np.load(npz_path)
+def process_ensemble_combination(file_paths, s_id, cfg, out_dir, m_id):
+    # Lade alle 10 Seeds und bilde den Mittelwert für mu
+    mus = []
+    lc_img, gt_img = None, None
     
-    # Extrahiert den Modellnamen (z.B. Confidence_V2_200945)
-    model_name_match = re.search(r"Eval_(.*)_S\d+", npz_path.stem)
-    model_label = model_name_match.group(1) if model_name_match else "Unknown_Model"
-
     idx = cfg["slice_idx"]
-    # 'pred' ist in den neuen NPZs der mu-Kanal
-    imgs = [data['lc'][idx], data['pred'][idx], data['gt'][idx]]
+    
+    for k, path in enumerate(file_paths):
+        data = np.load(path)
+        # Slicing direkt beim Laden, um RAM zu sparen
+        mus.append(data['pred'][idx])
+        if k == 0:
+            lc_img = data['lc'][idx]
+            gt_img = data['gt'][idx]
+            
+    # Ensemble Average berechnen
+    mu_ens = np.mean(mus, axis=0)
+
+    # Die 3 Bilder für die Plots
+    imgs = [lc_img, mu_ens, gt_img]
 
     rx, ry, bg_h = cfg["roi_x"], cfg["roi_y"], cfg["bg_h"]
     r1_t = max(0, ry[0] - cfg["bg_gap"] - bg_h); r1_b = r1_t + bg_h
@@ -121,7 +135,6 @@ def process_combination(npz_path, s_id, cfg):
         sbr = (prof_sig - prof_bg) / denom
         p_std = (gt_std if i == 1 else np.std(bg_s)) + 1e-9
 
-        # Gaußsche Fehlerfortpflanzung
         n_sig_px = sig_s.shape[0] * sig_s.shape[1]
         n_bg_px = bg_s.shape[0] * bg_s.shape[1]
         err_net = np.sqrt((p_std * np.sqrt(n_sig_px/sig_s.shape[1]))**2 + (p_std * np.sqrt(n_bg_px/bg_s.shape[1]) * scale)**2)
@@ -132,7 +145,7 @@ def process_combination(npz_path, s_id, cfg):
         results.append({'sig':prof_sig, 'bg':prof_bg, 'sbr':sbr, 'err':sbr_err, 'fit':fit_y, 'par':par, 'perr':perr})
 
     fig, axes = plt.subplots(3, 3, figsize=(18, 14), dpi=100, gridspec_kw={'height_ratios': [1, 0.8, 1]})
-    fig.suptitle(f"L-Scan (Horizontal) - Model: {model_label} - Serie {s_id}", fontsize=16, fontweight='bold')
+    fig.suptitle(f"L-Scan (Horizontal) - {m_id} (Ensemble Average) - Serie {s_id}", fontsize=16, fontweight='bold')
 
     p_l, p_h = cfg.get("vis_p", (0.5, 99.5))
     for i in range(3):
@@ -171,24 +184,59 @@ def process_combination(npz_path, s_id, cfg):
         ax3.legend(loc='upper right', fontsize=8)
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    fig.savefig(OUT_DIR / f"L_Scan_S{s_id}_{model_label}.png", bbox_inches='tight')
+    
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Speichern als übersichtliche Dateinamen
+    fig.savefig(out_dir / f"L_Scan_S{s_id:02d}_{m_id}.png", bbox_inches='tight')
     plt.close(fig)
 
+# =====================================================
+# 4. RUNNER LOGIK (Gruppierung nach Modellen)
+# =====================================================
 def main():
-    # Sucht alle neuen NPZ-Dateien
-    all_npzs = sorted(list(IN_DIR.glob("Eval_Confidence*.npz")))
-    print(f"Gefunden: {len(all_npzs)} NPZ-Dateien. Starte Plotting...")
-    
-    for i, npz_path in enumerate(all_npzs):
-        try:
-            # Extrahiere S-Nummer (z.B. S5)
-            s_id = int(re.search(r"_S(\d+)", npz_path.name).group(1))
-            if s_id in SERIES_CONFIG:
-                process_combination(npz_path, s_id, SERIES_CONFIG[s_id])
-                print(f" -> Serie {s_id} fertig ({i+1}/{len(all_npzs)})")
-        except Exception as e:
-            print(f"Fehler bei {npz_path.name}: {e}")
+    # Sammle Dateien aus BEIDEN Ordnern
+    all_npzs = []
+    if CARE_DIR.exists():
+        all_npzs.extend(list(CARE_DIR.glob("*.npz")))
+    if MIXED_DIR.exists():
+        all_npzs.extend(list(MIXED_DIR.glob("*.npz")))
+        
+    ensembles = defaultdict(list)
+
+    for f in all_npzs:
+        s_id = None
+        m_id = None
+        
+        # 1. Check auf P-Modelle (P02, P14, P23)
+        match_p = re.search(r"(P\d+).*_S(\d+)\.npz", f.name)
+        if match_p:
+            m_id = match_p.group(1)
+            s_id = int(match_p.group(2))
+            
+        # 2. Check auf CARE (Baseline)
+        match_care = re.search(r"Confidence_MSE.*_S(\d+)\.npz", f.name)
+        if match_care:
+            m_id = "CARE_MSE"
+            s_id = int(match_care.group(1))
+            
+        if m_id and s_id and s_id in SERIES_CONFIG:
+            ensembles[(m_id, s_id)].append(f)
+
+    if not ensembles:
+        print("❌ Keine Dateien gefunden! Überprüfe die Pfade.")
+        return
+
+    print(f"Starte Ensemble-Plotting... (Insgesamt {len(ensembles)} Plots erwartet)")
+
+    for (m_id, s_id), file_paths in ensembles.items():
+        if len(file_paths) == 10:
+            print(f" -> Erstelle Plot für {m_id} | Serie {s_id}...")
+            model_out_dir = OUT_DIR_BASE / m_id
+            process_ensemble_combination(file_paths, s_id, SERIES_CONFIG[s_id], model_out_dir, m_id)
+        else:
+            print(f"Warnung: Modell {m_id} Serie {s_id} hat nur {len(file_paths)} Seeds statt 10. Überspringe...")
+
+    print("\n>>> Alle 120 L-Scan Plots wurden erfolgreich erstellt!")
 
 if __name__ == "__main__":
     main()

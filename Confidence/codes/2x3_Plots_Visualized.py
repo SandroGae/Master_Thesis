@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 # =====================================================
 # 1. SETUP & CONFIGURATION
 # =====================================================
-EXP_NAME = "Best_3_Points"
+EXP_NAME = "CARE_10_SEEDS"
 BASE_DIR = Path(r"C:\Users\sandr\VS_Master_Thesis\Confidence")
 NPZ_DIR = BASE_DIR / "npz_files" / EXP_NAME
 OUT_DIR = BASE_DIR / "Thesis_Plots" / EXP_NAME
@@ -166,30 +166,40 @@ def create_thesis_plots(s_id, file_paths, p_id):
 # =====================================================
 if __name__ == "__main__":
     all_npzs = sorted(list(NPZ_DIR.glob("*.npz")))
-    # Wir gruppieren jetzt nach einem Tupel aus (P-Name, Serie)
+    # Wir gruppieren jetzt nach einem Tupel aus (Modell-Name, Serie)
     ensembles = defaultdict(list)
 
     # Nimm alle Serien aus deiner Config
     target_series = list(SERIES_CONFIG.keys()) 
 
     for f in all_npzs:
-        # Sucht nach P02/P14/P23 UND der Serie Sxx
-        match = re.search(r"(P\d+).*_S(\d+)\.npz", f.name)
-        if match:
-            p_id = match.group(1)   # z.B. "P02"
-            s_id = int(match.group(2)) # z.B. 5
+        s_id = None
+        m_id = None
+        
+        # 1. Versuch: Ist es ein P-Modell? (z.B. P02_a0.000...)
+        match_p = re.search(r"(P\d+).*_S(\d+)\.npz", f.name)
+        if match_p:
+            m_id = match_p.group(1)   # z.B. "P02"
+            s_id = int(match_p.group(2)) # z.B. 5
             
-            if s_id in target_series:
-                # Der Key ist jetzt z.B. ("P02", 5)
-                ensembles[(p_id, s_id)].append(f)
+        # 2. Versuch: Ist es das CARE/MSE Modell?
+        match_care = re.search(r"Confidence_MSE.*_S(\d+)\.npz", f.name)
+        if match_care:
+            m_id = "CARE_MSE"            # Wir taufen es "CARE_MSE" für den Dateinamen
+            s_id = int(match_care.group(1)) # z.B. 5
+            
+        # Wenn eine der beiden Suchen erfolgreich war UND die Serie in der Config ist
+        if m_id and s_id and s_id in target_series:
+            ensembles[(m_id, s_id)].append(f)
+
+    if not ensembles:
+        print("❌ Keine passenden Dateien gefunden! Bitte überprüfe die Pfade und Dateinamen.")
 
     # Plotting-Schleife
-    for (p_id, s_id), file_paths in ensembles.items():
+    for (m_id, s_id), file_paths in ensembles.items():
         if len(file_paths) == 10:
-            # Wir übergeben p_id, damit wir es im Dateinamen nutzen können
-            print(f"\n>>> Erstelle Plot für {p_id} | Serie {s_id}...")
-            
-            # Hier passen wir den Aufruf leicht an (siehe unten für die Funktion)
-            create_thesis_plots(s_id, file_paths, p_id)
+            print(f"\n>>> Erstelle Plot für {m_id} | Serie {s_id}...")
+            # create_thesis_plots erwartet (s_id, file_paths, p_id). Wir übergeben m_id als p_id.
+            create_thesis_plots(s_id, file_paths, m_id)
         else:
-            print(f"Hinweis: {p_id} S{s_id} hat nur {len(file_paths)}/10 Seeds. Überspringe.")
+            print(f"Hinweis: {m_id} S{s_id} hat nur {len(file_paths)}/10 Seeds. Überspringe.")
