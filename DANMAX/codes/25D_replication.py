@@ -171,14 +171,42 @@ TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 BATCH_SIZE = 8
-optimizer = tf.keras.optimizers.Adam(learning_rate=5e-4, amsgrad=True)
-CKPT_ROOT = Path.home() / "data" / "checkpoints_unet_25d"
-CKPT_DIR  = CKPT_ROOT / RUN_NAME
-CKPT_DIR.mkdir(parents=True, exist_ok=True)
+LR_TARGET = 5e-4
+optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True)
 
+# --- DER EINZIGE SPEICHERORT FÜR MODELLE ---
+MODEL_OUT_DIR = Path.home() / "scratch" / "DANMAX" / "codes" / "models"
+MODEL_OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+best_keras_file = MODEL_OUT_DIR / f"{RUN_NAME}_best_model.keras"
+best_weights_file = MODEL_OUT_DIR / f"{RUN_NAME}_best_weights.h5"
+
+# --- CALLBACKS DEFINIEREN ---
 callbacks = [
-    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=10, min_lr=1e-6, verbose=2),
-    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(CKPT_DIR)),
+    # 1. Speichert das komplette Modell (.keras)
+    tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(best_keras_file),
+        monitor="val_loss",
+        save_best_only=True,
+        save_weights_only=False,
+        mode="min",
+        verbose=1
+    ),
+    # 2. Speichert NUR die Gewichte (.h5)
+    tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(best_weights_file),
+        monitor="val_loss",
+        save_best_only=True,
+        save_weights_only=True,
+        mode="min",
+        verbose=0
+    ),
+    # Trainings-Steuerung (Plateau & Early Stopping)
+    tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=2),
+    tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=25, restore_best_weights=True, verbose=1),
+    
+    # Deine Custom Logging Callbacks (jetzt auf den RICHTIGEN Ordner gelenkt!)
+    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(MODEL_OUT_DIR)),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
 ]
@@ -203,8 +231,8 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 print("Training beginnt...")
-history = model.fit(train_ds, validation_data=val_ds, epochs=100, callbacks=callbacks, verbose=2)
+history = model.fit(train_ds, validation_data=val_ds, epochs=200, callbacks=callbacks, verbose=2)
 
-meta = make_meta_dict(script_name=RUN_NAME, batch_size=8, epochs=100, optimizer=optimizer,
-                      learning_rate=5e-4, input_shape=(CROP_SIZE[0], CROP_SIZE[1], DEPTH))
+meta = make_meta_dict(script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=200, optimizer=optimizer,
+                      learning_rate=LR_TARGET, input_shape=(CROP_SIZE[0], CROP_SIZE[1], DEPTH))
 finalize_run(model, history, RUN_NAME, meta)

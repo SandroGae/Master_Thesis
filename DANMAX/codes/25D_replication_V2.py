@@ -232,23 +232,48 @@ TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 
 optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True)
-CKPT_ROOT = Path.home() / "data" / "checkpoints_unet_25d"
-CKPT_DIR  = CKPT_ROOT / RUN_NAME
-CKPT_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- DER ZENTRALE SPEICHERORT FÜR MODELLE ---
+MODEL_OUT_DIR = Path.home() / "scratch" / "DANMAX" / "codes" / "models"
+MODEL_OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+best_keras_file = MODEL_OUT_DIR / f"{RUN_NAME}_best_model.keras"
+best_weights_file = MODEL_OUT_DIR / f"{RUN_NAME}_best_weights.h5"
 
 callbacks = [
     tf.keras.callbacks.LearningRateScheduler(lr_warmup_scheduler),
+    
+    # 1. Speichert das komplette Modell (.keras)
+    tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(best_keras_file),
+        monitor="val_display_loss", # Angepasst an deinen neuen Loss
+        save_best_only=True,
+        save_weights_only=False,
+        mode="min",
+        verbose=1
+    ),
+    
+    # 2. Speichert NUR die Gewichte (.h5)
+    tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(best_weights_file),
+        monitor="val_display_loss", # Angepasst an deinen neuen Loss
+        save_best_only=True,
+        save_weights_only=True,
+        mode="min",
+        verbose=0
+    ),
+    
     tf.keras.callbacks.ReduceLROnPlateau(
-        monitor="val_display_loss", # <-- HIER ÄNDERN
+        monitor="val_display_loss", 
         factor=0.5, patience=RLROP_PATIENCE, min_lr=1e-6, verbose=2
     ),
     tf.keras.callbacks.EarlyStopping(
-        monitor="val_display_loss", # <-- HIER ÄNDERN
+        monitor="val_display_loss", 
         patience=EARLY_STOPPING_PATIENCE, restore_best_weights=True, verbose=1
     ),
-    # Falls dein make_epoch_ckpt_callback intern val_loss nutzt, 
-    # kannst du das so lassen, er speichert dann halt stumm im Hintergrund.
-    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(CKPT_DIR)),
+    
+    # Custom Callback (jetzt auf den neuen MODEL_OUT_DIR gelenkt)
+    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(MODEL_OUT_DIR)),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
 ]
