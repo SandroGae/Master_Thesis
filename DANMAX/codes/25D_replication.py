@@ -1,3 +1,4 @@
+#25D_replication.py
 #!/usr/bin/env python3
 
 import os
@@ -162,7 +163,7 @@ X_val,   y_val   = make_sliding_windows(X_val_raw,   y_val_raw,   SERIES_LEN, DE
 X_train, y_train = shuffle_initial(X_train, y_train, SEED)
 X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 
-BASE_NAME = "unet_25d_V1_baseline_danmax"
+BASE_NAME = "unet_25d_replication"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME  = f"{BASE_NAME}__seed{SEED}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
@@ -205,8 +206,7 @@ callbacks = [
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=15, min_lr=1e-6, verbose=2),
     tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=25, restore_best_weights=True, verbose=1),
     
-    # Deine Custom Logging Callbacks (jetzt auf den RICHTIGEN Ordner gelenkt!)
-    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(MODEL_OUT_DIR)),
+    # Deine Custom Logging Callbacks
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
 ]

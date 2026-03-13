@@ -1,3 +1,4 @@
+#25D_scaling_fixed_improved_test.py
 #!/usr/bin/env python3
 
 import os
@@ -211,7 +212,8 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
 # =====================================================
 # TRAINING START
 # =====================================================
-BASE_NAME = "unet_25d_V3_proper_augmentation"
+BASE_NAME = "unet_25d_scaling_fixed_improved_test" \
+""
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME  = f"{BASE_NAME}__seed{SEED}__bf{BASEFILTERS}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
@@ -232,7 +234,6 @@ callbacks = [
     tf.keras.callbacks.ModelCheckpoint(filepath=str(best_weights_file), monitor="val_display_loss", save_best_only=True, save_weights_only=True, mode="min", verbose=0),
     tf.keras.callbacks.ReduceLROnPlateau(monitor="val_display_loss", factor=0.5, patience=RLROP_PATIENCE, min_lr=1e-6, verbose=2),
     tf.keras.callbacks.EarlyStopping(monitor="val_display_loss", patience=EARLY_STOPPING_PATIENCE, restore_best_weights=True, verbose=1),
-    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(MODEL_OUT_DIR)),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
 ]

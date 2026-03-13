@@ -1,3 +1,4 @@
+#25D_replication_V2.py
 #!/usr/bin/env python3
 
 import os
@@ -223,7 +224,7 @@ X_test,  y_test  = shuffle_initial(X_test,  y_test,  SEED)
 # =====================================================
 # TRAINING START
 # =====================================================
-BASE_NAME = "unet_25d_V1_baseline_danmax"
+BASE_NAME = "unet_25d_replication_V2"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME  = f"{BASE_NAME}__seed{SEED}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
@@ -273,7 +274,6 @@ callbacks = [
     ),
     
     # Custom Callback (jetzt auf den neuen MODEL_OUT_DIR gelenkt)
-    make_epoch_ckpt_callback(RUN_NAME, folder_name=str(MODEL_OUT_DIR)),
     tf.keras.callbacks.CSVLogger(str(TB_RUN_DIR / f"{RUN_NAME}.csv"), append=False),
     *tb_callbacks(TB_RUN_DIR),
 ]
