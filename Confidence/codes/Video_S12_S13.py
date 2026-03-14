@@ -23,7 +23,7 @@ CARE_DIR = BASE_DIR / "npz_files" / "CARE_10_SEEDS"
 MIXED_DIR = BASE_DIR / "npz_files" / "Best_3_Points"
 
 # Übergeordneter Output-Ordner
-OUT_DIR_BASE = BASE_DIR / "Plots_Confidence_Ensemble_Movies"
+OUT_DIR_BASE = BASE_DIR / "Movies"
 
 # Wir wollen nur bestimmte Serien
 TARGET_SERIES = [5, 11, 12] # 13, 15, 16, 17, 22, 29, 30, 32, 35, 36, 38, 41, 42, 45, 46, 50, 51, 55, 56, 57, 59, 64, 67,68, 72, 73, 74

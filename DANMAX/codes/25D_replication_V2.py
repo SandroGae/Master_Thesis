@@ -38,7 +38,7 @@ RLROP_PATIENCE = 15
 BATCH_SIZE = 8
 
 # =====================================================
-# ARCHITEKTUR (GEFIXT: linear statt sigmoid)
+# ARCHITEKTUR
 # =====================================================
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
     ki = "he_normal"
@@ -47,8 +47,8 @@ def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
         x = layers.ReLU()(x)
     return x
 
-# WICHTIG: output_activation="linear", da Zielwerte im Tausender-Bereich liegen!
-def unet_2d_stacked(input_shape=(512, 512, DEPTH), base_filters=BASEFILTERS, output_activation="linear"):
+
+def unet_2d_stacked(input_shape=(512, 512, DEPTH), base_filters=BASEFILTERS, output_activation="sigmoid"):
     inputs = layers.Input(shape=input_shape, name="input")
 
     c1 = conv_block_2d(inputs, base_filters)          ; p1 = layers.MaxPooling2D((2, 2))(c1)
@@ -122,17 +122,31 @@ def shuffle_initial(X, y, seed):
     rng.shuffle(indices)
     return X[indices], y[indices]
 
-def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: float = 0.5):
+def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: float, phys_max: float):
     def map_volume(x, y):
         flip = tf.random.uniform([], 0, 1) < p
         x = tf.cond(flip, lambda: tf.reverse(x, axis=[2]), lambda: x)
         y = tf.cond(flip, lambda: tf.reverse(y, axis=[2]), lambda: y)
         x = tf.nn.relu(x); y = tf.nn.relu(y)
+        
         sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
         sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
-        x = x / sum_x; y = y / sum_y
+        
         scale = tf.random.uniform([], scale_min, scale_max)
-        return x * scale, y * scale
+        
+        # 1. Deine gewohnte Skalierung (Werte können groß werden)
+        x = (x / sum_x) * scale
+        y = (y / sum_y) * scale
+        
+        # 2. Globales Downscaling auf den Bereich [0, 1] für Sigmoid
+        x = x / phys_max
+        y = y / phys_max
+        
+        # 3. Sicherheits-Clipping auf [0, 1] (falls es Rundungsfehler gibt)
+        x = tf.clip_by_value(x, 0.0, 1.0)
+        y = tf.clip_by_value(y, 0.0, 1.0)
+        
+        return x, y
     return map_volume
 
 def prepare_25d_input(x, y):
@@ -146,31 +160,26 @@ def prepare_25d_input(x, y):
 def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     y_true = tf.cast(y_true, tf.float32); y_pred = tf.cast(y_pred, tf.float32)
     mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    
-    # Dynamischer max_val für SSIM
-    max_v = tf.maximum(tf.reduce_max(y_true), 1e-3)
-    ssim_m = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_v))
-    
+    ssim_m = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0)) # Fest auf 1.0
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_m)
+
+def ssim_clipped(y_true, y_pred):
+    return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0)) # Fest auf 1.0
 
 # NEU: Das ist nur für deine Augen in der Konsole (* 1000)
 def display_loss_1000(y_true, y_pred):
     return mae_ssim_2d(y_true, y_pred) * 1000.0
 
-def mae_center(y_true, y_pred):
+def mae_clipped(y_true, y_pred):
     return tf.reduce_mean(tf.abs(y_true - y_pred))
 
-def mse_center(y_true, y_pred):
+def mse_clipped(y_true, y_pred):
     return tf.reduce_mean(tf.math.square(y_true - y_pred))
 
-def psnr_center(y_true, y_pred):
+def psnr_clipped(y_true, y_pred):
     mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3))
-    max_v = tf.maximum(tf.reduce_max(y_true), 1e-3)
-    return 10.0 * tf.math.log((max_v**2) / (mse + 1e-12)) / tf.math.log(10.0)
-
-def ssim_center(y_true, y_pred):
-    max_v = tf.maximum(tf.reduce_max(y_true), 1e-3)
-    return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_v))
+    # Da alles zwischen 0 und 1 liegt, ist max_v einfach 1.0 (und 1.0^2 = 1.0)
+    return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
 
 def lr_warmup_scheduler(epoch, lr):
     if epoch < WARMUP_EPOCHS:
@@ -219,6 +228,28 @@ X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 X_test,  y_test  = shuffle_initial(X_test,  y_test,  SEED)
 
 # =====================================================
+# DYNAMISCHE BERECHNUNG VON PHYSICAL_MAX
+# =====================================================
+print("\nBerechne dynamischen Skalierungsfaktor (Global Maximum Scaling)...")
+# Wir simulieren die Normalisierung, die in der tf.data Pipeline passiert.
+# Dabei nehmen wir 15000.0 als Scale, weil das der maximale Scale-Faktor im Training ist.
+# Achsen 1,2,3 entsprechen: (Depth, Height, Width)
+y_sums = np.sum(y_train, axis=(2, 3, 4), keepdims=True) + 1e-12
+y_max_peak = np.max((y_train / y_sums) * 15000.0)
+
+X_sums = np.sum(X_train, axis=(2, 3, 4), keepdims=True) + 1e-12
+X_max_peak = np.max((X_train / X_sums) * 15000.0)
+
+absolute_peak = max(y_max_peak, X_max_peak)
+
+# Wir geben 5% Puffer drauf, damit das absolute Maximum bei 0.95 landet 
+# und das Sigmoid nicht am äußeren Limit "klebt".
+PHYSICAL_MAX = float(absolute_peak * 1.05)
+
+print(f"-> Höchster möglicher Pixelwert (bei Scale 15000): {absolute_peak:.2f}")
+print(f"-> PHYSICAL_MAX wird gesetzt auf: {PHYSICAL_MAX:.2f}\n")
+
+# =====================================================
 # TRAINING START
 # =====================================================
 BASE_NAME = "unet_25d_replication_V2"
@@ -256,22 +287,25 @@ model = unet_2d_stacked(input_shape=(CROP_SIZE[0], CROP_SIZE[1], DEPTH))
 model.compile(
     optimizer=optimizer, 
     loss=mae_ssim_2d, 
-    metrics=[display_loss_1000, mae_center, mse_center, psnr_center, ssim_center]
+    metrics=[display_loss_1000, mae_clipped, mse_clipped, psnr_clipped, ssim_clipped]
 )
 
+# Beispiel für train_ds (mach das analog auch für val_ds und test_ds!):
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
-            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5), num_parallel_calls=tf.data.AUTOTUNE)
+            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
             .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
             .batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
+          # HIER FEHLTE phys_max=PHYSICAL_MAX
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
           .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
           .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 test_ds = (tf.data.Dataset.from_tensor_slices((X_test, y_test))
-          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0), num_parallel_calls=tf.data.AUTOTUNE)
+          # HIER FEHLTE phys_max=PHYSICAL_MAX
+          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
           .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
           .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
