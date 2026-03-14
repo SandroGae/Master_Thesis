@@ -167,7 +167,7 @@ BASE_NAME = "unet_25d_replication"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME  = f"{BASE_NAME}__seed{SEED}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
-TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
+TB_ROOT    = Path.home() / "scratch" / "DANMAX" / "codes" / "tb_root"
 TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 

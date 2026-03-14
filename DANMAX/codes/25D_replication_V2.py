@@ -122,27 +122,25 @@ def shuffle_initial(X, y, seed):
     rng.shuffle(indices)
     return X[indices], y[indices]
 
-def augment_and_normalize_3d_per_slice(scale_min: float, scale_max: float, p: float, phys_max: float):
+def augment_and_normalize_3d_per_slice(p: float, phys_max: float):
     def map_volume(x, y):
+        # Augmentierung (Flip)
         flip = tf.random.uniform([], 0, 1) < p
         x = tf.cond(flip, lambda: tf.reverse(x, axis=[2]), lambda: x)
         y = tf.cond(flip, lambda: tf.reverse(y, axis=[2]), lambda: y)
+        
+        # Sicherstellen, dass keine negativen Werte durch Rauschen entstehen
         x = tf.nn.relu(x); y = tf.nn.relu(y)
         
-        sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
-        sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
+        # 1. Summen-Normalisierung (macht Scans vergleichbar)
+        x = x / (tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12)
+        y = y / (tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12)
         
-        scale = tf.random.uniform([], scale_min, scale_max)
-        
-        # 1. Deine gewohnte Skalierung (Werte können groß werden)
-        x = (x / sum_x) * scale
-        y = (y / sum_y) * scale
-        
-        # 2. Globales Downscaling auf den Bereich [0, 1] für Sigmoid
+        # 2. Auf den Bereich [0, 1] skalieren
         x = x / phys_max
         y = y / phys_max
         
-        # 3. Sicherheits-Clipping auf [0, 1] (falls es Rundungsfehler gibt)
+        # 3. Finales Clipping (Sicherheit für Sigmoid)
         x = tf.clip_by_value(x, 0.0, 1.0)
         y = tf.clip_by_value(y, 0.0, 1.0)
         
@@ -227,27 +225,31 @@ X_train, y_train = shuffle_initial(X_train, y_train, SEED)
 X_val,   y_val   = shuffle_initial(X_val,   y_val,   SEED)
 X_test,  y_test  = shuffle_initial(X_test,  y_test,  SEED)
 
+
 # =====================================================
-# DYNAMISCHE BERECHNUNG VON PHYSICAL_MAX
+# DYNAMISCHE BERECHNUNG (ROBUST MIT PERCENTILEN)
 # =====================================================
-print("\nBerechne dynamischen Skalierungsfaktor (Global Maximum Scaling)...")
-# Wir simulieren die Normalisierung, die in der tf.data Pipeline passiert.
-# Dabei nehmen wir 15000.0 als Scale, weil das der maximale Scale-Faktor im Training ist.
-# Achsen 1,2,3 entsprechen: (Depth, Height, Width)
-y_sums = np.sum(y_train, axis=(2, 3, 4), keepdims=True) + 1e-12
-y_max_peak = np.max((y_train / y_sums) * 15000.0)
+print("\nBerechne optimalen Skalierungsfaktor (Robust gegen Outlier)...")
 
-X_sums = np.sum(X_train, axis=(2, 3, 4), keepdims=True) + 1e-12
-X_max_peak = np.max((X_train / X_sums) * 15000.0)
+def get_peak(data):
+    sums = np.sum(data, axis=(2, 3, 4), keepdims=True) + 1e-12
+    
+    # NEU: 99.99% statt np.max()
+    # Bei 512x512 Pixeln pro Bild ignorieren wir damit die extremsten ~26 Pixel pro Slice.
+    # Das killt alle Hot-Pixel und extremen Artefakte, bewahrt aber das echte Signal.
+    return np.percentile(data / sums, 99.99)
 
-absolute_peak = max(y_max_peak, X_max_peak)
+peak_y = get_peak(y_train)
+peak_x = get_peak(X_train)
 
-# Wir geben 5% Puffer drauf, damit das absolute Maximum bei 0.95 landet 
-# und das Sigmoid nicht am äußeren Limit "klebt".
-PHYSICAL_MAX = float(absolute_peak * 1.05)
+GLOBAL_PEAK_DIVISOR = max(peak_y, peak_x)
 
-print(f"-> Höchster möglicher Pixelwert (bei Scale 15000): {absolute_peak:.2f}")
-print(f"-> PHYSICAL_MAX wird gesetzt auf: {PHYSICAL_MAX:.2f}\n")
+# Der Puffer bleibt, damit die 99.99% Kante nicht zu hart an der 1.0 klebt
+PHYSICAL_MAX = float(GLOBAL_PEAK_DIVISOR * 1.02)
+
+print(f"-> Robustes Peak-Niveau (99.99% Quantil): {GLOBAL_PEAK_DIVISOR:.6f}")
+print(f"-> PHYSICAL_MAX wird: {PHYSICAL_MAX:.6f}\n")
+
 
 # =====================================================
 # TRAINING START
@@ -256,7 +258,7 @@ BASE_NAME = "unet_25d_replication_V2"
 RUN_ID    = datetime.now().strftime("%Y%m%d-%H%M%S")
 RUN_NAME  = f"{BASE_NAME}__seed{SEED}__D{DEPTH}__lossMAE_SSIM__{RUN_ID}"
 
-TB_ROOT    = Path.home() / "data" / "tblogs_unet_3d_simple"
+TB_ROOT    = Path.home() / "scratch" / "DANMAX" / "codes" / "tb_root"
 TB_RUN_DIR = TB_ROOT / RUN_NAME
 TB_RUN_DIR.mkdir(parents=True, exist_ok=True)
 

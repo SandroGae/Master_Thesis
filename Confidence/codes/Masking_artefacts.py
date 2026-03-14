@@ -6,7 +6,8 @@ import re
 from collections import defaultdict
 import warnings
 from tqdm import tqdm
-import scipy.ndimage as ndi # NEU: Für die 8-Nachbarn-Maskierung
+import scipy.ndimage as ndi
+from scipy.spatial import KDTree
 
 warnings.filterwarnings("ignore")
 
@@ -146,27 +147,39 @@ def create_thesis_plots(s_id, file_paths, p_id):
 
     row2 = []
     for img in row1:
-        masked = np.copy(img)
+        masked_img = np.copy(img)
         
-        # 1. Den echten Hintergrund-Level (Median) bestimmen
-        bg_value = np.median(img[~final_mask])
+        # 1. Koordinaten-Gitter erstellen
+        y_coords, x_coords = np.indices(img.shape)
         
-        # 2. Skalierter Poisson-Trick:
-        # Da deine Werte Floats < 1 sind, müssen wir sie für die Poisson-Funktion 
-        # künstlich hochskalieren, damit sie nicht zu 0 werden.
-        scaling_factor = 10000.0 
+        # 2. "Spender-Pixel" und "Ziel-Pixel" definieren
+        coords_unmasked = np.column_stack((y_coords[~final_mask], x_coords[~final_mask]))
+        values_unmasked = img[~final_mask]
+        coords_masked = np.column_stack((y_coords[final_mask], x_coords[final_mask]))
         
-        # Wir erzeugen das Rauschen basierend auf dem bg_value
-        # (lambda = bg_value * scaling_factor)
-        noise_counts = np.random.poisson(bg_value * scaling_factor, size=img.shape)
+        # Überspringen, falls nichts maskiert wurde
+        if len(coords_masked) == 0:
+            row2.append(masked_img)
+            continue
+            
+        # 3. KD-Tree für die Suche nach den K nächsten Nachbarn
+        K = 30
+        tree = KDTree(coords_unmasked)
+        _, indices = tree.query(coords_masked, k=K)
         
-        # Zurückrechnen auf die ursprüngliche Intensität
-        poisson_noise = noise_counts / scaling_factor
+        # 4. NEUE LOGIK: Zufälliges Sampling statt Averaging!
+        # Für jeden maskierten Pixel würfeln wir, welchen der 30 Nachbarn wir kopieren
+        if indices.ndim > 1:
+            rand_neighbor = np.random.randint(0, K, size=len(coords_masked))
+            # Wir extrahieren exakt diesen einen Nachbarn aus der Matrix
+            sampled_values = values_unmasked[indices[np.arange(len(indices)), rand_neighbor]]
+        else:
+            sampled_values = values_unmasked[indices]
         
-        # 3. Maskierte Bereiche mit dem verrauschten Hintergrund füllen
-        masked[final_mask] = poisson_noise[final_mask].astype(np.float32)
-
-        row2.append(masked)
+        # 5. Maskierte Pixel mit den echten Hintergrund-Werten füllen
+        masked_img[final_mask] = sampled_values
+        
+        row2.append(masked_img)
 
     # --- PLOTTING (Innerhalb der create_thesis_plots Funktion) ---
     fig, axes = plt.subplots(2, 3, figsize=(24, 14), dpi=300)
