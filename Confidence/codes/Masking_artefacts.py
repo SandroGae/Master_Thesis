@@ -146,7 +146,7 @@ def create_thesis_plots(s_id, file_paths, p_id):
     titles = ["Aleatoric Uncertainty", "Epistemic Uncertainty", r"Weighted Signal ($\mu_{ens} \cdot \sigma_{epi}$)"]
 
     row2 = []
-    for img in row1:
+    for col, img in enumerate(row1):
         masked_img = np.copy(img)
         
         # 1. Koordinaten-Gitter erstellen
@@ -157,7 +157,6 @@ def create_thesis_plots(s_id, file_paths, p_id):
         values_unmasked = img[~final_mask]
         coords_masked = np.column_stack((y_coords[final_mask], x_coords[final_mask]))
         
-        # Überspringen, falls nichts maskiert wurde
         if len(coords_masked) == 0:
             row2.append(masked_img)
             continue
@@ -167,18 +166,41 @@ def create_thesis_plots(s_id, file_paths, p_id):
         tree = KDTree(coords_unmasked)
         _, indices = tree.query(coords_masked, k=K)
         
-        # 4. NEUE LOGIK: Zufälliges Sampling statt Averaging!
-        # Für jeden maskierten Pixel würfeln wir, welchen der 30 Nachbarn wir kopieren
-        if indices.ndim > 1:
-            rand_neighbor = np.random.randint(0, K, size=len(coords_masked))
-            # Wir extrahieren exakt diesen einen Nachbarn aus der Matrix
-            sampled_values = values_unmasked[indices[np.arange(len(indices)), rand_neighbor]]
+        # 4. SMOOTHNESS-ERKENNUNG (Nur für den linken Plot: col == 0)
+        is_smooth = False
+        if col == 0:
+            # Laplace-Filter misst das Pixel-zu-Pixel Rauschen
+            laplace_img = np.abs(ndi.laplace(img))
+            
+            # Wir normieren das Rauschen mit der Durchschnittshelligkeit des Hintergrunds
+            grain_metric = np.mean(laplace_img[~final_mask]) / (np.mean(values_unmasked) + 1e-8)
+            
+            # --- WICHTIG: TUNE DIESEN WERT ---
+            # Wenn grain_metric KLEINER als dieser Wert ist, gilt das Bild als "Smooth"
+            GRAIN_THRESHOLD = 0.15 
+            is_smooth = grain_metric < GRAIN_THRESHOLD
+            
+            # Ausgabe zum Ablesen und Justieren
+            print(f"      [Aleatoric] Grain Metric: {grain_metric:.4f} -> {'SMOOTH (Averaging)' if is_smooth else 'GRAINY (Clone-Stamp)'}")
+
+        # 5. MASKEN-FÜLLUNG BASIEREND AUF ERKENNUNG
+        if is_smooth:
+            # -> SMOOTH LOGIK: Durchschnitt der K Nachbarn (Weicher Verlauf)
+            if indices.ndim > 1:
+                fill_values = np.mean(values_unmasked[indices], axis=1)
+            else:
+                fill_values = values_unmasked[indices]
         else:
-            sampled_values = values_unmasked[indices]
+            # -> GRAINY LOGIK: Zufälliger Nachbar aus den K Nachbarn (Behält Rausch-Textur)
+            # Greift immer für Epistemic/Weighted (col > 0) ODER wenn Aleatoric körnig ist
+            if indices.ndim > 1:
+                rand_neighbor = np.random.randint(0, K, size=len(coords_masked))
+                fill_values = values_unmasked[indices[np.arange(len(indices)), rand_neighbor]]
+            else:
+                fill_values = values_unmasked[indices]
         
-        # 5. Maskierte Pixel mit den echten Hintergrund-Werten füllen
-        masked_img[final_mask] = sampled_values
-        
+        # 6. Werte eintragen
+        masked_img[final_mask] = fill_values
         row2.append(masked_img)
 
     # --- PLOTTING (Innerhalb der create_thesis_plots Funktion) ---

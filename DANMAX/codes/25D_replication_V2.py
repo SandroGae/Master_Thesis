@@ -295,21 +295,19 @@ model.compile(
 # Beispiel für train_ds (mach das analog auch für val_ds und test_ds!):
 train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
             .shuffle(len(X_train), seed=SEED, reshuffle_each_iteration=True)
-            .map(augment_and_normalize_3d_per_slice(5000.0, 15000.0, p=0.5, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
+            .map(augment_and_normalize_3d_per_slice(p=0.5, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
             .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
             .batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-          # HIER FEHLTE phys_max=PHYSICAL_MAX
-          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
+          .map(augment_and_normalize_3d_per_slice(p=0.0, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
           .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
           .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 test_ds = (tf.data.Dataset.from_tensor_slices((X_test, y_test))
-          # HIER FEHLTE phys_max=PHYSICAL_MAX
-          .map(augment_and_normalize_3d_per_slice(10000.0, 10001.0, p=0.0, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
-          .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
-          .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
+           .map(augment_and_normalize_3d_per_slice(p=0.0, phys_max=PHYSICAL_MAX), num_parallel_calls=tf.data.AUTOTUNE)
+           .map(prepare_25d_input, num_parallel_calls=tf.data.AUTOTUNE)
+           .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 print("Training beginnt...")
 history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
@@ -330,7 +328,7 @@ meta = make_meta_dict(
         "rlrop_patience": RLROP_PATIENCE,
         "data_split_seed": DATA_SPLIT_SEED,
         "test_loss": float(test_results.get("loss", -1)),
-        "test_psnr": float(test_results.get("psnr_center", -1))
+        "test_psnr": float(test_results.get("psnr_clipped", -1))
     }
 )
 
