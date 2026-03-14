@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -20,19 +22,12 @@ NPZ_DIR_CARE = BASE_DIR / "npz_files" / "CARE_10_SEEDS"
 OUT_DIR_BASE = BASE_DIR / "Masked_Plots"
 OUT_DIR_BASE.mkdir(parents=True, exist_ok=True)
 
-# --- DEIN TEST-BEREICH ---
 USE_MEDIAN = True
-
-# LOGIK: Pixel wird maskiert, wenn...
-# 1. Sein Median über die Serie >= GT_MASK_THRESHOLD
-# 2. Er in JEDEM Bild der Serie >= MIN_VALUE ist (nie darunter fällt)
-GT_MASK_THRESHOLD = 0.28 
-MIN_VALUE = 0.25          
 
 BOTTOM_ROW_CUTS = {
     0: (1.0, 98.0),   # Aleatoric
     1: (0.01, 99.7),  # Epistemic
-    2: (0.1, 99.7),  # Weighted Signal
+    2: (0.1, 99.0),   # Weighted Signal
 }
 
 SERIES_CONFIG = {
@@ -75,7 +70,6 @@ SERIES_CONFIG = {
     74: {"slice_idx": 23, "roi_x": (65, 86),   "roi_y": (0, 192), "bg_gap": 113,  "vis_p": (0.5, 96.0)},
 }
 
-
 # =====================================================
 # 3. GENERIERUNG DES THESIS-PLOTS
 # =====================================================
@@ -111,48 +105,50 @@ def create_thesis_plots(s_id, file_paths, p_id):
     epi_slice = np.std(mus, axis=0)[z]
     weight_slice = mu_slice * epi_slice
 
-# =====================================================
-    # KOMPLEXE MASKEN-LOGIK
     # =====================================================
-    # 1. Zentralwert berechnen (Wahlweise Median oder Mean)
+    # KOMPLEXE MASKEN-LOGIK & BILD-GENERIERUNG
+    # =====================================================
+    
+    # --- INDIVIDUELLE PARAMETER FÜR JEDE SPALTE ---
+    # GT_MASK_THRESHOLD : wenn median über 0.28 dann wird maskiert
+    # MIN_VALUE: wenn mindest value des Pixels in der Serie unter 0.25 dann wird es nicht maskiert
+    MASK_PARAMS = {
+        0: {"GT_MASK_THRESHOLD": 0.26, "MIN_VALUE": 0.15}, # Aleatoric
+        1: {"GT_MASK_THRESHOLD": 0.28, "MIN_VALUE": 0.25}, # Epistemic
+        2: {"GT_MASK_THRESHOLD": 0.24, "MIN_VALUE": 0.20}  # Weighted
+    }
+
     if USE_MEDIAN:
         gt_reference = np.median(ground_truth_vol, axis=0)
-        ref_label = "Median"
     else:
         gt_reference = np.mean(ground_truth_vol, axis=0)
-        ref_label = "Mean"
-
-    # 2. Minimum über die Serie (Pixel darf nie unter MIN_VALUE fallen)
+    
     gt_min = np.min(ground_truth_vol, axis=0)
     
-    # Bedingung: (Referenz > Threshold) UND (Minimum >= MIN_VALUE)
-    base_mask = (gt_reference > GT_MASK_THRESHOLD) & (gt_min >= MIN_VALUE)
-    
-    # 3. Erweiterung auf die 8 umliegenden Pixel
-    structure = np.ones((3, 3))
-    final_mask = ndi.binary_dilation(base_mask, structure=structure)
-    
-    num_pixels_base = np.sum(base_mask)
-    print(f"\n  -> {p_id} (S{s_id}): {num_pixels_base} Pixel via {ref_label} maskiert.")
-    
-    num_pixels_base = np.sum(base_mask)
-    num_pixels_final = np.sum(final_mask)
-    
-    print(f"\n  -> {p_id}: {num_pixels_base} Pixel erfüllen die Kriterien.")
-    print(f"     Nach 8-Nachbarn-Erweiterung werden {num_pixels_final} Pixel maskiert.")
-
-    # --- DATEN VORBEREITEN (Korrektur für Poisson-Rauschen auf Float-Werten) ---
     row1 = [alea_slice, epi_slice, weight_slice]
     titles = ["Aleatoric Uncertainty", "Epistemic Uncertainty", r"Weighted Signal ($\mu_{ens} \cdot \sigma_{epi}$)"]
-
     row2 = []
+    
+    # 8-Nachbarn-Struktur
+    structure = np.ones((3, 3))
+
+    print(f"\n--- {p_id} (S{s_id}) Maskierungs-Statistik ---")
+
     for col, img in enumerate(row1):
+        # 1. Maske SPALTENSPEZIFISCH berechnen
+        col_thresh_gt = MASK_PARAMS[col]["GT_MASK_THRESHOLD"]
+        col_thresh_min = MASK_PARAMS[col]["MIN_VALUE"]
+        
+        base_mask = (gt_reference > col_thresh_gt) & (gt_min >= col_thresh_min)
+        final_mask = ndi.binary_dilation(base_mask, structure=structure)
+        
+        print(f"  Plot {col}: {np.sum(base_mask)} Pixel erfüllt -> Erweitert auf {np.sum(final_mask)}")
+        
         masked_img = np.copy(img)
         
-        # 1. Koordinaten-Gitter erstellen
+        # 2. KNN & SMOOTHNESS LOGIK
         y_coords, x_coords = np.indices(img.shape)
         
-        # 2. "Spender-Pixel" und "Ziel-Pixel" definieren
         coords_unmasked = np.column_stack((y_coords[~final_mask], x_coords[~final_mask]))
         values_unmasked = img[~final_mask]
         coords_masked = np.column_stack((y_coords[final_mask], x_coords[final_mask]))
@@ -161,49 +157,34 @@ def create_thesis_plots(s_id, file_paths, p_id):
             row2.append(masked_img)
             continue
             
-        # 3. KD-Tree für die Suche nach den K nächsten Nachbarn
         K = 30
         tree = KDTree(coords_unmasked)
         _, indices = tree.query(coords_masked, k=K)
         
-        # 4. SMOOTHNESS-ERKENNUNG (Nur für den linken Plot: col == 0)
         is_smooth = False
         if col == 0:
-            # Laplace-Filter misst das Pixel-zu-Pixel Rauschen
             laplace_img = np.abs(ndi.laplace(img))
-            
-            # Wir normieren das Rauschen mit der Durchschnittshelligkeit des Hintergrunds
             grain_metric = np.mean(laplace_img[~final_mask]) / (np.mean(values_unmasked) + 1e-8)
-            
-            # --- WICHTIG: TUNE DIESEN WERT ---
-            # Wenn grain_metric KLEINER als dieser Wert ist, gilt das Bild als "Smooth"
             GRAIN_THRESHOLD = 0.15 
             is_smooth = grain_metric < GRAIN_THRESHOLD
-            
-            # Ausgabe zum Ablesen und Justieren
-            print(f"      [Aleatoric] Grain Metric: {grain_metric:.4f} -> {'SMOOTH (Averaging)' if is_smooth else 'GRAINY (Clone-Stamp)'}")
+            print(f"    [Aleatoric] Grain Metric: {grain_metric:.4f} -> {'SMOOTH (Averaging)' if is_smooth else 'GRAINY (Clone-Stamp)'}")
 
-        # 5. MASKEN-FÜLLUNG BASIEREND AUF ERKENNUNG
         if is_smooth:
-            # -> SMOOTH LOGIK: Durchschnitt der K Nachbarn (Weicher Verlauf)
             if indices.ndim > 1:
                 fill_values = np.mean(values_unmasked[indices], axis=1)
             else:
                 fill_values = values_unmasked[indices]
         else:
-            # -> GRAINY LOGIK: Zufälliger Nachbar aus den K Nachbarn (Behält Rausch-Textur)
-            # Greift immer für Epistemic/Weighted (col > 0) ODER wenn Aleatoric körnig ist
             if indices.ndim > 1:
                 rand_neighbor = np.random.randint(0, K, size=len(coords_masked))
                 fill_values = values_unmasked[indices[np.arange(len(indices)), rand_neighbor]]
             else:
                 fill_values = values_unmasked[indices]
         
-        # 6. Werte eintragen
         masked_img[final_mask] = fill_values
         row2.append(masked_img)
 
-    # --- PLOTTING (Innerhalb der create_thesis_plots Funktion) ---
+    # --- PLOTTING ---
     fig, axes = plt.subplots(2, 3, figsize=(24, 14), dpi=300)
     fig.suptitle(f"Persistence Analysis (Recalculated Scaling) - {p_id} S{s_id}", fontsize=22, y=1.02)
     
@@ -211,23 +192,17 @@ def create_thesis_plots(s_id, file_paths, p_id):
         cmap = 'inferno' if col < 2 else 'magma'
         p_low, p_high = BOTTOM_ROW_CUTS[col]
         
-        # 1. Skalierung OBERE REIHE (Normal)
+        # Skalierung anhand der OBEREN REIHE berechnen
         v0_min, v0_max = np.percentile(row1[col], [p_low, p_high])
+        
+        # OBERE REIHE PLOTTEN
         im_top = axes[0, col].imshow(row1[col], cmap=cmap, vmin=v0_min, vmax=v0_max)
         axes[0, col].set_title(titles[col], fontsize=18)
         plt.colorbar(im_top, ax=axes[0, col], fraction=0.046, pad=0.04)
 
-        # 2. Skalierung UNTERE REIHE (Neu berechnet!)
-        # Wir berechnen das Perzentil NUR von den Pixeln, die NICHT maskiert wurden
-        remaining_pixels = row2[col][~final_mask]
-        
-        if remaining_pixels.size > 0:
-            v1_min, v1_max = np.percentile(remaining_pixels, [p_low, p_high])
-        else:
-            v1_min, v1_max = 0, 1 # Fallback, falls alles maskiert wurde
-
-        im_bot = axes[1, col].imshow(row2[col], cmap=cmap, vmin=v1_min, vmax=v1_max)
-        axes[1, col].set_title(titles[col] + "\n(Masked & Rescaled)", fontsize=18)
+        # UNTERE REIHE PLOTTEN (Erzwingt EXAKT dieselbe Brightness Range vmin/vmax)
+        im_bot = axes[1, col].imshow(row2[col], cmap=cmap, vmin=v0_min, vmax=v0_max)
+        axes[1, col].set_title(titles[col] + "\n(Masked - Fixed Brightness)", fontsize=18)
         plt.colorbar(im_bot, ax=axes[1, col], fraction=0.046, pad=0.04)
 
     for ax in axes.ravel():
@@ -239,12 +214,11 @@ def create_thesis_plots(s_id, file_paths, p_id):
     plt.close(fig)
 
 # =====================================================
-# 4. RUNNER LOGIK (Geändert für alle Serien in SERIES_CONFIG)
+# 4. RUNNER LOGIK
 # =====================================================
 if __name__ == "__main__":
     all_npzs = sorted(list(NPZ_DIR_BEST.glob("*.npz")) + list(NPZ_DIR_CARE.glob("*.npz")))
     
-    # Wir gruppieren jetzt nach (Modell, Serie)
     ensembles = defaultdict(list)
 
     for f in all_npzs:
@@ -257,17 +231,13 @@ if __name__ == "__main__":
         if match_care:
             m_id, s_id = "CARE_MSE", int(match_care.group(1))
             
-        # Prüfen, ob die gefundene Serie in deiner SERIES_CONFIG Liste ist
         if s_id in SERIES_CONFIG:
             ensembles[(m_id, s_id)].append(f)
 
-    # Die Schleife läuft jetzt über alle Modelle und alle 4 Serien
-    print(f"Starte Prozess für {len(ensembles)} Kombinationen (Serie 5, 11, 12, 13)...")
+    print(f"Starte Prozess für {len(ensembles)} Kombinationen...")
     
-    # Wir sortieren die Items, damit die Plots in einer logischen Reihenfolge erstellt werden
     for (m_id, s_id), file_paths in tqdm(sorted(ensembles.items())):
         if len(file_paths) == 10:
-            # Wir übergeben jetzt die s_id aus dem Loop anstatt TARGET_S_ID
             create_thesis_plots(s_id, file_paths, m_id)
         else:
             print(f"Hinweis: {m_id} S{s_id} hat nur {len(file_paths)}/10 Seeds. Überspringe.")
