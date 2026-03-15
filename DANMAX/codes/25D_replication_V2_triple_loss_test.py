@@ -73,11 +73,11 @@ SERIES_LEN = 40
 BASEFILTERS = 64
 CROP_SIZE = (256, 256) # Reduziert für RAM-Management
 EPOCHS = 100           # Für den Test reduziert
-LR_TARGET = 5e-4
+LR_TARGET = 2e-4
 WARMUP_EPOCHS = 10
 EARLY_STOPPING_PATIENCE = 25
 RLROP_PATIENCE = 15
-BATCH_SIZE = 8
+BATCH_SIZE = 32
 DATA_SPLIT_SEED = 42
 AUTOTUNE = tf.data.AUTOTUNE
 
@@ -339,7 +339,7 @@ def main():
                    .cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
         model = unet_2d_stacked()
-        optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True, clipnorm=1.0)
         model.compile(optimizer=optimizer, loss=get_triple_loss(MY_ALPHA, MY_BETA),
                       metrics=[display_loss_1000, mae_clipped, mse_clipped, psnr_clipped, ssim_clipped])
 
@@ -349,7 +349,7 @@ def main():
             if psnr > status["best_psnr"]:
                 status["best_psnr"] = psnr; status["drop_cnt"] = 0
             elif epoch >= 10:
-                if psnr < (status["best_psnr"] - 4.5) or psnr < 24.0: status["drop_cnt"] += 1
+                if psnr < (status["best_psnr"] - 4.5) or psnr < 15.0: status["drop_cnt"] += 1
                 if status["drop_cnt"] >= 3:
                     status["aborted"], status["reason"], model.stop_training = True, "perf_collapse", True
             touch_lock(lock_file)
