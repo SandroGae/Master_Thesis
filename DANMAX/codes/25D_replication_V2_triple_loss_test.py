@@ -26,20 +26,22 @@ from unet_3d_simple_checkpoints import finalize_run, make_meta_dict
 from tb_utils import tb_callbacks
 
 # =====================================================
-# 1. SETUP & ARGUMENT PARSING (TEST-MODUS: Nur 2 Jobs)
+# 1. SETUP & ARGUMENT PARSING (20 Jobs: 2 Punkte x 10 Seeds)
 # =====================================================
 parser = argparse.ArgumentParser()
-parser.add_argument("--task_id", type=int, required=True, help="Index 0 für P02, 1 für P14")
+parser.add_argument("--task_id", type=int, required=True, help="Index 0-19 für die 20 Jobs")
 args = parser.parse_args()
 
-# NUR SEED 42 für die beiden Test-Punkte
-job_configs = [
-    {"point": "P02", "alpha": 0.0, "beta": 2.0/6.0, "seed": 42},
-    {"point": "P14", "alpha": 2.0/6.0, "beta": 0.0, "seed": 42}
-]
+job_configs = []
+# Punkt 02: alpha = 0.0, beta = 2/6 (Task 0 bis 9)
+for s in range(42, 52):
+    job_configs.append({"point": "P02", "alpha": 0.0, "beta": 2.0/6.0, "seed": s})
+# Punkt 14: alpha = 2/6, beta = 0.0 (Task 10 bis 19)
+for s in range(42, 52):
+    job_configs.append({"point": "P14", "alpha": 2.0/6.0, "beta": 0.0, "seed": s})
 
-if args.task_id < 0 or args.task_id > 1:
-    print(f"❌ Ungültige task_id {args.task_id}. Im Testmodus sind nur 0 und 1 erlaubt.")
+if args.task_id < 0 or args.task_id > 19:
+    print(f"❌ Ungültige task_id {args.task_id}. Erlaubt sind 0 bis 19.")
     sys.exit(1)
 
 current_config = job_configs[args.task_id]
@@ -59,7 +61,7 @@ tf.config.experimental.enable_op_determinism()
 SCRATCH_ROOT = Path.home() / "scratch" / "DANMAX"
 RAW_BASE_DIR = Path("/scratch/sgaell/DATA_DANMAX/2026020508/raw")
 
-# NEUER OUTPUT ORDNER FÜR DEN TEST
+# OUTPUT ORDNER (Bleibt erstmal im TEST_V2_triple Ordner)
 TEST_OUT_ROOT = SCRATCH_ROOT / "models" / "TEST_V2_triple"
 MODEL_OUT_DIR = TEST_OUT_ROOT / f"25D_replication_V2_{MY_POINT}"
 MODEL_OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,8 +73,8 @@ TB_ROOT.mkdir(parents=True, exist_ok=True)
 DEPTH = 5
 SERIES_LEN = 40
 BASEFILTERS = 64
-CROP_SIZE = (256, 256) # Reduziert für RAM-Management
-EPOCHS = 100           # Für den Test reduziert
+CROP_SIZE = (256, 256)
+EPOCHS = 200
 LR_TARGET = 2e-4
 WARMUP_EPOCHS = 10
 EARLY_STOPPING_PATIENCE = 25
@@ -135,13 +137,6 @@ def get_triple_loss(alpha, beta):
         return (alpha * ssim) + ((1.0 - alpha) * (beta * mse + (1.0 - beta) * mae))
     return loss
 
-def mae_ssim_2d(y_true, y_pred, alpha=0.6):
-    y_true = tf.cast(y_true, tf.float32); y_pred = tf.cast(y_pred, tf.float32)
-    mae = tf.reduce_mean(tf.abs(y_true - y_pred))
-    ssim_m = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
-    return (1.0 - alpha) * mae + alpha * (1.0 - ssim_m)
-
-def display_loss_1000(y_true, y_pred): return mae_ssim_2d(y_true, y_pred) * 1000.0
 def mae_clipped(y_true, y_pred): return tf.reduce_mean(tf.abs(tf.clip_by_value(y_true, 0.0, 1.0) - tf.clip_by_value(y_pred, 0.0, 1.0)))
 def mse_clipped(y_true, y_pred): return tf.reduce_mean(tf.math.squared_difference(tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)))
 def psnr_clipped(y_true, y_pred): 
@@ -223,22 +218,19 @@ def process_data(training=True):
         y = tf.nn.relu(y)
         
         # 2. Min-Max Normalisierung pro Slice (Zwingt die Daten robust in [0, 1])
-        # Wir machen das separat für X und Y, um Dosis-Unterschiede zu killen
         max_x = tf.reduce_max(x, axis=[1, 2, 3], keepdims=True) + 1e-12
         x = x / max_x
         
         max_y = tf.reduce_max(y, axis=[1, 2, 3], keepdims=True) + 1e-12
         y = y / max_y
 
-        # 3. Intensity Augmentation (Deine 1/3 bis Max Logik)
+        # 3. Intensity Augmentation (1/3 bis Max Logik)
         if training:
-            # Da die Bilder jetzt ein Maximum von 1.0 haben, 
-            # skalieren wir sie zufällig zwischen 0.33 und 1.0 runter.
             scale_factor = tf.random.uniform([], 0.3333, 1.0)
             x = x * scale_factor
             y = y * scale_factor
 
-        # 4. Clipping zur reinen Sicherheit (sollte eigentlich nichts abschneiden)
+        # 4. Clipping zur reinen Sicherheit
         x = tf.clip_by_value(x, 0.0, 1.0)
         y = tf.clip_by_value(y, 0.0, 1.0)
 
@@ -258,7 +250,7 @@ def lr_warmup_scheduler(epoch, lr):
 def main():
     RUN_NAME = f"{MY_POINT}__a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{MY_SEED}"
     print(f"\n{'='*60}")
-    print(f"🚀 STARTE TEST-JOB {args.task_id} | Punkt: {MY_POINT} | Seed: {MY_SEED}")
+    print(f"🚀 STARTE JOB {args.task_id}/19 | Punkt: {MY_POINT} | Seed: {MY_SEED}")
     print(f"{'='*60}\n")
 
     lock_file = MODEL_OUT_DIR / f"{RUN_NAME}.lock"
@@ -340,8 +332,10 @@ def main():
 
         model = unet_2d_stacked()
         optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True, clipnorm=1.0)
+        
+        # Sauber! Metriken aktualisiert
         model.compile(optimizer=optimizer, loss=get_triple_loss(MY_ALPHA, MY_BETA),
-                      metrics=[display_loss_1000, mae_clipped, mse_clipped, psnr_clipped, ssim_clipped])
+                      metrics=[mae_clipped, mse_clipped, psnr_clipped, ssim_clipped])
 
         status = {"best_psnr": -1.0, "drop_cnt": 0, "aborted": False, "reason": "none"}
         def check_crash(epoch, logs):
