@@ -26,22 +26,20 @@ from unet_3d_simple_checkpoints import finalize_run, make_meta_dict
 from tb_utils import tb_callbacks
 
 # =====================================================
-# 1. SETUP & ARGUMENT PARSING (20 Jobs Array)
+# 1. SETUP & ARGUMENT PARSING (TEST-MODUS: Nur 2 Jobs)
 # =====================================================
 parser = argparse.ArgumentParser()
-parser.add_argument("--task_id", type=int, required=True, help="Index 0-19 für die 20 Jobs")
+parser.add_argument("--task_id", type=int, required=True, help="Index 0 für P02, 1 für P14")
 args = parser.parse_args()
 
-job_configs = []
-# Punkt 02: alpha = 0.0, beta = 2/6
-for s in range(42, 52):
-    job_configs.append({"point": "P02", "alpha": 0.0, "beta": 2.0/6.0, "seed": s})
-# Punkt 14: alpha = 2/6, beta = 0.0
-for s in range(42, 52):
-    job_configs.append({"point": "P14", "alpha": 2.0/6.0, "beta": 0.0, "seed": s})
+# NUR SEED 42 für die beiden Test-Punkte
+job_configs = [
+    {"point": "P02", "alpha": 0.0, "beta": 2.0/6.0, "seed": 42},
+    {"point": "P14", "alpha": 2.0/6.0, "beta": 0.0, "seed": 42}
+]
 
-if args.task_id < 0 or args.task_id > 19:
-    print(f"❌ Ungültige task_id {args.task_id}. Erlaubt sind 0 bis 19.")
+if args.task_id < 0 or args.task_id > 1:
+    print(f"❌ Ungültige task_id {args.task_id}. Im Testmodus sind nur 0 und 1 erlaubt.")
     sys.exit(1)
 
 current_config = job_configs[args.task_id]
@@ -59,19 +57,22 @@ tf.config.experimental.enable_op_determinism()
 
 # PFADE
 SCRATCH_ROOT = Path.home() / "scratch" / "DANMAX"
-BAMBOO_RAW = Path("/scratch/sgaell/DATA_DANMAX/2026020508/raw/bamboo/")
-TB_ROOT = SCRATCH_ROOT / "codes" / "tb_root"
+RAW_BASE_DIR = Path("/scratch/sgaell/DATA_DANMAX/2026020508/raw")
 
-MODEL_OUT_DIR = SCRATCH_ROOT / "models" / f"25D_replication_V2_{MY_POINT}"
+# NEUER OUTPUT ORDNER FÜR DEN TEST
+TEST_OUT_ROOT = SCRATCH_ROOT / "models" / "TEST_V2_triple"
+MODEL_OUT_DIR = TEST_OUT_ROOT / f"25D_replication_V2_{MY_POINT}"
 MODEL_OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+TB_ROOT = TEST_OUT_ROOT / "tb_root"
 TB_ROOT.mkdir(parents=True, exist_ok=True)
 
 # PARAMETER
 DEPTH = 5
 SERIES_LEN = 40
 BASEFILTERS = 64
-CROP_SIZE = (512, 512)
-EPOCHS = 200
+CROP_SIZE = (256, 256) # Reduziert für RAM-Management
+EPOCHS = 100           # Für den Test reduziert
 LR_TARGET = 5e-4
 WARMUP_EPOCHS = 10
 EARLY_STOPPING_PATIENCE = 25
@@ -80,8 +81,16 @@ BATCH_SIZE = 8
 DATA_SPLIT_SEED = 42
 AUTOTUNE = tf.data.AUTOTUNE
 
+# MULTI-DATASET CONFIG (Immer die Projections: Dark+2, Flat+1, Proj)
+DATASETS = {
+    "bamboo":        {"gt_id": 32,  "lc_id": 57},  
+    "carbon_fiber":  {"gt_id": 60,  "lc_id": 84},  
+    "glass_fiber":   {"gt_id": 87,  "lc_id": 111}, 
+    "chicken_liver": {"gt_id": 114, "lc_id": 138}  
+}
+
 # =====================================================
-# 2. LOCK / STATE HELPERS (Für Array Jobs)
+# 2. LOCK / STATE HELPERS 
 # =====================================================
 LOCK_STALE_SECONDS = 2 * 60 * 60 
 
@@ -94,8 +103,7 @@ def acquire_lock(lock_file: Path, stale_seconds: int = LOCK_STALE_SECONDS) -> bo
     now = time.time()
     if lock_file.exists():
         try:
-            age = now - lock_file.stat().st_mtime
-            if age > stale_seconds: lock_file.unlink(missing_ok=True)
+            if (now - lock_file.stat().st_mtime) > stale_seconds: lock_file.unlink(missing_ok=True)
         except: pass
     try:
         fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -133,24 +141,16 @@ def mae_ssim_2d(y_true, y_pred, alpha=0.6):
     ssim_m = tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
     return (1.0 - alpha) * mae + alpha * (1.0 - ssim_m)
 
-def display_loss_1000(y_true, y_pred):
-    return mae_ssim_2d(y_true, y_pred) * 1000.0
-
-def mae_clipped(y_true, y_pred):
-    return tf.reduce_mean(tf.abs(y_true - y_pred))
-
-def mse_clipped(y_true, y_pred):
-    return tf.reduce_mean(tf.math.square(y_true - y_pred))
-
-def psnr_clipped(y_true, y_pred):
-    mse = tf.reduce_mean(tf.math.squared_difference(y_true, y_pred), axis=(1,2,3))
+def display_loss_1000(y_true, y_pred): return mae_ssim_2d(y_true, y_pred) * 1000.0
+def mae_clipped(y_true, y_pred): return tf.reduce_mean(tf.abs(tf.clip_by_value(y_true, 0.0, 1.0) - tf.clip_by_value(y_pred, 0.0, 1.0)))
+def mse_clipped(y_true, y_pred): return tf.reduce_mean(tf.math.squared_difference(tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)))
+def psnr_clipped(y_true, y_pred): 
+    mse = tf.reduce_mean(tf.math.squared_difference(tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0)), axis=(1,2,3))
     return 10.0 * tf.math.log(1.0 / (mse + 1e-12)) / tf.math.log(10.0)
-
-def ssim_clipped(y_true, y_pred):
-    return tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+def ssim_clipped(y_true, y_pred): return tf.reduce_mean(tf.image.ssim(tf.clip_by_value(y_true, 0.0, 1.0), tf.clip_by_value(y_pred, 0.0, 1.0), max_val=1.0))
 
 # =====================================================
-# 4. ARCHITEKTUR & DATA UTILS (Aus Replication V2)
+# 4. ARCHITEKTUR & DATA UTILS 
 # =====================================================
 def conv_block_2d(x, filters):
     for _ in range(4):
@@ -158,7 +158,7 @@ def conv_block_2d(x, filters):
         x = layers.ReLU()(x)
     return x
 
-def unet_2d_stacked(input_shape=(512, 512, DEPTH)):
+def unet_2d_stacked(input_shape=(CROP_SIZE[0], CROP_SIZE[1], DEPTH)):
     inputs = layers.Input(shape=input_shape, name="input")
     c1 = conv_block_2d(inputs, BASEFILTERS)           ; p1 = layers.MaxPooling2D((2, 2))(c1)
     c2 = conv_block_2d(p1, BASEFILTERS * 2)           ; p2 = layers.MaxPooling2D((2, 2))(c2)
@@ -208,56 +208,39 @@ def make_sliding_windows(X, y, series_len, depth):
 
 def shuffle_initial(X, y, seed):
     rng = np.random.default_rng(seed)
-    indices = np.arange(len(X))
-    rng.shuffle(indices)
+    indices = np.arange(len(X)); rng.shuffle(indices)
     return X[indices], y[indices]
 
 def augment_and_normalize_3d_per_slice(p: float, phys_max: float, apply_random_scaling: bool = True):
     def map_volume(x, y):
-        # 1. Spatial Augmentation (Flip)
+        # 1. Flip
         flip = tf.random.uniform([], 0, 1) < p
-        x = tf.cond(flip, lambda: tf.reverse(x, [2]), lambda: x)
-        y = tf.cond(flip, lambda: tf.reverse(y, [2]), lambda: y)
+        x, y = tf.cond(flip, lambda: tf.reverse(x, [2]), lambda: x), tf.cond(flip, lambda: tf.reverse(y, [2]), lambda: y)
+        x = tf.nn.relu(x); y = tf.nn.relu(y)
         
-        # Sicherstellen, dass keine negativen Werte vorhanden sind
-        x = tf.nn.relu(x)
-        y = tf.nn.relu(y)
+        # 2. Sum-Norm
+        x = x / (tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12)
+        y = y / (tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12)
         
-        # 2. Summen-Normalisierung (Basis-Skalierung)
-        sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
-        sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
-        x = x / sum_x
-        y = y / sum_y
-        
-        # 3. Intensity Skalierung
+        # 3. Random Intensity Scaling
         if apply_random_scaling:
-            # Im Training: Zufällige Helligkeit zwischen 1/3 von phys_max und phys_max
             scale_min = phys_max / 3.0
             scale_max = phys_max
             scale_factor = tf.random.uniform([], scale_min, scale_max)
-            
             x = x * scale_factor
             y = y * scale_factor
         else:
-            # In der Validierung/Inferenz: Wir nutzen den exakten, vollen phys_max
-            # (bzw. wie in deinem alten Code den Mittelwert oder einfach den phys_max)
             x = x * phys_max
             y = y * phys_max
-
-        # 4. Da die Werte nun grob zwischen 0 und phys_max liegen, 
-        # müssen wir sie für das Modell auf [0, 1] bringen.
+            
+        # 4. Finale Clip auf Model-Input [0, 1]
         x = tf.clip_by_value(x / phys_max, 0.0, 1.0)
         y = tf.clip_by_value(y / phys_max, 0.0, 1.0)
-
         return x, y
     return map_volume
 
-def prepare_25d_input(x, y):
-    return tf.transpose(tf.squeeze(x, axis=-1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
-
-def lr_warmup_scheduler(epoch, lr):
-    if epoch < WARMUP_EPOCHS: return LR_TARGET * (epoch + 1) / WARMUP_EPOCHS
-    return lr
+def prepare_25d_input(x, y): return tf.transpose(tf.squeeze(x, axis=-1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
+def lr_warmup_scheduler(epoch, lr): return LR_TARGET * (epoch + 1) / WARMUP_EPOCHS if epoch < WARMUP_EPOCHS else lr
 
 # =====================================================
 # 5. MAIN LOOP
@@ -265,7 +248,7 @@ def lr_warmup_scheduler(epoch, lr):
 def main():
     RUN_NAME = f"{MY_POINT}__a{MY_ALPHA:.4f}_b{MY_BETA:.4f}_seed{MY_SEED}"
     print(f"\n{'='*60}")
-    print(f"🚀 STARTE JOB {args.task_id}/19 | Punkt: {MY_POINT} | Seed: {MY_SEED}")
+    print(f"🚀 STARTE TEST-JOB {args.task_id} | Punkt: {MY_POINT} | Seed: {MY_SEED}")
     print(f"{'='*60}\n")
 
     lock_file = MODEL_OUT_DIR / f"{RUN_NAME}.lock"
@@ -286,30 +269,38 @@ def main():
         sys.exit(0)
 
     try:
-        write_json_atomic(state_file, {
-            "status": "running", "run_name": RUN_NAME, "point": MY_POINT, "seed": MY_SEED,
-            "started_at": datetime.now().isoformat(timespec="seconds")
-        })
+        write_json_atomic(state_file, {"status": "running", "run_name": RUN_NAME, "point": MY_POINT, "seed": MY_SEED, "started_at": datetime.now().isoformat(timespec="seconds")})
 
-        print("Lade Daten von DanMAX...")
-        X_all, y_all = load_split_danmax(BAMBOO_RAW, 32, 57)
-        N_SERIES = len(X_all) // SERIES_LEN
+        print("Lade und verknüpfe Daten von 4 DanMAX Datasets...")
+        X_series_list, y_series_list = [], []
+        
+        for name, ids in DATASETS.items():
+            print(f"   -> Verarbeite {name}...")
+            base_p = RAW_BASE_DIR / name
+            x_data, y_data = load_split_danmax(base_p, ids["gt_id"], ids["lc_id"])
+            
+            # Direkt in 40er Serien umwandeln
+            n_ser = len(x_data) // SERIES_LEN
+            X_series_list.append(np.reshape(x_data[:n_ser*SERIES_LEN], (n_ser, SERIES_LEN, CROP_SIZE[0], CROP_SIZE[1], 1)))
+            y_series_list.append(np.reshape(y_data[:n_ser*SERIES_LEN], (n_ser, SERIES_LEN, CROP_SIZE[0], CROP_SIZE[1], 1)))
 
-        X_series = np.reshape(X_all, (N_SERIES, SERIES_LEN, CROP_SIZE[0], CROP_SIZE[1], 1))
-        y_series = np.reshape(y_all, (N_SERIES, SERIES_LEN, CROP_SIZE[0], CROP_SIZE[1], 1))
+        # Alle Serien zusammenführen (Axis 0)
+        X_series = np.concatenate(X_series_list, axis=0)
+        y_series = np.concatenate(y_series_list, axis=0)
+        
+        N_TOTAL_SERIES = len(X_series)
+        print(f"✅ Insgesamt {N_TOTAL_SERIES} Serien (á {SERIES_LEN} Slices) geladen.")
 
         rng = np.random.default_rng(DATA_SPLIT_SEED)
-        indices = np.arange(N_SERIES); rng.shuffle(indices)
+        indices = np.arange(N_TOTAL_SERIES); rng.shuffle(indices)
         X_series, y_series = X_series[indices], y_series[indices]
 
-        n_train, n_val = int(0.6 * N_SERIES), int(0.2 * N_SERIES)
+        n_train, n_val = int(0.6 * N_TOTAL_SERIES), int(0.2 * N_TOTAL_SERIES)
 
         X_train_raw = np.reshape(X_series[:n_train], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
         y_train_raw = np.reshape(y_series[:n_train], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
         X_val_raw = np.reshape(X_series[n_train:n_train+n_val], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
         y_val_raw = np.reshape(y_series[n_train:n_train+n_val], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
-        
-        # Test-Set aufbereiten wie in V2 Referenz
         X_test_raw = np.reshape(X_series[n_train+n_val:], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
         y_test_raw = np.reshape(y_series[n_train+n_val:], (-1, CROP_SIZE[0], CROP_SIZE[1], 1))
 
@@ -321,23 +312,26 @@ def main():
         X_val,   y_val   = shuffle_initial(X_val,   y_val,   MY_SEED)
         X_test,  y_test  = shuffle_initial(X_test,  y_test,  MY_SEED)
 
-        print("\nBerechne optimalen Skalierungsfaktor...")
+        print("\nBerechne globalen PHYSICAL_MAX Skalierungsfaktor...")
         def get_peak(data):
             sums = np.sum(data, axis=(2, 3, 4), keepdims=True) + 1e-12
             return np.percentile(data / sums, 99.99)
         PHYSICAL_MAX = float(max(get_peak(y_train), get_peak(X_train)) * 1.02)
+        print(f"-> PHYSICAL_MAX = {PHYSICAL_MAX:.6f}")
 
+        # Training DS mit apply_random_scaling=True
         train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
                     .shuffle(len(X_train), seed=MY_SEED)
-                    .map(augment_and_normalize_3d_per_slice(0.5, PHYSICAL_MAX), num_parallel_calls=AUTOTUNE)
+                    .map(augment_and_normalize_3d_per_slice(0.5, PHYSICAL_MAX, apply_random_scaling=True), num_parallel_calls=AUTOTUNE)
                     .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
+        # Val und Test DS mit apply_random_scaling=False
         val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-                  .map(augment_and_normalize_3d_per_slice(0.0, PHYSICAL_MAX), num_parallel_calls=AUTOTUNE)
+                  .map(augment_and_normalize_3d_per_slice(0.0, PHYSICAL_MAX, apply_random_scaling=False), num_parallel_calls=AUTOTUNE)
                   .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
                   
         test_ds = (tf.data.Dataset.from_tensor_slices((X_test, y_test))
-                   .map(augment_and_normalize_3d_per_slice(0.0, PHYSICAL_MAX), num_parallel_calls=AUTOTUNE)
+                   .map(augment_and_normalize_3d_per_slice(0.0, PHYSICAL_MAX, apply_random_scaling=False), num_parallel_calls=AUTOTUNE)
                    .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
         model = unet_2d_stacked()
@@ -349,8 +343,7 @@ def main():
         def check_crash(epoch, logs):
             psnr = logs.get("val_psnr_clipped", 0)
             if psnr > status["best_psnr"]:
-                status["best_psnr"] = psnr
-                status["drop_cnt"] = 0
+                status["best_psnr"] = psnr; status["drop_cnt"] = 0
             elif epoch >= 10:
                 if psnr < (status["best_psnr"] - 4.5) or psnr < 24.0: status["drop_cnt"] += 1
                 if status["drop_cnt"] >= 3:
@@ -369,8 +362,7 @@ def main():
 
         print("Training beginnt...")
         history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks, verbose=2)
-
-        term_reason = "psnr_safety_net" if status["aborted"] else ("early_stopping" if len(history.history["loss"]) < EPOCHS else "max_epochs_200")
+        term_reason = "psnr_safety_net" if status["aborted"] else ("early_stopping" if len(history.history["loss"]) < EPOCHS else f"max_epochs_{EPOCHS}")
 
         print("Evaluation auf dem Test-Set...")
         test_results = model.evaluate(test_ds, verbose=1, return_dict=True)
@@ -386,19 +378,16 @@ def main():
         model.save_weights(str(best_h5_file))
 
     best_idx = int(np.argmin(history.history["val_loss"])) if history else 0
-    
     meta = make_meta_dict(RUN_NAME, BATCH_SIZE, EPOCHS, optimizer, LR_TARGET, (CROP_SIZE[0], CROP_SIZE[1], DEPTH),
                           extra={"point": MY_POINT, "alpha": MY_ALPHA, "beta": MY_BETA, "seed": MY_SEED,
                                  "aborted": status["aborted"], "reason": status["reason"], "term_reason": term_reason,
-                                 "best_epoch": best_idx + 1,
-                                 "test_loss": float(test_results.get("loss", -1)),
+                                 "best_epoch": best_idx + 1, "test_loss": float(test_results.get("loss", -1)),
                                  "test_psnr": float(test_results.get("psnr_clipped", -1))})
     
     if history: finalize_run(model, history, RUN_NAME, meta, folder_name=str(MODEL_OUT_DIR))
-    
     if os.path.exists(temp_csv): shutil.move(temp_csv, csv_file)
 
-    write_json_atomic(state_file, {"status": "finished" if term_reason in ["max_epochs_200", "early_stopping", "psnr_safety_net"] else "incomplete",
+    write_json_atomic(state_file, {"status": "finished" if term_reason in [f"max_epochs_{EPOCHS}", "early_stopping", "psnr_safety_net"] else "incomplete",
                                    "run_name": RUN_NAME, "term_reason": term_reason})
 
     if temp_checkpoint_file.exists(): temp_checkpoint_file.unlink()
