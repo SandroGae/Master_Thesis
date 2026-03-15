@@ -212,9 +212,6 @@ def shuffle_initial(X, y, seed):
     return X[indices], y[indices]
 
 def process_data(training=True):
-    # Fester "gesunder" Skalierungsfaktor für DanMAX-Daten nach Summen-Norm
-    BASE_SCALE = 10000.0 
-
     def map_fn(x, y):
         # 1. Spatial Augmentation (Flip)
         if training:
@@ -225,26 +222,27 @@ def process_data(training=True):
         x = tf.nn.relu(x)
         y = tf.nn.relu(y)
         
-        # 2. Dosis-Kompensation (Summen-Normierung)
-        sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
-        sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
-        x = x / sum_x
-        y = y / sum_y
+        # 2. Min-Max Normalisierung pro Slice (Zwingt die Daten robust in [0, 1])
+        # Wir machen das separat für X und Y, um Dosis-Unterschiede zu killen
+        max_x = tf.reduce_max(x, axis=[1, 2, 3], keepdims=True) + 1e-12
+        x = x / max_x
+        
+        max_y = tf.reduce_max(y, axis=[1, 2, 3], keepdims=True) + 1e-12
+        y = y / max_y
 
-        # 3. Intensity Augmentation (1/3 bis Max Logik)
+        # 3. Intensity Augmentation (Deine 1/3 bis Max Logik)
         if training:
-            scale_factor = tf.random.uniform([], BASE_SCALE / 3.0, BASE_SCALE)
+            # Da die Bilder jetzt ein Maximum von 1.0 haben, 
+            # skalieren wir sie zufällig zwischen 0.33 und 1.0 runter.
+            scale_factor = tf.random.uniform([], 0.3333, 1.0)
             x = x * scale_factor
             y = y * scale_factor
-        else:
-            x = x * BASE_SCALE
-            y = y * BASE_SCALE
 
-        # 4. Finale Anpassung für Sigmoid [0, 1]
-        x = tf.clip_by_value(x / BASE_SCALE, 0.0, 1.0)
-        y = tf.clip_by_value(y / BASE_SCALE, 0.0, 1.0)
+        # 4. Clipping zur reinen Sicherheit (sollte eigentlich nichts abschneiden)
+        x = tf.clip_by_value(x, 0.0, 1.0)
+        y = tf.clip_by_value(y, 0.0, 1.0)
 
-        # 5. Formatieren für 2.5D Input (X umstellen, bei Y den Center-Slice nehmen)
+        # 5. Formatieren für 2.5D Input
         x = tf.transpose(tf.squeeze(x, axis=-1), [1, 2, 0])
         y_center = y[tf.shape(y)[0] // 2]
         
