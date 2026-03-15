@@ -211,36 +211,48 @@ def shuffle_initial(X, y, seed):
     indices = np.arange(len(X)); rng.shuffle(indices)
     return X[indices], y[indices]
 
-def augment_and_normalize_3d_per_slice(p: float, phys_max: float, apply_random_scaling: bool = True):
-    def map_volume(x, y):
-        # 1. Flip
-        flip = tf.random.uniform([], 0, 1) < p
-        x, y = tf.cond(flip, lambda: tf.reverse(x, [2]), lambda: x), tf.cond(flip, lambda: tf.reverse(y, [2]), lambda: y)
-        x = tf.nn.relu(x); y = tf.nn.relu(y)
+def process_data(training=True):
+    # Fester "gesunder" Skalierungsfaktor für DanMAX-Daten nach Summen-Norm
+    BASE_SCALE = 10000.0 
+
+    def map_fn(x, y):
+        # 1. Spatial Augmentation (Flip)
+        if training:
+            flip = tf.random.uniform([], 0, 1) < 0.5
+            x = tf.cond(flip, lambda: tf.reverse(x, [2]), lambda: x)
+            y = tf.cond(flip, lambda: tf.reverse(y, [2]), lambda: y)
+
+        x = tf.nn.relu(x)
+        y = tf.nn.relu(y)
         
-        # 2. Sum-Norm
-        x = x / (tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12)
-        y = y / (tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12)
-        
-        # 3. Random Intensity Scaling
-        if apply_random_scaling:
-            scale_min = phys_max / 3.0
-            scale_max = phys_max
-            scale_factor = tf.random.uniform([], scale_min, scale_max)
+        # 2. Dosis-Kompensation (Summen-Normierung)
+        sum_x = tf.reduce_sum(x, axis=[1, 2, 3], keepdims=True) + 1e-12
+        sum_y = tf.reduce_sum(y, axis=[1, 2, 3], keepdims=True) + 1e-12
+        x = x / sum_x
+        y = y / sum_y
+
+        # 3. Intensity Augmentation (1/3 bis Max Logik)
+        if training:
+            scale_factor = tf.random.uniform([], BASE_SCALE / 3.0, BASE_SCALE)
             x = x * scale_factor
             y = y * scale_factor
         else:
-            x = x * phys_max
-            y = y * phys_max
-            
-        # 4. Finale Clip auf Model-Input [0, 1]
-        x = tf.clip_by_value(x / phys_max, 0.0, 1.0)
-        y = tf.clip_by_value(y / phys_max, 0.0, 1.0)
-        return x, y
-    return map_volume
+            x = x * BASE_SCALE
+            y = y * BASE_SCALE
 
-def prepare_25d_input(x, y): return tf.transpose(tf.squeeze(x, axis=-1), [1, 2, 0]), y[tf.shape(y)[0] // 2]
-def lr_warmup_scheduler(epoch, lr): return LR_TARGET * (epoch + 1) / WARMUP_EPOCHS if epoch < WARMUP_EPOCHS else lr
+        # 4. Finale Anpassung für Sigmoid [0, 1]
+        x = tf.clip_by_value(x / BASE_SCALE, 0.0, 1.0)
+        y = tf.clip_by_value(y / BASE_SCALE, 0.0, 1.0)
+
+        # 5. Formatieren für 2.5D Input (X umstellen, bei Y den Center-Slice nehmen)
+        x = tf.transpose(tf.squeeze(x, axis=-1), [1, 2, 0])
+        y_center = y[tf.shape(y)[0] // 2]
+        
+        return x, y_center
+    return map_fn
+
+def lr_warmup_scheduler(epoch, lr): 
+    return LR_TARGET * (epoch + 1) / WARMUP_EPOCHS if epoch < WARMUP_EPOCHS else lr
 
 # =====================================================
 # 5. MAIN LOOP
@@ -312,27 +324,21 @@ def main():
         X_val,   y_val   = shuffle_initial(X_val,   y_val,   MY_SEED)
         X_test,  y_test  = shuffle_initial(X_test,  y_test,  MY_SEED)
 
-        print("\nBerechne globalen PHYSICAL_MAX Skalierungsfaktor...")
-        def get_peak(data):
-            sums = np.sum(data, axis=(2, 3, 4), keepdims=True) + 1e-12
-            return np.percentile(data / sums, 99.99)
-        PHYSICAL_MAX = float(max(get_peak(y_train), get_peak(X_train)) * 1.02)
-        print(f"-> PHYSICAL_MAX = {PHYSICAL_MAX:.6f}")
-
-        # Training DS mit apply_random_scaling=True
+        # Training DS mit Random Scaling
         train_ds = (tf.data.Dataset.from_tensor_slices((X_train, y_train))
                     .shuffle(len(X_train), seed=MY_SEED)
-                    .map(augment_and_normalize_3d_per_slice(0.5, PHYSICAL_MAX, apply_random_scaling=True), num_parallel_calls=AUTOTUNE)
-                    .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE).prefetch(AUTOTUNE))
+                    .map(process_data(training=True), num_parallel_calls=AUTOTUNE)
+                    .batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
-        # Val und Test DS mit apply_random_scaling=False
+        # Val DS OHNE Random Scaling
         val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
-                  .map(augment_and_normalize_3d_per_slice(0.0, PHYSICAL_MAX, apply_random_scaling=False), num_parallel_calls=AUTOTUNE)
-                  .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
+                  .map(process_data(training=False), num_parallel_calls=AUTOTUNE)
+                  .cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
                   
+        # Test DS OHNE Random Scaling
         test_ds = (tf.data.Dataset.from_tensor_slices((X_test, y_test))
-                   .map(augment_and_normalize_3d_per_slice(0.0, PHYSICAL_MAX, apply_random_scaling=False), num_parallel_calls=AUTOTUNE)
-                   .map(prepare_25d_input, num_parallel_calls=AUTOTUNE).cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
+                   .map(process_data(training=False), num_parallel_calls=AUTOTUNE)
+                   .cache().batch(BATCH_SIZE).prefetch(AUTOTUNE))
 
         model = unet_2d_stacked()
         optimizer = tf.keras.optimizers.Adam(learning_rate=LR_TARGET, amsgrad=True)
