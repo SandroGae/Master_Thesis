@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore")
 # =====================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
 NPZ_DIR = SCRIPT_DIR / "npz_series_22"
-OUT_DIR = SCRIPT_DIR / "Final_Master_Plots"
+OUT_DIR = SCRIPT_DIR / "Series_22_Averaged_Plots"
 OUT_DIR.mkdir(exist_ok=True)
 
 # =====================================================

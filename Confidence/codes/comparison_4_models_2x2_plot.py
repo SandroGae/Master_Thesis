@@ -179,16 +179,16 @@ def create_master_dashboard(data_dict):
         obs_rmse = np.array(obs_rmse)
         obs_std = np.array(obs_std)
 
-        # NEU: Smooth Spline Interpolation (Kurve fitten)
+        # Smooth Spline Interpolation (Kurve fitten)
         if len(valid_centers) > 3:
-            spline = make_interp_spline(valid_centers, obs_rmse, k=2) # Quadratischer Spline für weniger Oszillation
+            spline = make_interp_spline(valid_centers, obs_rmse, k=2) 
             x_smooth = np.linspace(valid_centers.min(), valid_centers.max(), 200)
             y_smooth = spline(x_smooth)
             ax.plot(x_smooth, y_smooth, color=MODELS[name][2], alpha=0.8, linewidth=2.0)
 
-        # NEU: Datenpunkte mit Errorbars (Vordergrund)
-        ax.errorbar(valid_centers, obs_rmse, yerr=obs_std, fmt='o', color=MODELS[name][2],
-                    capsize=3, elinewidth=1.5, markeredgewidth=1.5, label=name)
+        # NEU: Angepasstes Errorbar-Design (Konsistent mit Profil-Code)
+        ax.errorbar(valid_centers, obs_rmse, yerr=obs_std, fmt='o', markersize=5, 
+                    elinewidth=1.0, capsize=2.0, color=MODELS[name][2], alpha=0.7, label=name)
 
     ax.set_title("Reliability Diagram (Aleatoric Calibration)\n(Näher an gestrichelter Linie = Besser)")
     ax.set_xlabel(r"Predicted Aleatoric Uncertainty ($\sigma_{alea}$)")
@@ -200,7 +200,7 @@ def create_master_dashboard(data_dict):
     # Quadrant 4 (Unten Rechts): Sparsification mit Kurven & Errorbars
     # ---------------------------------------------------------
     ax = axes[1, 1]
-    fractions = np.linspace(0, 0.95, 15) # 15 Datenpunkte für saubere Errorbars
+    fractions = np.linspace(0, 0.95, 15) 
     
     for name in names:
         err = valid_models[name]['error']
@@ -220,16 +220,16 @@ def create_master_dashboard(data_dict):
         y_val = np.array(rem_rmse)
         y_err = np.array(rem_std)
 
-        # NEU: Smooth Spline Interpolation
+        # Smooth Spline Interpolation
         if len(x_val) > 3:
-            spline = make_interp_spline(x_val, y_val, k=3) # Kubischer Spline
+            spline = make_interp_spline(x_val, y_val, k=3) 
             x_smooth = np.linspace(x_val.min(), x_val.max(), 200)
             y_smooth = spline(x_smooth)
             ax.plot(x_smooth, y_smooth, color=MODELS[name][2], alpha=0.8, linewidth=2.0)
 
-        # NEU: Datenpunkte mit Errorbars
-        ax.errorbar(x_val, y_val, yerr=y_err, fmt='s', color=MODELS[name][2],
-                    capsize=3, elinewidth=1.5, markeredgewidth=1.5, label=name)
+        # NEU: Angepasstes Errorbar-Design (Konsistent mit Profil-Code)
+        ax.errorbar(x_val, y_val, yerr=y_err, fmt='o', markersize=5, 
+                    elinewidth=1.0, capsize=2.0, color=MODELS[name][2], alpha=0.7, label=name)
 
     ax.set_title("Sparsification Curve (Epistemic)\n(Tieferer Drop = Besser)")
     ax.set_xlabel("Pixels Removed (Highest Uncertainty First) [%]")

@@ -26,25 +26,25 @@ from unet_3d_simple_checkpoints import finalize_run, make_meta_dict
 from tb_utils import tb_callbacks
 
 # =====================================================
-# 1. SETUP & ARGUMENT PARSING (8 Jobs: 2 Punkte x 4 Materialien)
+# 1. SETUP & ARGUMENT PARSING (40 Jobs: 4 Materialien x 10 Seeds für P14)
 # =====================================================
 parser = argparse.ArgumentParser()
-parser.add_argument("--task_id", type=int, required=True, help="Index 0-7 für die 8 Jobs")
+parser.add_argument("--task_id", type=int, required=True, help="Index 0-39 für die 40 Jobs")
 args = parser.parse_args()
 
 MATERIALS = ["bamboo", "carbon_fiber", "glass_fiber", "chicken_liver"]
+SEEDS = range(42, 52) # Seeds 42 bis 51 (10 Stück)
 
 job_configs = []
-# Punkt 02: alpha = 0.0, beta = 2/6 (Task 0 bis 3)
-for mat in MATERIALS:
-    job_configs.append({"point": "P02", "alpha": 0.0, "beta": 2.0/6.0, "material": mat})
+# Punkt 14 (alpha = 2/6, beta = 0.0) für alle Materialien und 10 Seeds
+for s in SEEDS:
+    for mat in MATERIALS:
+        job_configs.append({"point": "P14", "alpha": 2.0/6.0, "beta": 0.0, "material": mat, "seed": s})
 
-# Punkt 14: alpha = 2/6, beta = 0.0 (Task 4 bis 7)
-for mat in MATERIALS:
-    job_configs.append({"point": "P14", "alpha": 2.0/6.0, "beta": 0.0, "material": mat})
+# P02 wurde komplett entfernt!
 
-if args.task_id < 0 or args.task_id > 7:
-    print(f"❌ Ungültige task_id {args.task_id}. Erlaubt sind 0 bis 7.")
+if args.task_id < 0 or args.task_id >= len(job_configs):
+    print(f"❌ Ungültige task_id {args.task_id}. Erlaubt sind 0 bis {len(job_configs)-1}.")
     sys.exit(1)
 
 current_config = job_configs[args.task_id]
@@ -52,7 +52,7 @@ CURRENT_MATERIAL = current_config["material"]
 MY_POINT = current_config["point"]
 MY_ALPHA = current_config["alpha"]
 MY_BETA = current_config["beta"]
-MY_SEED = 42
+MY_SEED = current_config["seed"] # Dynamischer Seed!
 
 # REPRODUZIERBARKEIT
 os.environ['PYTHONHASHSEED'] = str(MY_SEED)
@@ -67,7 +67,6 @@ RAW_BASE_DIR = Path("/scratch/sgaell/DATA_DANMAX/2026020508/raw")
 
 # OUTPUT ORDNER FÜR SPEZIALISTEN
 TEST_OUT_ROOT = SCRATCH_ROOT / "models" / "TEST_V2_Specialists_512"
-# Der Ordner heißt jetzt z.B. "Spezialist_P02_bamboo"
 MODEL_OUT_DIR = TEST_OUT_ROOT / f"Spezialist_{MY_POINT}_{CURRENT_MATERIAL}"
 MODEL_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -263,10 +262,10 @@ def lr_warmup_scheduler(epoch, lr):
 # 5. MAIN LOOP
 # =====================================================
 def main():
-    # Der Name des Modells beinhaltet jetzt klar das Material
+    # Der Name des Modells beinhaltet jetzt klar das Material und den Seed
     RUN_NAME = f"{MY_POINT}_{CURRENT_MATERIAL}_seed{MY_SEED}_512px"
     print(f"\n{'='*60}")
-    print(f"🚀 STARTE SPEZIALISTEN-JOB {args.task_id}/3 | Material: {CURRENT_MATERIAL}")
+    print(f"🚀 STARTE SPEZIALISTEN-JOB {args.task_id}/39 | Material: {CURRENT_MATERIAL} | Seed: {MY_SEED}")
     print(f"{'='*60}\n")
 
     lock_file = MODEL_OUT_DIR / f"{RUN_NAME}.lock"
@@ -366,7 +365,7 @@ def main():
             if psnr > status["best_psnr"]:
                 status["best_psnr"] = psnr; status["drop_cnt"] = 0
             elif epoch >= 10:
-                if psnr < (status["best_psnr"] - 4.5) or psnr < 15.0: status["drop_cnt"] += 1
+                if psnr < (status["best_psnr"] - 8) or psnr < 14.0: status["drop_cnt"] += 1
                 if status["drop_cnt"] >= 3:
                     status["aborted"], status["reason"], model.stop_training = True, "perf_collapse", True
             touch_lock(lock_file)
