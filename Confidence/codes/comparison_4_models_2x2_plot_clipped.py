@@ -156,11 +156,14 @@ def create_split_dashboards(data_dict):
     print(f"✅ Mu-Dashboard gespeichert: {save_path_mu}")
 
     # =========================================================
-    # FIGURE 2: SIGMA-CHANNEL EVALUATION (1x3)
+    # FIGURE 2: SIGMA-CHANNEL EVALUATION (Jetzt 1x2)
     # =========================================================
-    print("\n>>> Generiere Sigma-Channel Dashboard (1x3)...")
-    fig_sig, axes_sig = plt.subplots(1, 3, figsize=(24, 7))
+    print("\n>>> Generiere Sigma-Channel Dashboard (1x2)...")
+    # Änderung: Nur noch 2 Spalten, Breite auf 16 reduziert
+    fig_sig, axes_sig = plt.subplots(1, 2, figsize=(16, 8)) 
+    fig_sig.suptitle("Uncertainty Quantification & Calibration ($\sigma$-Channel)", fontsize=22, fontweight='bold', y=1.05)
     
+    # 1. Reliability Diagram
     ax = axes_sig[0]; ax_hist = ax.twinx()
     max_sigma = max([np.percentile(valid_models[n]['alea'], 99.0) for n in names])
     num_bins = 15
@@ -169,7 +172,8 @@ def create_split_dashboards(data_dict):
     all_alea = np.concatenate([valid_models[n]['alea'] for n in names])
     cnt, _ = np.histogram(all_alea, bins=bins)
     ax_hist.bar((bins[:-1] + bins[1:])/2, cnt, width=(bins[1]-bins[0])*0.8, color='gray', alpha=0.15)
-    ax_hist.set_yscale('log'); ax_hist.set_ylim(1, cnt.max() * 2.0); ax_hist.tick_params(axis='y', labelcolor='gray')
+    ax_hist.set_yscale('log'); ax_hist.set_ylim(1, cnt.max() * 2.0)
+    ax_hist.set_ylabel("Sample Count (Log)", color='gray')
 
     ax.plot([0, max_sigma], [0, max_sigma], 'k--', alpha=0.6, label="Ideal Calibration")
     
@@ -178,30 +182,26 @@ def create_split_dashboards(data_dict):
         obs_rmse, obs_sem, valid_centers = [], [], []
         for i in range(len(bins)-1):
             mask = (alea >= bins[i]) & (alea < bins[i+1])
-            n_pix = np.sum(mask)
-            if n_pix > 1000:
+            if np.sum(mask) > 1000:
                 b_err = err[mask]
                 obs_rmse.append(np.sqrt(np.mean(b_err**2)))
-                obs_sem.append(np.std(b_err) / np.sqrt(n_pix))
+                obs_sem.append(np.std(b_err) / np.sqrt(np.sum(mask)))
                 valid_centers.append((bins[i] + bins[i+1])/2)
         
-        v_c, o_r, o_s = np.array(valid_centers), np.array(obs_rmse), np.array(obs_sem)
-        if len(v_c) > 3:
-            spline = make_interp_spline(v_c, o_r, k=2)
-            xs = np.linspace(v_c.min(), v_c.max(), 200)
-            ax.plot(xs, spline(xs), color=MODELS[name][2], alpha=0.8, lw=2.0)
-        ax.errorbar(v_c, o_r, yerr=o_s, fmt='o', markersize=5, capsize=2, color=MODELS[name][2], alpha=0.7, label=name)
+        ax.errorbar(valid_centers, obs_rmse, yerr=obs_sem, fmt='o', markersize=5, color=MODELS[name][2], alpha=0.7, label=name)
 
-    ax.set_title("Reliability Diagram (Aleatoric Calibration)\n(Näher an gestrichelter Linie = Besser)")
+    ax.set_title("Reliability Diagram (Aleatoric Calibration)")
     ax.set_xlabel(r"Predicted Aleatoric Uncertainty ($\sigma_{alea}$)")
-    ax.set_ylabel("Observed Error (RMSE) $\pm$ SEM")
-    h1, l1 = ax.get_legend_handles_labels()
-    ax.legend(h1 + [mpatches.Patch(color='gray', alpha=0.15)], l1 + ['Pixel Count'], loc='upper left')
-    ax.grid(True)
+    ax.set_ylabel("Observed Error (RMSE)")
+    ax.legend(loc='upper left'); ax.grid(True)
 
+    # 2. Z-Score Distribution
     ax = axes_sig[1]
     x_ideal = np.linspace(-5, 5, 200)
-    ax.plot(x_ideal, norm.pdf(x_ideal, 0, 1), 'k--', lw=2.5, alpha=0.8, label="Ideal N(0,1)")
+    
+    # Verbesserung: Höhere Linienstärke (lw=4) und zorder=10, damit sie oben liegt
+    ax.plot(x_ideal, norm.pdf(x_ideal, 0, 1), 'k--', lw=4, alpha=1.0, 
+            label="Ideal Unit Normal $N(0,1)$", zorder=10)
     
     for name in names:
         raw_err = valid_models[name]['raw_err']
@@ -209,54 +209,19 @@ def create_split_dashboards(data_dict):
         z_scores = raw_err / (alea + 1e-8) 
         counts, bin_edges = np.histogram(z_scores, bins=250, range=(-5, 5), density=True)
         bin_centers = (bin_edges[:-1] + bin_edges[1:])/2
-        smoothed_counts = gaussian_filter1d(counts, sigma=4)
-        ax.plot(bin_centers, smoothed_counts, linewidth=2.5, color=MODELS[name][2], alpha=0.9, label=name)
+        ax.plot(bin_centers, gaussian_filter1d(counts, sigma=4), linewidth=2.5, 
+                color=MODELS[name][2], alpha=0.8, label=name)
         
-    ax.set_title("Z-Score Distribution (Standardized Residuals)\n(Näher an schwarzer Linie = Besser)")
-    ax.set_xlabel(r"Z-Score $(GT - \mu) / \sigma_{alea}$")
-    ax.set_ylabel("Density")
-    ax.legend(loc='upper right')
-    ax.grid(True)
+    ax.set_title("Standardized Residuals (Z-Score)")
+    ax.set_xlabel(r"Z-Score $(GT - \mu_{ens}) / \sigma_{alea}$")
+    ax.set_ylabel("Probability Density")
+    ax.legend(loc='upper right'); ax.grid(True)
 
-    ax = axes_sig[2]
-    ece_values = []
-    
-    for name in names:
-        alea = valid_models[name]['alea']
-        err = valid_models[name]['error']
-        
-        ece_score = 0
-        total_valid = 0
-        for i in range(len(bins)-1):
-            mask = (alea >= bins[i]) & (alea < bins[i+1])
-            n_pix = np.sum(mask)
-            if n_pix > 1000:
-                b_err = err[mask]
-                rmse = np.sqrt(np.mean(b_err**2))
-                mean_alea = np.mean(alea[mask])
-                ece_score += n_pix * np.abs(rmse - mean_alea)
-                total_valid += n_pix
-                
-        final_ece = ece_score / total_valid if total_valid > 0 else 0
-        ece_values.append(final_ece)
-        
-    x_pos = np.arange(len(names))
-    bars = ax.bar(x_pos, ece_values, color=colors, alpha=0.8, edgecolor='black', linewidth=1.5)
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(names)
-    ax.set_title("Expected Calibration Error (ECE)\n(Niedriger = Besser)")
-    ax.set_ylabel("ECE Score")
-    ax.grid(True, axis='y')
-    
-    max_y = max(ece_values) if ece_values else 1
-    ax.set_ylim(0, max_y * 1.2)
-    for bar in bars:
-        yval = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2, yval + (max_y * 0.02), f"{yval:.4f}", ha='center', va='bottom', fontweight='bold')
+    # Der Block für axes_sig[2] (ECE) wurde komplett entfernt
 
     plt.tight_layout(pad=3.0)
-    save_path_sig = OUT_DIR / "Sigma_Channel_Evaluation_Clipped.png"
-    plt.savefig(save_path_sig); plt.close()
+    save_path_sig = OUT_DIR / "Sigma_Channel_Evaluation_Final.png"
+    plt.savefig(save_path_sig, bbox_inches='tight'); plt.close()
     print(f"✅ Sigma-Dashboard gespeichert: {save_path_sig}")
 
 if __name__ == "__main__":

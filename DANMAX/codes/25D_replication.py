@@ -26,7 +26,7 @@ tf.config.experimental.enable_op_determinism()
 DEPTH = 5
 SERIES_LEN = 40  # Geändert auf 40, damit 2000 Bilder glatt durch 40 teilbar sind
 BASEFILTERS = 64
-CROP_SIZE = (512, 512) # Verhindert Out-of-Memory (OOM)
+CROP_SIZE = (256, 256)
 
 # Simples unet in 2.5D
 def conv_block_2d(x, filters, kernel_size=(3, 3), padding="same"):
@@ -231,8 +231,8 @@ val_ds = (tf.data.Dataset.from_tensor_slices((X_val, y_val))
           .cache().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE))
 
 print("Training beginnt...")
-history = model.fit(train_ds, validation_data=val_ds, epochs=200, callbacks=callbacks, verbose=2)
+history = model.fit(train_ds, validation_data=val_ds, epochs=50, callbacks=callbacks, verbose=2)
 
-meta = make_meta_dict(script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=200, optimizer=optimizer,
+meta = make_meta_dict(script_name=RUN_NAME, batch_size=BATCH_SIZE, epochs=50, optimizer=optimizer,
                       learning_rate=LR_TARGET, input_shape=(CROP_SIZE[0], CROP_SIZE[1], DEPTH))
 finalize_run(model, history, RUN_NAME, meta)

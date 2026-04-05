@@ -7,6 +7,9 @@ from collections import defaultdict
 import warnings
 from tqdm import tqdm
 
+# NEU: Import für die Prozent-Colorbar
+from matplotlib.ticker import PercentFormatter
+
 warnings.filterwarnings("ignore")
 
 # =====================================================
@@ -20,12 +23,15 @@ OUT_DIR_BASE = BASE_DIR / "Thesis_Plots_Combined_Final"
 OUT_DIR_BASE.mkdir(parents=True, exist_ok=True)
 
 # --- INDIVIDUELLE CUTOFFS FÜR DIE ANALYSE-REIHEN (Perzentile) ---
-# 0: Aleatoric, 1: Epistemic, 2: Confluence (NEU), 3: Weighted Risk (MOVED)
+# 0: Aleatoric, 1: Epistemic, 2: Confluence
+# 3: Weighted Risk (epi), 4: Weighted Aleatoric (NEU), 5: Total Weighted (NEU)
 ANALYSIS_CUTS = {
     0: (1.0, 98.0),   # Aleatoric
     1: (0.01, 99.7),  # Epistemic
-    2: (0.1, 99.8),   # Uncertainty Confluence (NEU)
-    3: (0.01, 99.7),  # Signal-Weighted Risk (MOVED)
+    2: (0.01, 99.5),   # Uncertainty Confluence
+    3: (0.01, 99.7),  # Signal-Weighted Risk (mu * epi)
+    4: (1.0, 98.0),   # Weighted Aleatoric (mu * ale) - Orientiert an Aleatoric
+    5: (0.01, 99.5),   # Total Weighted (mu * ale * epi) - Orientiert an Confluence
 }
 
 SERIES_CONFIG = {
@@ -108,9 +114,13 @@ def create_thesis_plots(s_id, file_paths, p_id):
     sigma_aleatoric = np.sqrt(np.mean(sigmas**2, axis=0))
     sigma_epistemic = np.std(mus, axis=0)
     
-    # Die beiden Verrechnungen
+    # Verrechnungen
     uncertainty_confluence = sigma_aleatoric * sigma_epistemic
     weighted_risk = mu_ens * sigma_epistemic
+    
+    # NEUE VERRECHNUNGEN FÜR REIHE 3
+    weighted_aleatoric = mu_ens * sigma_aleatoric
+    total_weighted_risk = mu_ens * sigma_aleatoric * sigma_epistemic
 
     # ---------------------------------------------------------
     # DER 3x3 KOMBINIERTE PLOT
@@ -131,7 +141,6 @@ def create_thesis_plots(s_id, file_paths, p_id):
         ax.axis('off')
 
     # REIHE 2: UNSICHERHEITS-KOMPONENTEN
-    # Spalte 1: Aleatoric, Spalte 2: Epistemic, Spalte 3: Confluence (NEU)
     images_r2 = [sigma_aleatoric[z], sigma_epistemic[z], uncertainty_confluence[z]]
     titles_r2 = [r"Data Noise ($\sigma_{aleatoric}$)", 
                  r"Model Variation ($\sigma_{epistemic}$)", 
@@ -143,21 +152,37 @@ def create_thesis_plots(s_id, file_paths, p_id):
         vmin, vmax = np.percentile(images_r2[i], [p_low, p_high])
         im = ax.imshow(images_r2[i], cmap='inferno', vmin=vmin, vmax=vmax)
         ax.set_title(titles_r2[i], fontsize=20, pad=10)
-        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        
+        if i in [0, 1]:
+            cbar.ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=1))
+        else:
+            cbar.formatter.set_powerlimits((0, 0))
+            cbar.ax.yaxis.set_offset_position('left')
+        
         ax.axis('off')
 
-    # REIHE 3: GEWICHTETES RISIKO (Zentriert in Spalte 2)
-    # Wir schalten die äußeren Plots in Reihe 3 stumm
-    axes[2, 0].axis('off')
-    axes[2, 2].axis('off')
+    # REIHE 3: GEWICHTETES RISIKO (Komplett gefüllt)
+    images_r3 = [weighted_aleatoric[z], weighted_risk[z], total_weighted_risk[z]]
+    titles_r3 = [r"Weighted Aleatoric Risk ($\mu \cdot \sigma_{ale}$)", 
+                 r"Signal-Weighted Risk ($\mu \cdot \sigma_{epi}$)", 
+                 r"Total Weighted Risk ($\mu \cdot \sigma_{ale} \cdot \sigma_{epi}$)"]
+    cuts_r3 = [4, 3, 5]  # Index in ANALYSIS_CUTS
     
-    ax_risk = axes[2, 1]
-    p_low, p_high = ANALYSIS_CUTS[3]
-    vmin, vmax = np.percentile(weighted_risk[z], [p_low, p_high])
-    im_risk = ax_risk.imshow(weighted_risk[z], cmap='magma', vmin=vmin, vmax=vmax)
-    ax_risk.set_title(r"Signal-Weighted Risk ($\mu \cdot \sigma_{epi}$)", fontsize=20, pad=10)
-    plt.colorbar(im_risk, ax=ax_risk, fraction=0.046, pad=0.04)
-    ax_risk.axis('off')
+    for i in range(3):
+        ax = axes[2, i]
+        p_low, p_high = ANALYSIS_CUTS[cuts_r3[i]]
+        vmin, vmax = np.percentile(images_r3[i], [p_low, p_high])
+        im = ax.imshow(images_r3[i], cmap='magma', vmin=vmin, vmax=vmax)
+        ax.set_title(titles_r3[i], fontsize=20, pad=10)
+        
+        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        # Keine Prozente für Risiko-Plots, da Multiplikation mit mu
+        cbar.formatter.set_powerlimits((0, 0))
+        cbar.ax.yaxis.set_offset_position('left')
+        
+        ax.axis('off')
 
     plt.tight_layout()
     save_path = model_out_dir / f"Plot_{p_id}_Analysis_3x3_S{s_id:02d}.png"
